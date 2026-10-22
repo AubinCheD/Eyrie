@@ -1,0 +1,5 @@
+/target
+/.cargo/config.toml
+/.superpowers/
+/.claude/settings.local.json
+*.local.md
