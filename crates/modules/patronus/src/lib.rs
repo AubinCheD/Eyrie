@@ -5,6 +5,7 @@
 //! - la synchro du Planificateur de Windows est dans `ui` : appelé même masqué ;
 //! - le Planificateur et la clé `Run` visent `current_exe()` : dans la suite, `eyrie.exe`, qui
 //!   comprend `lancer <tâche>` et `planifie <tâche>` ([`cli`]) ;
+//! - **réglages** : les siens sont dans ceux d'Eyrie (page Patronus), et « Réglages » y mène ;
 //! - le titre « (N) Patronus » devient la pastille.
 
 mod cli;
@@ -92,11 +93,15 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
     // La fenêtre est celle de la suite : sa taille n'entre pas dans l'état de Patronus. Sa palette
     // suit déjà le thème clair ou sombre d'egui, donc celui de la suite.
     app.set_hosted(true);
+    // Ses réglages sont dans ceux d'Eyrie : « Réglages » y mène, sur sa page.
+    let link = bcx.host.clone();
+    app.set_settings_link(Box::new(move || link.open_settings(&format!("module:{ID}"))));
     Ok(Box::new(
         Embedded::new(info(), bcx.host.clone(), app)
             .hidden_ui(true)
             .title_badge(badge)
             .key_commands(commands())
+            .settings_panel(|app, ui| app.settings_ui(ui))
             .keep(guard)
             .keep(tray),
     ))

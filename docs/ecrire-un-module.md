@@ -50,7 +50,7 @@ Le reste de l'interface a des valeurs par défaut :
 | `views` | plusieurs vues, chacune posable dans sa case (Carnet : Notes, Bus) |
 | `status` | titre, pastille (`Badge`), ce qui attend (vue d'ensemble) |
 | `commands`, `run_command` | entrées de la palette, raccourcis (registre et conflits) |
-| `settings_ui` | page dans Réglages > le module |
+| `settings_ui` | sa page dans les réglages d'Eyrie (sous « Modules ») ; une fenêtre sortie ne montre que ses modules |
 | `on_event` | événements du bus (`contexte`, `pr_ouverte`, `service_arrete`…) |
 | `on_request` | demandes des autres modules (le contrat local, en appel Rust) |
 | `needs_hidden_ui` | travail resté dans `ui`, à appeler même masqué (à éviter : mettre ce travail dans `logic`) |
@@ -98,6 +98,21 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
   et la géométrie de sa fenêtre) ;
 - `status`, `on_request`, `can_close` : ce qu'elle expose publiquement, branché sur l'interface ;
 - `keep` : ce qui doit vivre autant que le module.
+
+Ses réglages vont dans ceux d'Eyrie, sans doublon :
+
+```rust
+let settings = bcx.host.clone();
+app.set_hosted(true); // thème, langue, démarrage de Windows : ceux d'Eyrie, masqués chez lui
+app.set_settings_link(Box::new(move || settings.open_settings(&format!("module:{ID}"))));
+Embedded::new(info(), bcx.host.clone(), app).settings_panel(|app, ui| app.settings_ui(ui))
+```
+
+- `settings_ui(&mut self, ui)` : le contenu de sa fenêtre de réglages, dessiné dans la page de l'hôte
+  (sans la fenêtre, sans ce que masque `set_hosted`) ;
+- `set_settings_link` : son « Réglages… » (menu, raccourci) ouvre les réglages d'Eyrie sur sa page,
+  dans la fenêtre où il est, au lieu de sa propre fenêtre ;
+- les comptes ne sont pas dans sa page : `set_accounts_link` mène à Réglages › Comptes (`docs/comptes.md`).
 
 Si l'application n'a pas de bibliothèque (Fawkes), une crate peut compiler ses sources depuis le
 dépôt voisin : voir `crates/modules/fawkes/build.rs`.

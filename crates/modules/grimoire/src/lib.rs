@@ -5,6 +5,7 @@
 //! - même verrou d'instance et même canal nommé que `grimoire.exe` : lancé pendant que la suite
 //!   tourne, l'exe passe sa demande à la suite ;
 //! - son travail de fond (demandes reçues, relevés) est sondé dans `ui` : appelé même masqué ;
+//! - **réglages** : les siens sont dans ceux d'Eyrie (sa page), et son bouton de réglages y mène ;
 //! - `grimoire-statusline.exe` reste un exe à part, lancé par Claude Code.
 
 use std::sync::mpsc;
@@ -40,6 +41,7 @@ fn commands() -> Vec<KeyCommand> {
         KeyCommand::new("preferences", "Préférences de Grimoire", "Ctrl+,"),
         KeyCommand::new("instructions", "Onglet Instructions", "Ctrl+1"),
         KeyCommand::new("reglages", "Onglet Réglages", "Ctrl+2"),
+        KeyCommand::new("preferences", "Préférences de Grimoire", "Ctrl+,"),
         KeyCommand::new("skills", "Onglet Skills", "Ctrl+3"),
         KeyCommand::new("crochets", "Onglet Crochets", "Ctrl+4"),
         KeyCommand::new("mcp", "Onglet MCP", "Ctrl+5"),
@@ -68,9 +70,13 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
     let mut app = grimoire::app::App::new(&bcx.cc.egui_ctx, loaded, None, rx);
     // La fenêtre est celle de la suite : sa taille n'entre pas dans l'état de Grimoire.
     app.set_hosted(true);
+    // Ses réglages sont dans ceux d'Eyrie : son bouton de réglages y mène, sur sa page.
+    let link = bcx.host.clone();
+    app.set_settings_link(Box::new(move || link.open_settings(&format!("module:{ID}"))));
     let module = Embedded::new(info(), bcx.host.clone(), app)
         .hidden_ui(true)
         .key_commands(commands())
+        .settings_panel(|app, ui| app.settings_ui(ui))
         // Ses couleurs suivent le thème clair ou sombre de la suite (sans toucher à son réglage).
         .before_logic(|app, cx| {
             let t = if cx.host.palette().dark { ThemeId::Sombre } else { ThemeId::Clair };

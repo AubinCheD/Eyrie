@@ -4,6 +4,7 @@
 //! - la supervision (arrêts et relances, santé, sauvegarde) est dans `ui` : appelé même masqué ;
 //! - le relais `--relais` (`current_exe()`) est pris en charge par `eyrie.exe` ;
 //! - le titre « Menagerie — N à voir » devient la pastille ;
+//! - **réglages** : les siens sont dans ceux d'Eyrie (sa page), et son bouton de réglages y mène ;
 //! - embarqué (`set_hosted`) : il n'enregistre pas la géométrie de la fenêtre de la suite ; ses
 //!   couleurs suivent le thème clair ou sombre de la suite (`set_theme_override`).
 
@@ -63,10 +64,14 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
     let mut app = menagerie::app::App::new(bcx.cc, state, problems);
     // La fenêtre est celle de la suite : sa géométrie n'entre pas dans l'état de Menagerie.
     app.set_hosted(true);
+    // Ses réglages sont dans ceux d'Eyrie : son bouton de réglages y mène, sur sa page.
+    let link = bcx.host.clone();
+    app.set_settings_link(Box::new(move || link.open_settings(&format!("module:{ID}"))));
     let module = Embedded::new(info(), bcx.host.clone(), app)
         .hidden_ui(true)
         .title_badge(badge)
         .key_commands(commands())
+        .settings_panel(|app, ui| app.settings_ui(ui))
         // Ses couleurs suivent le thème clair ou sombre de la suite (sans toucher à son réglage).
         .before_logic(|app, cx| {
             let t = if cx.host.palette().dark { ThemeId::Dark } else { ThemeId::Light };

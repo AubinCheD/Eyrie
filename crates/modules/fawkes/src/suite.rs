@@ -7,6 +7,7 @@
 //!   thème choisi dans Fawkes seul) ;
 //! - sa barre de titre dessinée reste dans sa case : ses boutons réduire, agrandir et fermer sont
 //!   contenus par la suite (le bac à sable de l'hôte) ;
+//! - **réglages** : les siens sont dans ceux d'Eyrie (page Fawkes), et « Réglages… » y mène ;
 //! - les sessions Claude qui attendent une réponse deviennent sa pastille ;
 //! - il reçoit `ouvrir` des autres modules (Owlery, Patronus, Grimoire), en appel Rust : c'est le
 //!   contrat local, sans tube.
@@ -128,7 +129,13 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
     };
     let fawkes::persist::Loaded { state, problems: load_problems } = fawkes::persist::load();
     problems.extend(load_problems);
-    let app = App::new(bcx.cc, state, problems);
+    let mut app = App::new(bcx.cc, state, problems);
+    // Intégré : ses réglages sont dans ceux d'Eyrie (« Réglages… » y mène), sans ce qu'Eyrie règle pour toute la
+    // suite (thème, barre de titre, téléphone, démarrage de Windows).
+    app.set_hosted(true);
+    let link = bcx.host.clone();
+    app.set_settings_link(Box::new(move || link.open_settings(&format!("module:{ID}"))));
+    let panel_host = bcx.host.clone();
 
     // Pendant l'affichage : le thème de la suite, et la géométrie de la fenêtre où Fawkes est
     // dessiné (il la relève à chaque image pour son propre lancement : sans cela, `fawkes.exe`
@@ -155,6 +162,13 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
             waiting_before = now.clone();
         })
         .key_commands(commands())
+        // Sa page dans les réglages d'Eyrie, aux couleurs d'Eyrie comme son affichage.
+        .settings_panel(move |app, ui| {
+            let own = app.st.settings.theme;
+            app.st.settings.theme = suite_theme_of(&panel_host);
+            app.settings_ui(ui);
+            app.st.settings.theme = own;
+        })
         .status(status)
         .on_request(on_request)
         // Contexte partagé : le groupe lié à ce dépôt devient le groupe affiché.

@@ -5,11 +5,12 @@ application, « un peu à la manière de Visual Studio et ses différentes fenê
 l'application ; **EyrieSuite** désigne ce qui est commun à toute la suite (`%APPDATA%\EyrieSuite`, le
 coffre « EyrieSuite » de Windows et, à terme, le dossier d'installation de tous les modules).
 
-**Premier jet** : l'hôte et les modules réunis **sans changer le code des modules**. Chaque module
-garde son dépôt et son exécutable ; la suite compile leurs bibliothèques et les contient (voir
-`docs/premier-jet.md`).
+Chaque module garde son dépôt et son exécutable ; Eyrie compile leurs bibliothèques et les contient
+(voir `docs/premier-jet.md`). Un module sait s'il est lancé seul ou dans Eyrie : seul, il a ses propres
+réglages ; dans Eyrie, ses réglages sont dans ceux d'Eyrie et ce qu'Eyrie règle pour tous (thème,
+langue, comptes, Tailscale) disparaît des siens.
 
-## Ce que fait la suite
+## Ce que fait Eyrie
 
 - **Cases** (`egui_tiles`) : onglets, colonnes, lignes, grilles, glisser-déposer, séparateurs ;
   dispositions en un clic (tout en onglets, côte à côte, empilés, grille, un grand + pile) ;
@@ -19,9 +20,10 @@ garde son dépôt et son exécutable ; la suite compile leurs bibliothèques et 
 - **Mode concentration** : une case en grand (double-clic sur l'onglet, Alt+Maj+Entrée).
 - **Barre d'activité** avec pastilles, **vue d'ensemble** de ce qui attend dans tous les modules,
   **centre de notifications** commun, **palette de commandes** (F1) qui exécute aussi les commandes
-  des modules, **journal** de la suite, **ressources** (temps passé par module).
-- **Réglages communs** : thème (les trois thèmes de Fawkes + Système), langue (fr/en), zoom,
-  Tailscale (un seul nœud pour la suite), raccourcis et leurs conflits.
+  des modules, **journal** d'Eyrie, **ressources** (temps passé par module).
+- **Réglages en un seul endroit** : ceux d'Eyrie (thème, langue, zoom, Tailscale, raccourcis et leurs
+  conflits, dispositions) et ceux de chaque module, sur sa page ; le « Réglages » d'un module y mène.
+  Dans une fenêtre détachée, ⚙ Réglages ne montre qu'Eyrie et les modules de cette fenêtre.
 - **Comptes communs à toute la suite** (GitHub, GitLab, Azure DevOps) : on se connecte une fois, dans
   Eyrie, DragonTree ou Owlery, seuls ou intégrés ; liste dans `%APPDATA%\EyrieSuite`, jetons dans le
   coffre « EyrieSuite » de Windows. Intégrés, les modules renvoient à la page Comptes d'Eyrie
@@ -29,7 +31,7 @@ garde son dépôt et son exécutable ; la suite compile leurs bibliothèques et 
 - **Bac à sable** autour de chaque appel de module : style global rétabli, clavier au seul module de
   la case cliquée, commandes de fenêtre contenues, plantage isolé.
 - **Contrat local en appel Rust** : un module demande à un autre (`ouvrir` un terminal dans Fawkes
-  depuis Owlery…) par le bus de la suite, sans tube.
+  depuis Owlery…) par le bus d'Eyrie, sans tube.
 - **Tout ou partie des modules**, activables et arrêtables à chaud ; un module natif d'exemple,
   **Carnet** (notes par dépôt, journal du bus), sert de gabarit (`docs/ecrire-un-module.md`).
 
@@ -42,7 +44,7 @@ six modules sur leur branche `suite/module`. Voir `docs/etape-2.md`.
 ## Compiler
 
 Les dépôts des modules doivent être **voisins** de celui-ci (`../Fawkes`, `../DragonTree`,
-`../Patronus`, `../Owlery`, `../Menagerie`, `../Grimoire`) : la suite en dépend par chemin, en lecture
+`../Patronus`, `../Owlery`, `../Menagerie`, `../Grimoire`) : Eyrie en dépend par chemin, en lecture
 seule.
 
 Toolchain `x86_64-pc-windows-gnu` (comme les modules) : `tools\setup.ps1` écrit `.cargo\config.toml`
@@ -58,6 +60,9 @@ cargo test -p eyrie -- --ignored --test-threads=1   # essais avec les sept modul
 Formater : `cargo fmt -p eyrie -p suite-sdk -p suite-carnet …`, **pas `cargo fmt --all`**, qui
 formaterait aussi les dépôts des modules (dépendances par chemin).
 
+Un module seul, depuis son dépôt, avec la même configuration :
+`cargo test --config ..\SuperApp\.cargo\config.toml`.
+
 La première compilation prend quelques minutes : toutes les dépendances des six modules (un seul
 egui 0.37 pour tous).
 
@@ -67,7 +72,7 @@ egui 0.37 pour tous).
 target\release\eyrie.exe
 ```
 
-Au premier lancement, la suite demande où les modules rangent leur état (aucun module ne démarre
+Au premier lancement, Eyrie demande où les modules rangent leur état (aucun module ne démarre
 avant ce choix ; elle se relance ensuite) :
 
 - **les données des exécutables** (par défaut) : mêmes groupes, terminaux, tâches et filtres que
@@ -89,10 +94,10 @@ Variables utiles :
 | `SUITE_FAWKES_DIR` | autre emplacement des sources de Fawkes |
 
 `eyrie.exe` comprend aussi ce que les modules demandent à leur propre exécutable quand ils
-tournent dans la suite (`current_exe()`) : `--relais …` (Menagerie), `lancer <tâche>` et
+tournent dans Eyrie (`current_exe()`) : `--relais …` (Menagerie), `lancer <tâche>` et
 `planifie <tâche>` (Patronus, Planificateur de Windows).
 
-## Raccourcis de la suite
+## Raccourcis d'Eyrie
 
 | Raccourci | Action |
 |---|---|

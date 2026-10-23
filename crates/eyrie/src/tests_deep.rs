@@ -337,3 +337,34 @@ fn real_dragontree_shares_its_active_repository() {
         h.state().core.slot("carnet").and_then(|s| s.module()).map(|m| m.status().title).flatten().unwrap_or_default();
     assert!(carnet.ends_with(&ctx.label), "le Carnet suit le dépôt : {carnet}");
 }
+
+/// Les réglages de chaque module réel sont dans ceux d'Eyrie (sa page), sans le thème (celui d'Eyrie) ; et son propre
+/// bouton de réglages mène à cette page.
+#[test]
+#[ignore = "lent : les sept modules réels ; à lancer seul"]
+fn real_modules_show_their_settings_in_eyrie() {
+    use egui_kittest::kittest::Queryable;
+    let (mut h, _dir) = real_suite("reglages");
+    h.run_steps(10);
+    for (id, marker, command) in [
+        ("dragontree", "Enregistrer", "reglages"),
+        ("owlery", "Lecture périodique", "reglages"),
+        ("fawkes", "Taille de police", "reglages"),
+        ("patronus", "Conserver les résultats lus", "reglages"),
+        ("menagerie", "Commande des conteneurs", "reglages"),
+        ("grimoire", "Chemin de fawkes.exe :", "preferences"),
+    ] {
+        h.state_mut().core.act(Action::OpenSettings(crate::settings::Page::Module(id.into())));
+        h.run_steps(4);
+        assert!(h.state().core.slot(id).is_some_and(|s| s.is_running()), "{id} : toujours actif");
+        assert!(h.query_by_label(marker).is_some(), "{id} : ses réglages dans ceux d'Eyrie");
+        assert!(h.query_by_label("Thème").is_none(), "{id} : le thème est celui d'Eyrie");
+
+        h.state_mut().shell.settings.open = false;
+        h.state_mut().core.act(Action::RunCommand { module: id.into(), command: command.into() });
+        h.run_steps(8);
+        let st = &h.state().shell.settings;
+        assert!(st.open, "{id} : son bouton de réglages ouvre ceux d'Eyrie");
+        assert_eq!(st.page, crate::settings::Page::Module(id.into()), "{id} : sur sa page");
+    }
+}

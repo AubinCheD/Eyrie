@@ -67,5 +67,6 @@ Le dossier se choisit ainsi :
 | Comptes | les mêmes (fichier et coffre communs) | les mêmes |
 | Où les régler | sa propre fenêtre Comptes | **Réglages d'Eyrie › Comptes** : « Comptes… » y mène (`Host::open_settings("comptes")`) |
 | Thème, langue | les siens | ceux d'Eyrie, masqués dans ses réglages et ses menus (`set_hosted(true)`) |
+| Ses autres réglages | sa fenêtre Réglages | sa page dans les **Réglages d'Eyrie** : « Réglages… » y mène (`Host::open_settings("module:<id>")`) ; une fenêtre sortie montre Eyrie et ses seuls modules |
 
 Les comptes `gh` d'Owlery (GitHub par la CLI, sans jeton) restent dans Owlery.
