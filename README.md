@@ -37,9 +37,9 @@ langue, comptes, Tailscale) disparaît des siens.
 
 ## Branches
 
-Rien n'est sur `main` pour l'instant : `premier-jet` (l'hôte, sans toucher aux modules) et
-`suite/etape-2` (premières retouches dans les modules, essais approfondis), qui se compile avec les
-six modules sur leur branche `suite/module`. Voir `docs/etape-2.md`.
+Tout est sur `main` (23/10/2026), ici comme dans les six modules : Eyrie se compile avec leur `main`.
+Les branches de travail sont gardées pour l'historique : `premier-jet` (l'hôte, sans toucher aux
+modules), `suite/etape-2` dans Eyrie et `suite/module` dans les modules (voir `docs/etape-2.md`).
 
 ## Compiler
 

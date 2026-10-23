@@ -1,6 +1,7 @@
 # Étape 2 : premières retouches dans les modules, essais approfondis (23/10/2026)
 
-Suite du premier jet (`premier-jet.md`). Tout est sur des branches à part, rien sur `main` :
+Suite du premier jet (`premier-jet.md`). Faite sur des branches à part, fusionnées dans `main` le
+23/10/2026 :
 
 | Dépôt | Branche | Contenu |
 |---|---|---|
@@ -8,9 +9,9 @@ Suite du premier jet (`premier-jet.md`). Tout est sur des branches à part, rien
 | SuperApp | `suite/etape-2` | cette étape (part de `premier-jet`) |
 | Fawkes, DragonTree, Owlery, Patronus, Menagerie, Grimoire | `suite/module` | les retouches ci-dessous (part de leur `main`) |
 
-`suite/etape-2` se compile avec les six modules sur `suite/module` (les dépôts voisins sont lus
-par chemin, tels qu'ils sont extraits). Pour revenir au premier jet : `premier-jet` dans SuperApp
-et `main` dans les modules.
+Les dépôts voisins sont lus par chemin, tels qu'ils sont extraits : `main` partout. Pour revenir au
+premier jet : `premier-jet` dans SuperApp et, dans les modules, leur `main` d'avant la fusion
+(parent du premier commit de `suite/module`).
 
 ## Retouches dans les modules (`premier-jet.md` §6)
 
