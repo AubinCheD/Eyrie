@@ -1,8 +1,9 @@
 //! Le fichier des comptes et le coffre des jetons.
 //!
 //! Plusieurs applications (Eyrie, DragonTree et Owlery seuls) peuvent écrire en même temps : chaque
-//! écriture prend le verrou `accounts.lock`, relit le fichier, et le remplace d'un coup (fichier
-//! temporaire puis renommage). La lecture seule n'attend personne.
+//! écriture prend le verrou de Windows sur `accounts.lock` (rendu par Windows si l'application meurt),
+//! relit le fichier, et le remplace d'un coup (fichier temporaire puis renommage). La lecture seule
+//! n'attend personne.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -18,17 +19,11 @@ const VERSION: u64 = 1;
 const LOCK: &str = "accounts.lock";
 /// Attente du verrou d'une autre application, au plus.
 const LOCK_WAIT: Duration = Duration::from_secs(5);
-/// Un verrou plus vieux que ça a été abandonné (application tuée pendant une écriture).
-const LOCK_STALE: Duration = Duration::from_secs(10);
 
-/// Le verrou des écritures, rendu à la fin de la portée.
-struct Lock(PathBuf);
-
-impl Drop for Lock {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
+/// Le verrou des écritures : celui de Windows sur le fichier ouvert, rendu à la fin de la portée (ou par Windows, si
+/// l'application meurt pendant l'écriture). Le fichier reste : l'effacer laisserait deux applications verrouiller
+/// chacune le sien.
+struct Lock(#[allow(dead_code)] std::fs::File);
 
 /// Un coffre de jetons, indexé par identifiant de compte : celui de Windows, ou en mémoire pour les tests.
 pub trait Vault: Send + Sync {
@@ -244,30 +239,27 @@ impl Store {
         Ok(id)
     }
 
-    /// Le verrou des écritures : créé en exclusif ; une autre application le tient : on attend un peu ; trop
-    /// vieux : abandonné, on le reprend.
+    /// Le verrou des écritures ; une autre application le tient : on attend un peu, puis on renonce.
     fn lock(&self) -> Result<Lock, String> {
         std::fs::create_dir_all(&self.dir).map_err(|e| format!("{} : {e}", self.dir.display()))?;
         let path = self.dir.join(LOCK);
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .map_err(|e| format!("{} : {e}", path.display()))?;
         let started = Instant::now();
         loop {
-            match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(_) => return Ok(Lock(path)),
-                // Windows : `PermissionDenied` pendant qu'un autre l'efface.
-                Err(e)
-                    if matches!(e.kind(), std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::PermissionDenied) =>
-                {
-                    let age = std::fs::metadata(&path).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok());
-                    if age.is_some_and(|a| a > LOCK_STALE) {
-                        let _ = std::fs::remove_file(&path);
-                        continue;
-                    }
-                    if started.elapsed() > LOCK_WAIT {
-                        return Err(format!("{} : comptes occupés par une autre application", self.path().display()));
-                    }
+            match file.try_lock() {
+                Ok(()) => return Ok(Lock(file)),
+                Err(std::fs::TryLockError::WouldBlock) if started.elapsed() <= LOCK_WAIT => {
                     std::thread::sleep(Duration::from_millis(5));
                 }
-                Err(e) => return Err(format!("{} : {e}", path.display())),
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    return Err(format!("{} : comptes occupés par une autre application", self.path().display()));
+                }
+                Err(std::fs::TryLockError::Error(e)) => return Err(format!("{} : {e}", path.display())),
             }
         }
     }
@@ -390,11 +382,53 @@ mod tests {
             w.join().unwrap();
         }
         assert_eq!(Store::new(dir.path(), vault).list().len(), 50, "aucune écriture perdue");
-        assert!(!dir.path().join("accounts.lock").exists(), "le verrou est rendu");
+        let lock = std::fs::File::options().write(true).open(dir.path().join("accounts.lock")).unwrap();
+        assert!(lock.try_lock().is_ok(), "le verrou est rendu");
+    }
+
+    /// Une application qui tient le verrou fait attendre les autres ; dès qu'elle le rend (ou que Windows le rend
+    /// pour elle, si elle meurt), l'écriture suivante passe.
+    #[test]
+    fn a_released_lock_is_taken_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let (s, _) = store(dir.path());
+        let held = std::fs::File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(dir.path().join("accounts.lock"))
+            .unwrap();
+        held.try_lock().unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            drop(held);
+        });
+        let started = std::time::Instant::now();
+        s.add(github("aaaaaaaaaaaaaaaa", "github.com", "ada"), "t").unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "pris dès qu'il est rendu");
+        release.join().unwrap();
+        assert_eq!(s.list().len(), 1);
     }
 
     #[test]
-    fn an_abandoned_lock_does_not_block_forever() {
+    fn a_held_lock_makes_a_writer_wait_then_fail() {
+        let dir = tempfile::tempdir().unwrap();
+        let (s, _) = store(dir.path());
+        let held = std::fs::File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(dir.path().join("accounts.lock"))
+            .unwrap();
+        held.try_lock().unwrap();
+        let e = s.add(github("aaaaaaaaaaaaaaaa", "github.com", "ada"), "t").unwrap_err();
+        assert!(e.contains("occupés"), "{e}");
+        assert!(s.list().is_empty());
+    }
+
+    /// Un fichier de verrou resté sur le disque (application tuée) ne bloque rien : seul le verrou de Windows compte.
+    #[test]
+    fn a_lock_file_left_behind_does_not_block() {
         let dir = tempfile::tempdir().unwrap();
         let (s, _) = store(dir.path());
         let lock = dir.path().join("accounts.lock");

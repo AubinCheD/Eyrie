@@ -11,6 +11,9 @@ la crate `crates/suite-accounts` ; DragonTree et Owlery en dépendent par chemin
 | La liste, sans jeton | `%APPDATA%\EyrieSuite\accounts.json` |
 | Les jetons | Gestionnaire d'identifiants de Windows, service **EyrieSuite**, utilisateur `account:<id>` |
 
+Deux applications qui écrivent en même temps passent l'une après l'autre : chaque écriture tient le verrou de Windows
+sur `accounts.lock` (5 s d'attente au plus), que Windows rend si l'application meurt pendant l'écriture.
+
 Le dossier se choisit ainsi :
 
 1. dans Eyrie, celui qu'Eyrie donne à ses modules (`Host::accounts_dir`, `StartOptions::accounts_dir` de DragonTree,
