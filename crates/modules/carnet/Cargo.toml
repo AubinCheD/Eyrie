@@ -1,0 +1,14 @@
+[package]
+name = "suite-carnet"
+description = "Carnet : notes par dépôt et journal du bus, module natif et gabarit de module"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+suite-sdk.workspace = true
+eframe.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+dirs.workspace = true

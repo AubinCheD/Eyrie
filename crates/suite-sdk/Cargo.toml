@@ -1,0 +1,25 @@
+[package]
+name = "suite-sdk"
+description = "Interface de module et services de l'hôte de la suite"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+eframe.workspace = true
+egui.workspace = true
+epaint.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+dirs.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_Security",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }

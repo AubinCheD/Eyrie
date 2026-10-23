@@ -8,30 +8,42 @@ Le raisonnement est dans `reflexions.md`, le constat technique dans `etat-des-li
 |---|---|
 | Dépôt créé (`git init`, branche `main`) | fait (22/10) |
 | État des lieux des six modules (audits en lecture seule) | fait (22/10) : `etat-des-lieux.md`, `audit/` |
-| Conception de l'intégration (questions ouvertes de `reflexions.md` §11) | en cours |
+| Conception de l'intégration (questions ouvertes de `reflexions.md` §11) | choix provisoires (23/10) : `premier-jet.md` §5 |
+| Premier jet de l'hôte, sans toucher au code des modules | fait (23/10) : `premier-jet.md`, `README.md` |
+
+## Fait dans le premier jet (23/10)
+
+- Hôte : cases `egui_tiles`, dispositions en un clic et nommées, une par configuration d'écrans,
+  fenêtres détachées (viewports immédiats), mode concentration, barre d'activité et pastilles, vue
+  d'ensemble, notifications, palette (F1), journal, ressources, réglages communs.
+- Bac à sable autour de chaque appel de module (style, polices, clavier, focus, commandes de
+  fenêtre, fermeture, visibilité, plantage) : `premier-jet.md` §4.
+- Crate commune `suite-sdk` : interface de module et services de l'hôte, adaptateur eframe, thèmes
+  de Fawkes en palette sémantique (contrastes testés), plan de polices, langue par catalogue de
+  domaine, raccourcis et conflits, état versionné, instance unique.
+- Les six modules embarqués sans changer leur code (Fawkes compilé depuis ses sources), plus Carnet,
+  module natif et gabarit (`ecrire-un-module.md`).
+- Instance : même verrou et même tube que chaque exe ; mode essai (dossiers d'état d'essai).
+- Comptes de la suite (coffre de Windows, partage compte par compte, import DragonTree/Owlery) ;
+  Owlery les lit déjà.
+- Tailscale : un nœud pour la suite, compagnon de Fawkes.
+- Contrat local en appel Rust par le bus (Owlery → Fawkes `ouvrir`).
+- Tests : SDK, hôte de bout en bout (egui_kittest), adaptateurs.
 
 ## Ensuite (proposé, ordre à valider)
 
-1. **Conception écrite** : `docs/superpowers/specs/<date>-integration-design.md`, relue, puis le plan
-   d'implémentation.
-2. **Essai jetable** de l'hôte avec de faux modules, pour vérifier tôt ce qui est risqué :
-   - `egui_tiles` : cases, onglets, grilles, glisser-déposer ;
-   - fenêtres détachées en viewports immédiats, rattachement, réveils ciblés ;
-   - filtrage du clavier par module actif (§7) ;
-   - `catch_unwind` autour d'un module qui panique.
-3. **Crate commune** : interface de module et services de l'hôte, palette sémantique et polices,
-   écriture atomique et état versionné (champs inconnus gardés), instance unique et tube (contrat
-   unifié), registre des raccourcis, notifications.
-4. **Intégration module par module**. Ordre proposé, du plus simple au plus lourd :
-   1. Grimoire (lib déjà pensée comme module) ;
-   2. Owlery (logique séparée, injection prévue) ;
-   3. Menagerie (sortir la supervision de `ui()`) ;
-   4. Patronus (identité de processus, Planificateur) ;
-   5. Fawkes (pas encore de `lib.rs`, procédure de fenêtre, polices) ;
-   6. DragonTree (le plus gros ; réglages à séparer).
-5. **Réglages communs** : thème, puis comptes (crate de forges commune, import), puis langue (catalogues
-   par module), puis Tailscale (nœud de la suite).
-6. **Actions croisées** entre modules, bus d'événements, contexte partagé.
+1. **Relecture du premier jet** et des choix provisoires (`premier-jet.md` §5).
+2. **Retouches dans les modules**, module par module et avec accord, pour lever les limites qui
+   restent (`premier-jet.md` §6), du plus rentable au plus coûteux :
+   1. un vrai `impl Module` dans chaque bibliothèque (plus besoin de l'API cachée d'eframe) ;
+   2. modales et fenêtres bornées à la case ;
+   3. palette de la suite (Patronus, Menagerie, Grimoire), langue de la suite (DragonTree) ;
+   4. raccourcis déclarés au registre, plus de clavier global ;
+   5. comptes et contexte partagé lus et publiés (DragonTree, Patronus, Fawkes, Owlery) ;
+   6. notifications par la suite (une seule icône), crochet d'arrêt de Windows (Fawkes).
+3. **Crate commune** étoffée à mesure que les modules en dépendent : forges et comptes
+   (`dragontree-forges` + `Owlery/src/forges`), écriture atomique, instance unique et tube unifié.
+4. **Actions croisées** : contexte partagé suivi par tous, Patronus sur les événements du bus.
 
 ## Chantiers à part
 

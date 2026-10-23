@@ -1,0 +1,12 @@
+[package]
+name = "suite-menagerie"
+description = "Menagerie dans la suite"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+suite-sdk.workspace = true
+menagerie.workspace = true
+eframe.workspace = true

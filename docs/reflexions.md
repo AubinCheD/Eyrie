@@ -20,7 +20,7 @@ Légende : **décidé** (choix de l'utilisateur), **proposé** (à valider), **o
 | 8 | Identité de processus : exe autonome et suite | proposé |
 | 9 | Organisation des dépôts | décidé pour l'instant, avis donné |
 | 10 | Idées en plus | proposé |
-| 11 | Questions ouvertes | ouvert |
+| 11 | Questions ouvertes | ouvert ; choix provisoires du premier jet dans `premier-jet.md` §5 |
 
 ## 1. La demande du 22/10
 
@@ -249,6 +249,9 @@ pèse trop.
   crate des échanges entre modules : *Floo* (le réseau des cheminées).
 
 ## 11. Questions ouvertes
+
+Le premier jet (23/10) a pris un choix provisoire pour chacune, pour avancer sans toucher aux
+modules : voir `premier-jet.md` §5. Ils restent à valider.
 
 Par ordre d'importance pour la conception :
 1. Unité de disposition : module entier ou vues de module ; un module deux fois (§5).

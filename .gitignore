@@ -3,3 +3,4 @@
 /.superpowers/
 /.claude/settings.local.json
 *.local.md
+/tools/*.exe

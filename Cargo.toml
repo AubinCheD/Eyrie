@@ -1,0 +1,57 @@
+[workspace]
+resolver = "3"
+members = ["crates/suite-sdk", "crates/superapp", "crates/modules/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+authors = ["SuperApp"]
+
+[workspace.dependencies]
+suite-sdk = { path = "crates/suite-sdk" }
+suite-carnet = { path = "crates/modules/carnet" }
+suite-fawkes = { path = "crates/modules/fawkes" }
+suite-dragontree = { path = "crates/modules/dragontree" }
+suite-patronus = { path = "crates/modules/patronus" }
+suite-owlery = { path = "crates/modules/owlery" }
+suite-menagerie = { path = "crates/modules/menagerie" }
+suite-grimoire = { path = "crates/modules/grimoire" }
+
+# Les modules, dans les dépôts voisins (lecture seule : la suite ne modifie pas leur code).
+dragontree-app = { path = "../DragonTree/crates/dragontree-app" }
+dragontree-i18n = { path = "../DragonTree/crates/dragontree-i18n" }
+dragontree-forges = { path = "../DragonTree/crates/dragontree-forges" }
+patronus-app = { path = "../Patronus/crates/patronus-app" }
+patronus-core = { path = "../Patronus/crates/patronus-core" }
+owlery = { path = "../Owlery" }
+menagerie = { path = "../Menagerie" }
+grimoire = { path = "../Grimoire" }
+
+# Une seule version d'egui pour toute la suite (rendu glow, comme chaque module).
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "clipboard", "accesskit"] }
+egui = "0.37"
+epaint = { version = "0.37", default-features = false, features = ["monochrome_emoji_fonts"] }
+egui_tiles = "0.18"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "7"
+image = { version = "0.25", default-features = false, features = ["png"] }
+keyring = "4"
+rfd = "0.17"
+raw-window-handle = "0.6"
+windows-sys = "0.61"
+
+[profile.dev]
+opt-level = 1
+
+# Les dépendances restent rapides en debug (émulateur de terminal de Fawkes, rendu, syntect).
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+strip = true
