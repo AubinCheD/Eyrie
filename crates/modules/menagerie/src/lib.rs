@@ -72,6 +72,7 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
         .title_badge(badge)
         .key_commands(commands())
         .settings_panel(|app, ui| app.settings_ui(ui))
+        .on_settings_left(|app| app.settings_left())
         // Ses couleurs suivent le thème clair ou sombre de la suite (sans toucher à son réglage).
         .before_logic(|app, cx| {
             let t = if cx.host.palette().dark { ThemeId::Dark } else { ThemeId::Light };

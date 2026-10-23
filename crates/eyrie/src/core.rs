@@ -227,6 +227,14 @@ pub fn settings(slot: &mut Slot, host: &Host, ui: &mut egui::Ui, wish: &WindowWi
     shown && slot.is_running()
 }
 
+/// Sa page de réglages quittée (`Module::settings_left`), dans le bac à sable comme ses autres appels.
+pub fn settings_left(slot: &mut Slot, host: &Host, ctx: &egui::Context, wish: &WindowWish, journal: &mut Journal) {
+    let SlotState::Running(module) = &mut slot.state else { return };
+    let policy = Policy { keyboard: false, visible: false, sees_close: false };
+    let observed = sandbox::call(ctx, policy, wish, || module.settings_left());
+    conclude(slot, host, CallKind::Other, journal, &observed);
+}
+
 /// Les conséquences d'un appel : statistiques, commandes de fenêtre relevées, style touché, plantage.
 fn conclude(slot: &mut Slot, host: &Host, kind: CallKind, journal: &mut Journal, observed: &Observed) {
     slot.stats.record(kind, observed);

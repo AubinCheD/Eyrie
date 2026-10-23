@@ -373,6 +373,16 @@ impl Suite {
         self.windows.iter().find(|w| settings::window_modules(&w.tree).iter().any(|m| m == module)).map(|w| w.id)
     }
 
+    /// La page de réglages d'un module, montrée à l'image précédente et plus à celle-ci (fenêtre fermée, autre page) :
+    /// il en est prévenu, et abandonne ce qu'elle avait en cours.
+    fn notice_settings_left(&mut self, ctx: &egui::Context) {
+        let Some(id) = self.shell.settings.take_left() else { return };
+        let Core { slots, host, wish, journal, .. } = &mut self.core;
+        if let Some(slot) = slots.iter_mut().find(|s| s.info.id == id) {
+            core::settings_left(slot, host, ctx, wish, journal);
+        }
+    }
+
     fn open_settings(&mut self, page: settings::Page, window: Option<u64>) {
         self.shell.settings.open = true;
         self.shell.settings.page = page;
@@ -638,13 +648,8 @@ impl Suite {
                     // reçoit alors la frappe de son raccourci.
                     self.shell.pending_commands.push((module, command));
                 }
-                Action::OpenSettings(page) => {
-                    let window = match &page {
-                        settings::Page::Module(id) => self.window_of(id),
-                        _ => None,
-                    };
-                    self.open_settings(page, window);
-                }
+                // Demandés dans la fenêtre principale (barre d'activité, palette, vue d'ensemble) : ouverts là.
+                Action::OpenSettings(page) => self.open_settings(page, None),
                 Action::OpenSettingsIn(page, window) => self.open_settings(page, window),
                 Action::TogglePalette => {
                     self.shell.palette.toggle();
@@ -769,8 +774,16 @@ impl Suite {
                 ctx.send_viewport_cmd(ViewportCommand::Focus);
             }
         }
-        if let Some(page) = out.settings {
-            self.core.act(Action::OpenSettings(settings::Page::from_key(&page)));
+        if let Some(key) = out.settings {
+            // Demandés par un module : là où il est. Sa page, dans sa fenêtre ; une page d'Eyrie (« Comptes… »),
+            // dans la fenêtre du module qui a le clavier.
+            let page = settings::Page::from_key(&key);
+            let module = match &page {
+                settings::Page::Module(id) => Some(id.clone()),
+                _ => self.core.focus.module.clone(),
+            };
+            let window = module.and_then(|m| self.window_of(&m));
+            self.core.act(Action::OpenSettingsIn(page, window));
         }
         if !out.attention.is_empty() {
             ctx.send_viewport_cmd(ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
@@ -1147,6 +1160,7 @@ impl eframe::App for Suite {
         crate::windows::show_all(self, &ctx, frame);
         self.hidden_ui(ui, frame);
         crate::shell::overlays(self, &ctx, frame);
+        self.notice_settings_left(&ctx);
         self.finish_close_step(&ctx);
         self.process_actions(&ctx);
         self.core.shown_prev = std::mem::take(&mut self.core.shown);

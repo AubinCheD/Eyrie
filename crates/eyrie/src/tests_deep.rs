@@ -368,3 +368,41 @@ fn real_modules_show_their_settings_in_eyrie() {
         assert_eq!(st.page, crate::settings::Page::Module(id.into()), "{id} : sur sa page");
     }
 }
+
+/// Un raccourci en cours de saisie dans la page d'un module réel est abandonné quand la page est quittée : sinon la
+/// frappe suivante, dans sa case (le terminal de Fawkes), deviendrait ce raccourci.
+#[test]
+#[ignore = "lent : les sept modules réels ; à lancer seul"]
+fn real_modules_forget_an_unfinished_shortcut_when_their_page_is_left() {
+    use egui_kittest::kittest::Queryable;
+    let (mut h, _dir) = real_suite("saisie");
+    h.run_steps(10);
+    // Owlery range ses raccourcis dans une section repliée : la déplier d'abord (le dernier « Raccourcis » : celui de
+    // la page, après celui de la navigation d'Eyrie).
+    for (id, waiting, unfold) in
+        [("fawkes", "Appuyez…", None), ("owlery", "Appuyez… (Échap : annuler)", Some("Raccourcis"))]
+    {
+        let page = crate::settings::Page::Module(id.into());
+        h.state_mut().core.act(Action::OpenSettings(page.clone()));
+        h.run_steps(4);
+        if let Some(section) = unfold {
+            h.query_all_by_label(section)
+                .last()
+                .unwrap_or_else(|| panic!("{id} : section {section}"))
+                .click_accesskit();
+            h.run_steps(3);
+        }
+        // Un emplacement libre (« — ») : cliquer lance la saisie.
+        h.query_all_by_role_and_label(egui::accesskit::Role::Button, "—")
+            .next()
+            .unwrap_or_else(|| panic!("{id} : un raccourci libre"))
+            .click_accesskit();
+        h.run_steps(3);
+        assert!(h.query_by_label(waiting).is_some(), "{id} : saisie lancée");
+        h.state_mut().core.act(Action::OpenSettings(crate::settings::Page::General));
+        h.run_steps(3);
+        h.state_mut().core.act(Action::OpenSettings(page));
+        h.run_steps(3);
+        assert!(h.query_by_label(waiting).is_none(), "{id} : page quittée, saisie abandonnée");
+    }
+}

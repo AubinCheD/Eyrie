@@ -102,6 +102,7 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
             .title_badge(badge)
             .key_commands(commands())
             .settings_panel(|app, ui| app.settings_ui(ui))
+            .on_settings_left(|app| app.settings_left())
             .keep(guard)
             .keep(tray),
     ))

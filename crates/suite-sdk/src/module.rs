@@ -153,6 +153,10 @@ pub trait Module {
         false
     }
 
+    /// Sa page de réglages n'est plus montrée (fenêtre fermée, autre page) : une saisie en cours y est abandonnée, un
+    /// brouillon non enregistré oublié, comme à la fermeture de sa propre fenêtre de réglages.
+    fn settings_left(&mut self) {}
+
     /// Un événement publié par un autre module (ou par l'hôte) sur le bus.
     fn on_event(&mut self, _event: &Event, _cx: &mut Cx) {}
 

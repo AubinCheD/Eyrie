@@ -41,7 +41,6 @@ fn commands() -> Vec<KeyCommand> {
         KeyCommand::new("preferences", "Préférences de Grimoire", "Ctrl+,"),
         KeyCommand::new("instructions", "Onglet Instructions", "Ctrl+1"),
         KeyCommand::new("reglages", "Onglet Réglages", "Ctrl+2"),
-        KeyCommand::new("preferences", "Préférences de Grimoire", "Ctrl+,"),
         KeyCommand::new("skills", "Onglet Skills", "Ctrl+3"),
         KeyCommand::new("crochets", "Onglet Crochets", "Ctrl+4"),
         KeyCommand::new("mcp", "Onglet MCP", "Ctrl+5"),
@@ -77,6 +76,7 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
         .hidden_ui(true)
         .key_commands(commands())
         .settings_panel(|app, ui| app.settings_ui(ui))
+        .on_settings_left(|app| app.settings_left())
         // Ses couleurs suivent le thème clair ou sombre de la suite (sans toucher à son réglage).
         .before_logic(|app, cx| {
             let t = if cx.host.palette().dark { ThemeId::Sombre } else { ThemeId::Clair };
@@ -84,4 +84,17 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
         })
         .keep(guard);
     Ok(Box::new(module))
+}
+
+#[cfg(test)]
+mod tests {
+    /// Une commande par identifiant : sinon deux entrées dans la palette, et deux fois le même raccourci au registre.
+    #[test]
+    fn commands_are_unique() {
+        let ids: Vec<&str> = super::commands().iter().map(|k| k.id).collect();
+        let mut sorted = ids.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), ids.len(), "en double : {ids:?}");
+    }
 }

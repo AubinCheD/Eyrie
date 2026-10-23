@@ -31,6 +31,13 @@ pub enum Page {
 }
 
 impl SettingsState {
+    /// À la fin de l'image : le module dont la page était montrée à l'image précédente et ne l'est plus.
+    pub fn take_left(&mut self) -> Option<String> {
+        let now = self.drawn.take();
+        let before = std::mem::replace(&mut self.shown, now);
+        before.filter(|b| self.shown.as_deref() != Some(b.as_str()))
+    }
+
     /// Le compte saisi a été ajouté : le formulaire oublie le jeton (et le reste).
     pub fn clear_new_account(&mut self) {
         self.new_token.clear();
@@ -69,6 +76,9 @@ pub struct SettingsState {
     confirm_remove: Option<String>,
     /// Fenêtre détachée où les réglages s'affichent (limités à Eyrie et à ses modules) ; `None` : la principale.
     pub window: Option<u64>,
+    /// Module dont la page est dessinée à cette image, et à la précédente (voir `take_left`).
+    drawn: Option<String>,
+    shown: Option<String>,
 }
 
 impl Default for SettingsState {
@@ -84,6 +94,8 @@ impl Default for SettingsState {
             tailnet_host: None,
             confirm_remove: None,
             window: None,
+            drawn: None,
+            shown: None,
         }
     }
 }
@@ -669,6 +681,7 @@ fn module_page(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui, id: &str) {
         section(ui, tr("Réglages"));
         let host = suite.core.host.clone();
         let shown = crate::core::settings(s, &host, ui, &suite.core.wish, &mut suite.core.journal);
+        suite.shell.settings.drawn = Some(id.to_string());
         let has_command = s.module().is_some_and(|m| m.commands().iter().any(|c| c.id == "reglages"));
         if !shown && has_command {
             // Un module sans page de réglages ici : les siens s'ouvrent dans sa case.

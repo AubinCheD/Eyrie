@@ -138,14 +138,16 @@ Pris pour pouvoir avancer ; tous se changent sans reprendre l'architecture.
    dispositions en un clic produisent un arbre (tout en onglets, côte à côte, empilés, grille, un
    grand + pile). Dispositions nommées proposées d'office : Dev (DragonTree, Fawkes), Revue (Owlery,
    DragonTree), Exploitation (Menagerie, Fawkes, Patronus).
-3. **Menus : chaque module garde les siens dans sa case.** La suite a sa barre (Suite, Affichage,
+3. **Menus : chaque module garde les siens dans sa case.** Eyrie a sa barre (Eyrie, Affichage,
    Modules, Aide) ; chaque barre d'onglets a un menu ⋯ (détacher, agrandir, vues, commandes du module,
    fermer la case).
 4. **Exe autonome déjà ouvert : la suite démarre sans ce module** et propose de le fermer (`WM_CLOSE`
    poli : l'exe garde la main pour enregistrer), puis Réessayer. Jamais sans demander.
 5. **Réglages homogénéisés : imposés dans la suite, là où le module sait les suivre.** La case
    « Suivre les réglages de la suite » dans chaque exe autonome demanderait de toucher aux modules :
-   pas dans ce premier jet.
+   pas dans ce premier jet. Depuis l'étape 2 (23/10/2026), les réglages de chaque module sont une page
+   des réglages d'Eyrie (une fenêtre détachée ne montre que les siens), sans ce qu'Eyrie règle pour
+   tous (thème, langue, zoom, démarrage de Windows) ; lancé seul, chacun garde sa fenêtre.
 6. **Langue : la suite en français et en anglais.** La traduction des cinq modules non traduits reste
    un chantier à part.
 7. **Comptes : communs à toute la suite** (décidé le 23/10/2026, `docs/comptes.md`). Eyrie, DragonTree

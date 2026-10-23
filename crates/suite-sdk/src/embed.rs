@@ -41,6 +41,7 @@ type RequestHook<A> = Box<dyn FnMut(&mut A, &Request, &mut Cx) -> Result<serde_j
 type TitleParser = fn(&str) -> Option<Badge>;
 type EventHook<A> = Box<dyn FnMut(&mut A, &crate::host::Event, &mut Cx)>;
 type PanelHook<A> = Box<dyn FnMut(&mut A, &mut egui::Ui)>;
+type LeftHook<A> = Box<dyn FnMut(&mut A)>;
 
 /// Une application eframe vue comme un module.
 pub struct Embedded<A: eframe::App> {
@@ -64,6 +65,7 @@ pub struct Embedded<A: eframe::App> {
     close_hook: Option<CloseHook<A>>,
     request_hook: Option<RequestHook<A>>,
     settings_panel: Option<PanelHook<A>>,
+    settings_left: Option<LeftHook<A>>,
     keep: Vec<Box<dyn Any>>,
 }
 
@@ -88,6 +90,7 @@ impl<A: eframe::App> Embedded<A> {
             close_hook: None,
             request_hook: None,
             settings_panel: None,
+            settings_left: None,
             keep: Vec::new(),
         }
     }
@@ -101,6 +104,12 @@ impl<A: eframe::App> Embedded<A> {
     /// Ses réglages, dessinés dans la page que l'hôte lui donne dans ses propres réglages (`Module::settings_ui`).
     pub fn settings_panel(mut self, f: impl FnMut(&mut A, &mut egui::Ui) + 'static) -> Self {
         self.settings_panel = Some(Box::new(f));
+        self
+    }
+
+    /// Sa page dans les réglages de l'hôte a été quittée (`Module::settings_left`).
+    pub fn on_settings_left(mut self, f: impl FnMut(&mut A) + 'static) -> Self {
+        self.settings_left = Some(Box::new(f));
         self
     }
 
@@ -241,6 +250,12 @@ impl<A: eframe::App> Module for Embedded<A> {
         }
     }
 
+    fn settings_left(&mut self) {
+        if let Some(f) = &mut self.settings_left {
+            f(&mut self.app);
+        }
+    }
+
     fn run_command(&mut self, id: &str, _cx: &mut Cx) {
         if let Some(k) = self.keys.iter().find(|k| k.id == id) {
             self.pending.extend(k.shortcut.to_events());
@@ -344,6 +359,17 @@ mod tests {
             assert!(tuned.settings_ui(ui, &host));
         });
         assert_eq!(tuned.app.drawn, 1);
+    }
+
+    #[test]
+    fn embedded_settings_left_reaches_the_app() {
+        let host = Host::new(egui::Context::default(), std::env::temp_dir(), crate::theme::ThemeChoice::Graphite);
+        let mut plain = Embedded::new(info(), host.clone(), Dummy { drawn: 0 });
+        let mut tuned = Embedded::new(info(), host, Dummy { drawn: 3 }).on_settings_left(|app| app.drawn = 0);
+        plain.settings_left();
+        tuned.settings_left();
+        assert_eq!(plain.app.drawn, 0);
+        assert_eq!(tuned.app.drawn, 0, "le module a oublié ce que sa page avait en cours");
     }
 
     #[test]

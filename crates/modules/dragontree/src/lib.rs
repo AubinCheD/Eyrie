@@ -106,6 +106,7 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
     let module = Embedded::new(info(), bcx.host.clone(), app)
         .key_commands(commands())
         .settings_panel(|app, ui| app.settings_ui(ui))
+        .on_settings_left(|app| app.settings_left())
         .after_logic(move |app, cx| {
             let now = app.active_repo_dir().map(|p| p.to_path_buf());
             if now != published {

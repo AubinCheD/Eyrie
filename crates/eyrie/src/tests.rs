@@ -411,6 +411,10 @@ impl Module for Tuned {
         draw_tuned_settings(ui);
         true
     }
+
+    fn settings_left(&mut self) {
+        RUN.with(|r| r.borrow_mut().push("page quittée".into()));
+    }
 }
 
 fn tuned_info() -> ModuleInfo {
@@ -507,20 +511,64 @@ fn settings_of_a_detached_window_list_only_its_modules() {
     assert_eq!(crate::settings::window_modules(&tree), ["carnet"]);
 }
 
-#[test]
-fn a_module_opens_its_settings_page_where_it_is() {
-    let mut h = suite();
-    act(&mut h, Action::Detach(notes()));
-    // Plus aucune case de Carnet dans la fenêtre principale : il n'est que dans la fenêtre détachée.
+/// Carnet n'est plus que dans une fenêtre détachée (aucune case dans la principale) : son identifiant.
+fn carnet_only_in_a_detached_window(h: &mut Harness<'static, Suite>) -> u64 {
+    act(h, Action::Detach(notes()));
     let in_main: Vec<Pane> = layout::panes(&h.state().main)
         .into_iter()
         .map(|(_, p)| p)
         .filter(|p| p.module_id() == Some("carnet"))
         .collect();
     for pane in in_main {
-        act(&mut h, Action::ClosePane(pane));
+        act(h, Action::ClosePane(pane));
     }
-    let window = h.state().windows.first().map(|w| w.id).expect("une fenêtre détachée");
+    h.state().windows.first().map(|w| w.id).expect("une fenêtre détachée")
+}
+
+#[test]
+fn leaving_a_module_settings_page_tells_the_module() {
+    let mut h = suite();
+    add_slot(&mut h, tuned_info(), build_tuned);
+    let left = || RUN.with(|r| r.borrow().iter().filter(|c| *c == "page quittée").count());
+    act(&mut h, Action::OpenSettings(crate::settings::Page::Module("regle".into())));
+    h.run_steps(2);
+    assert_eq!(left(), 0, "page montrée : rien à abandonner");
+    act(&mut h, Action::OpenSettings(crate::settings::Page::General));
+    assert_eq!(left(), 1, "autre page : le module abandonne sa saisie et son brouillon");
+    act(&mut h, Action::OpenSettings(crate::settings::Page::Module("regle".into())));
+    h.state_mut().shell.settings.open = false;
+    h.run_steps(3);
+    assert_eq!(left(), 2, "fenêtre fermée : aussi");
+}
+
+/// La barre d'activité, la palette et la vue d'ensemble de la fenêtre principale passent par `Action::OpenSettings`.
+#[test]
+fn settings_asked_in_the_main_window_open_there() {
+    let mut h = suite();
+    carnet_only_in_a_detached_window(&mut h);
+    act(&mut h, Action::OpenSettings(crate::settings::Page::Module("carnet".into())));
+    let st = &h.state().shell.settings;
+    assert!(st.open);
+    assert_eq!(st.page, crate::settings::Page::Module("carnet".into()));
+    assert_eq!(st.window, None, "demandés dans la principale : ouverts dans la principale");
+}
+
+#[test]
+fn a_detached_module_opens_the_accounts_page_where_it_is() {
+    let mut h = suite();
+    let window = carnet_only_in_a_detached_window(&mut h);
+    h.state_mut().core.focus.module = Some("carnet".into());
+    h.state().core.host.open_settings("comptes");
+    h.run_steps(3);
+    let st = &h.state().shell.settings;
+    assert_eq!(st.page, crate::settings::Page::Accounts);
+    assert_eq!(st.window, Some(window), "« Comptes… » depuis sa fenêtre : dans sa fenêtre");
+}
+
+#[test]
+fn a_module_opens_its_settings_page_where_it_is() {
+    let mut h = suite();
+    let window = carnet_only_in_a_detached_window(&mut h);
     h.state().core.host.open_settings("module:carnet");
     h.run_steps(3);
     let st = &h.state().shell.settings;

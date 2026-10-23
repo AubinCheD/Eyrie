@@ -82,6 +82,22 @@ fn suite_theme_of(host: &suite_sdk::Host) -> FawkesTheme {
     fawkes_theme(id)
 }
 
+/// `draw` dans le thème d'Eyrie : le réglage de Fawkes (`theme_of`) et sa palette active (`theme::p()`, que lisent ses
+/// widgets) le valent le temps de l'appel, puis sont rendus.
+fn in_suite_theme<T>(
+    target: &mut T,
+    theme_of: fn(&mut T) -> &mut FawkesTheme,
+    suite: FawkesTheme,
+    draw: impl FnOnce(&mut T),
+) {
+    let own = std::mem::replace(theme_of(target), suite);
+    let active = fawkes::theme::current();
+    fawkes::theme::set(suite);
+    draw(target);
+    *theme_of(target) = own;
+    fawkes::theme::set(active);
+}
+
 /// Les sessions Claude qui attendent une réponse.
 fn status(app: &App, base: &ModuleStatus) -> ModuleStatus {
     let mut s = base.clone();
@@ -164,11 +180,9 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
         .key_commands(commands())
         // Sa page dans les réglages d'Eyrie, aux couleurs d'Eyrie comme son affichage.
         .settings_panel(move |app, ui| {
-            let own = app.st.settings.theme;
-            app.st.settings.theme = suite_theme_of(&panel_host);
-            app.settings_ui(ui);
-            app.st.settings.theme = own;
+            in_suite_theme(app, |a| &mut a.st.settings.theme, suite_theme_of(&panel_host), |a| a.settings_ui(ui));
         })
+        .on_settings_left(|app| app.settings_left())
         .status(status)
         .on_request(on_request)
         // Contexte partagé : le groupe lié à ce dépôt devient le groupe affiché.
@@ -215,6 +229,21 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
 
 #[cfg(test)]
 mod tests {
+    use super::FawkesTheme;
+
+    /// Sa page se dessine avec la palette active (`theme::p()`), pas seulement son réglage : les deux valent le thème
+    /// d'Eyrie le temps de la page, même si sa case n'a pas encore été dessinée, puis sont rendus.
+    #[test]
+    fn the_settings_page_is_drawn_in_the_suite_theme() {
+        use fawkes::theme;
+        let mut setting = FawkesTheme::Fluent;
+        theme::set(FawkesTheme::Fluent);
+        let mut seen = None;
+        super::in_suite_theme(&mut setting, |t| t, FawkesTheme::Graphite, |t| seen = Some((*t, theme::current())));
+        assert_eq!(seen, Some((FawkesTheme::Graphite, FawkesTheme::Graphite)), "réglage et palette d'Eyrie");
+        assert_eq!((setting, theme::current()), (FawkesTheme::Fluent, FawkesTheme::Fluent), "rendus ensuite");
+    }
+
     #[test]
     fn same_lock_as_the_exe() {
         assert_eq!(super::instance_name(None), r"Local\Fawkes-single-instance");
