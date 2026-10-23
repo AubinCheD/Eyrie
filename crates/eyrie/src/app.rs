@@ -56,7 +56,10 @@ pub enum Action {
         module: String,
         command: String,
     },
+    /// Ouvre les réglages ; ceux d'un module, dans la fenêtre où il est.
     OpenSettings(settings::Page),
+    /// Ouvre les réglages dans une fenêtre donnée (`None` : la principale), limités à ses modules si elle est détachée.
+    OpenSettingsIn(settings::Page, Option<u64>),
     TogglePalette,
     SetTheme(ThemeChoice),
     SetLang(Option<Lang>),
@@ -361,6 +364,22 @@ impl Suite {
         suite
     }
 
+    /// La fenêtre détachée qui montre ce module (`None` : la principale, ou nulle part).
+    fn window_of(&self, module: &str) -> Option<u64> {
+        let in_main = layout::panes(&self.main).iter().any(|(_, p)| p.module_id() == Some(module));
+        if in_main {
+            return None;
+        }
+        self.windows.iter().find(|w| settings::window_modules(&w.tree).iter().any(|m| m == module)).map(|w| w.id)
+    }
+
+    fn open_settings(&mut self, page: settings::Page, window: Option<u64>) {
+        self.shell.settings.open = true;
+        self.shell.settings.page = page;
+        self.shell.settings.window = window.filter(|id| self.windows.iter().any(|w| w.id == *id));
+        self.core.focus.module = None;
+    }
+
     /// Prépare la scène d'une capture d'essai (`EYRIE_CAPTURE_SCENE`).
     fn capture_scene(&mut self, scene: &str) {
         let first =
@@ -620,10 +639,13 @@ impl Suite {
                     self.shell.pending_commands.push((module, command));
                 }
                 Action::OpenSettings(page) => {
-                    self.shell.settings.open = true;
-                    self.shell.settings.page = page;
-                    self.core.focus.module = None;
+                    let window = match &page {
+                        settings::Page::Module(id) => self.window_of(id),
+                        _ => None,
+                    };
+                    self.open_settings(page, window);
                 }
+                Action::OpenSettingsIn(page, window) => self.open_settings(page, window),
                 Action::TogglePalette => {
                     self.shell.palette.toggle();
                     if self.shell.palette.open {

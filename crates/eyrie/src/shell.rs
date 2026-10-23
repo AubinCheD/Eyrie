@@ -506,7 +506,18 @@ fn status_bar(suite: &mut Suite, ui: &mut egui::Ui) {
 
 pub fn overlays(suite: &mut Suite, ctx: &egui::Context, _frame: &mut eframe::Frame) {
     palette::show(suite, ctx);
-    settings::show(suite, ctx);
+    // Les réglages demandés dans une fenêtre détachée disparue reviennent dans la principale.
+    if let Some(id) = suite.shell.settings.window
+        && !suite.windows.iter().any(|w| w.id == id)
+    {
+        suite.shell.settings.window = None;
+    }
+    if suite.shell.settings.window.is_none() {
+        settings::show(
+            &mut settings::SettingsCx { core: &mut suite.core, shell: &mut suite.shell, modules: None },
+            ctx,
+        );
+    }
     toasts(suite, ctx);
     close_dialog(suite, ctx);
     save_layout_dialog(suite, ctx);

@@ -210,9 +210,30 @@ pub fn call(
     let SlotState::Running(module) = &mut slot.state else { return None };
     let mut cx = Cx { host, frame, active: policy.keyboard, visible: policy.visible };
     let observed = sandbox::call(ctx, policy, wish, || f(module.as_mut(), &mut cx));
-    slot.stats.record(kind, &observed);
+    conclude(slot, host, kind, journal, &observed);
+    Some(observed)
+}
+
+/// Dessine la page de réglages d'un module dans `ui` (réglages d'Eyrie), dans le bac à sable comme ses autres appels :
+/// une panique l'arrête, lui seul. Vrai s'il a une page.
+pub fn settings(slot: &mut Slot, host: &Host, ui: &mut egui::Ui, wish: &WindowWish, journal: &mut Journal) -> bool {
+    let SlotState::Running(module) = &mut slot.state else { return false };
+    let ctx = ui.ctx().clone();
+    let mut shown = false;
+    // Les champs de ses réglages reçoivent le clavier : la fenêtre de réglages l'a.
+    let policy = Policy { keyboard: true, visible: true, sees_close: false };
+    let observed = sandbox::call(&ctx, policy, wish, || shown = module.settings_ui(ui, host));
+    conclude(slot, host, CallKind::Other, journal, &observed);
+    shown && slot.is_running()
+}
+
+/// Les conséquences d'un appel : statistiques, commandes de fenêtre relevées, style touché, plantage.
+fn conclude(slot: &mut Slot, host: &Host, kind: CallKind, journal: &mut Journal, observed: &Observed) {
+    slot.stats.record(kind, observed);
     if !observed.commands.is_empty() {
-        module.observe_viewport_commands(&observed.commands);
+        if let SlotState::Running(module) = &mut slot.state {
+            module.observe_viewport_commands(&observed.commands);
+        }
         for c in &observed.commands {
             let what: Option<(&'static str, &'static str)> = match c {
                 egui::ViewportCommand::Title(_) => Some((
@@ -262,7 +283,6 @@ pub fn call(
         ));
         slot.state = SlotState::Crashed(msg.clone());
     }
-    Some(observed)
 }
 
 /// Les raisons de ne pas fermer tout de suite.

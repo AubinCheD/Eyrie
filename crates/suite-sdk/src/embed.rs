@@ -40,6 +40,7 @@ type CloseHook<A> = Box<dyn FnMut(&mut A) -> CloseCheck>;
 type RequestHook<A> = Box<dyn FnMut(&mut A, &Request, &mut Cx) -> Result<serde_json::Value, String>>;
 type TitleParser = fn(&str) -> Option<Badge>;
 type EventHook<A> = Box<dyn FnMut(&mut A, &crate::host::Event, &mut Cx)>;
+type PanelHook<A> = Box<dyn FnMut(&mut A, &mut egui::Ui)>;
 
 /// Une application eframe vue comme un module.
 pub struct Embedded<A: eframe::App> {
@@ -62,6 +63,7 @@ pub struct Embedded<A: eframe::App> {
     status_hook: Option<StatusHook<A>>,
     close_hook: Option<CloseHook<A>>,
     request_hook: Option<RequestHook<A>>,
+    settings_panel: Option<PanelHook<A>>,
     keep: Vec<Box<dyn Any>>,
 }
 
@@ -85,6 +87,7 @@ impl<A: eframe::App> Embedded<A> {
             status_hook: None,
             close_hook: None,
             request_hook: None,
+            settings_panel: None,
             keep: Vec::new(),
         }
     }
@@ -92,6 +95,12 @@ impl<A: eframe::App> Embedded<A> {
     /// Le travail de fond de l'application est resté dans `ui` : l'hôte l'appelle même masquée.
     pub fn hidden_ui(mut self, yes: bool) -> Self {
         self.hidden_ui = yes;
+        self
+    }
+
+    /// Ses réglages, dessinés dans la page que l'hôte lui donne dans ses propres réglages (`Module::settings_ui`).
+    pub fn settings_panel(mut self, f: impl FnMut(&mut A, &mut egui::Ui) + 'static) -> Self {
+        self.settings_panel = Some(Box::new(f));
         self
     }
 
@@ -222,6 +231,16 @@ impl<A: eframe::App> Module for Embedded<A> {
             .collect()
     }
 
+    fn settings_ui(&mut self, ui: &mut egui::Ui, _host: &Host) -> bool {
+        match &mut self.settings_panel {
+            Some(draw) => {
+                draw(&mut self.app, ui);
+                true
+            }
+            None => false,
+        }
+    }
+
     fn run_command(&mut self, id: &str, _cx: &mut Cx) {
         if let Some(k) = self.keys.iter().find(|k| k.id == id) {
             self.pending.extend(k.shortcut.to_events());
@@ -292,6 +311,40 @@ pub fn first_number(text: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Dummy {
+        drawn: u32,
+    }
+
+    impl eframe::App for Dummy {
+        fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {}
+    }
+
+    fn info() -> ModuleInfo {
+        ModuleInfo {
+            id: "factice",
+            name: "Factice",
+            icon: "?",
+            color: egui::Color32::GRAY,
+            summary: "essai",
+            origin: crate::module::Origin::Native,
+        }
+    }
+
+    #[test]
+    fn embedded_settings_panel_is_drawn() {
+        let host = Host::new(egui::Context::default(), std::env::temp_dir(), crate::theme::ThemeChoice::Graphite);
+        let mut plain = Embedded::new(info(), host.clone(), Dummy { drawn: 0 });
+        let mut tuned = Embedded::new(info(), host.clone(), Dummy { drawn: 0 }).settings_panel(|app, ui| {
+            app.drawn += 1;
+            ui.label("réglages du module");
+        });
+        egui::__run_test_ui(|ui| {
+            assert!(!plain.settings_ui(ui, &host), "sans panneau : aucune page");
+            assert!(tuned.settings_ui(ui, &host));
+        });
+        assert_eq!(tuned.app.drawn, 1);
+    }
 
     #[test]
     fn numbers_in_titles() {

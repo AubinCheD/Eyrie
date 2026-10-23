@@ -10,6 +10,7 @@ use crate::i18n::tr;
 use crate::layout::{self, Pane};
 use crate::persist::SavedWindow;
 use crate::sandbox::WindowWish;
+use crate::settings;
 use crate::tiles::SuiteTiles;
 
 pub struct Detached {
@@ -64,7 +65,7 @@ fn title(suite_core: &crate::app::Core, tree: &Tree<Pane>) -> String {
 }
 
 pub fn show_all(suite: &mut Suite, ctx: &egui::Context, frame: &mut eframe::Frame) {
-    let Suite { core, windows, .. } = suite;
+    let Suite { core, windows, shell, .. } = suite;
     let mut closed = Vec::new();
     for w in windows.iter_mut() {
         let title = title(core, &w.tree);
@@ -106,6 +107,13 @@ pub fn show_all(suite: &mut Suite, ctx: &egui::Context, frame: &mut eframe::Fram
                             {
                                 core.act(Action::AttachWindow(w.id));
                             }
+                            // Les réglages d'Eyrie et ceux des seuls modules de cette fenêtre.
+                            if ui.small_button(format!("⚙ {}", tr("Réglages"))).clicked() {
+                                let page = settings::window_modules(&w.tree)
+                                    .first()
+                                    .map_or(settings::Page::General, |m| settings::Page::Module(m.clone()));
+                                core.act(Action::OpenSettingsIn(page, Some(w.id)));
+                            }
                         });
                     });
                 });
@@ -120,6 +128,10 @@ pub fn show_all(suite: &mut Suite, ctx: &egui::Context, frame: &mut eframe::Fram
                     };
                     w.tree.ui(&mut tiles, ui);
                 });
+            if shell.settings.open && shell.settings.window == Some(w.id) {
+                let modules = Some(settings::window_modules(&w.tree));
+                settings::show(&mut settings::SettingsCx { core: &mut *core, shell: &mut *shell, modules }, &vctx);
+            }
         });
         // Dernier onglet fermé : la fenêtre n'a plus lieu d'être.
         if w.tree.is_empty() {

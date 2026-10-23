@@ -406,6 +406,11 @@ impl Module for Tuned {
     fn run_command(&mut self, id: &str, _cx: &mut Cx) {
         RUN.with(|r| r.borrow_mut().push(id.to_string()));
     }
+
+    fn settings_ui(&mut self, ui: &mut egui::Ui, _host: &suite_sdk::Host) -> bool {
+        draw_tuned_settings(ui);
+        true
+    }
 }
 
 fn tuned_info() -> ModuleInfo {
@@ -423,22 +428,105 @@ fn build_tuned(_: &suite_sdk::BuildCx) -> Result<Box<dyn Module>, suite_sdk::Una
     Ok(Box::new(Tuned { info: tuned_info() }))
 }
 
+/// Le module dessine ses réglages dans la page que lui donne Eyrie.
+fn draw_tuned_settings(ui: &mut egui::Ui) {
+    ui.label("réglage-témoin");
+}
+
+fn add_slot(
+    h: &mut Harness<'static, Suite>,
+    info: ModuleInfo,
+    build: fn(&suite_sdk::BuildCx) -> Result<Box<dyn Module>, suite_sdk::Unavailable>,
+) {
+    let ctx = h.ctx.clone();
+    let s = h.state_mut();
+    let mut slot = Slot::new(info, build);
+    let cc = eframe::CreationContext::_new_kittest(ctx);
+    slot.start(&cc, &s.core.host, suite_sdk::DataMode::Shared, &mut s.core.journal);
+    s.core.slots.push(slot);
+}
+
 #[test]
-fn module_page_offers_its_settings_command() {
+fn module_page_draws_the_module_settings() {
     use egui_kittest::kittest::Queryable;
     let mut h = suite();
-    let ctx = h.ctx.clone();
-    {
-        let s = h.state_mut();
-        let mut slot = Slot::new(tuned_info(), build_tuned);
-        let cc = eframe::CreationContext::_new_kittest(ctx);
-        slot.start(&cc, &s.core.host, suite_sdk::DataMode::Shared, &mut s.core.journal);
-        s.core.slots.push(slot);
-    }
+    add_slot(&mut h, tuned_info(), build_tuned);
     act(&mut h, Action::OpenSettings(crate::settings::Page::Module("regle".into())));
-    h.get_by_label(&crate::settings::module_settings_label("Réglé")).click();
-    h.run_steps(4);
-    assert_eq!(RUN.with(|r| r.borrow().clone()), ["reglages"]);
+    assert!(h.query_by_label("réglage-témoin").is_some(), "les réglages du module sont dans ceux d'Eyrie");
+}
+
+/// Un module dont le panneau de réglages panique.
+struct Fragile {
+    info: ModuleInfo,
+}
+
+impl Module for Fragile {
+    fn info(&self) -> &ModuleInfo {
+        &self.info
+    }
+
+    fn logic(&mut self, _ctx: &egui::Context, _cx: &mut Cx) {}
+
+    fn ui(&mut self, _ui: &mut egui::Ui, _view: &str, _cx: &mut Cx) {}
+
+    fn settings_ui(&mut self, ui: &mut egui::Ui, _host: &suite_sdk::Host) -> bool {
+        ui.ctx().set_visuals(egui::Visuals::light());
+        panic!("réglages cassés");
+    }
+}
+
+fn fragile_info() -> ModuleInfo {
+    ModuleInfo { id: "fragile", name: "Fragile", ..tuned_info() }
+}
+
+fn build_fragile(_: &suite_sdk::BuildCx) -> Result<Box<dyn Module>, suite_sdk::Unavailable> {
+    Ok(Box::new(Fragile { info: fragile_info() }))
+}
+
+#[test]
+fn a_panicking_settings_panel_stops_only_its_module() {
+    crate::sandbox::install_panic_hook();
+    let mut h = suite();
+    add_slot(&mut h, fragile_info(), build_fragile);
+    act(&mut h, Action::OpenSettings(crate::settings::Page::Module("fragile".into())));
+    let s = h.state();
+    assert!(matches!(s.core.slot("fragile").unwrap().state, SlotState::Crashed(_)));
+    assert!(s.core.slot("carnet").unwrap().is_running());
+    assert!(s.shell.settings.open, "les réglages d'Eyrie restent ouverts");
+    assert!(h.ctx.global_style().visuals.dark_mode, "le style d'Eyrie est rétabli");
+}
+
+#[test]
+fn settings_of_a_detached_window_list_only_its_modules() {
+    let mut tiles = egui_tiles::Tiles::default();
+    let a = tiles.insert_pane(Pane::module("carnet", "notes"));
+    let b = tiles.insert_pane(Pane::Suite { view: SuiteView::Overview });
+    let c = tiles.insert_pane(Pane::module("carnet", "bus"));
+    let root = tiles.insert_tab_tile(vec![a, b, c]);
+    let tree = egui_tiles::Tree::new(egui::Id::unique("essai"), root, tiles);
+    assert_eq!(crate::settings::window_modules(&tree), ["carnet"]);
+}
+
+#[test]
+fn a_module_opens_its_settings_page_where_it_is() {
+    let mut h = suite();
+    act(&mut h, Action::Detach(notes()));
+    // Plus aucune case de Carnet dans la fenêtre principale : il n'est que dans la fenêtre détachée.
+    let in_main: Vec<Pane> = layout::panes(&h.state().main)
+        .into_iter()
+        .map(|(_, p)| p)
+        .filter(|p| p.module_id() == Some("carnet"))
+        .collect();
+    for pane in in_main {
+        act(&mut h, Action::ClosePane(pane));
+    }
+    let window = h.state().windows.first().map(|w| w.id).expect("une fenêtre détachée");
+    h.state().core.host.open_settings("module:carnet");
+    h.run_steps(3);
+    let st = &h.state().shell.settings;
+    assert!(st.open);
+    assert_eq!(st.page, crate::settings::Page::Module("carnet".into()));
+    assert_eq!(st.window, Some(window), "dans la fenêtre du module, pas dans la principale");
 }
 
 #[test]

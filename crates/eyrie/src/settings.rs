@@ -11,10 +11,12 @@ use suite_sdk::shortcut::{Owner, Shortcut};
 use suite_sdk::theme::{self, ThemeChoice};
 
 use crate::accounts::title;
-use crate::app::{Action, DEFAULT_LAYOUTS, Suite, suite_shortcuts};
+use crate::app::{Action, Core, DEFAULT_LAYOUTS, suite_shortcuts};
 use crate::core::SlotState;
 use crate::i18n::{mark, tr};
+use crate::layout::Pane;
 use crate::persist::ModuleData;
+use crate::shell::ShellState;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum Page {
@@ -46,6 +48,7 @@ impl Page {
             "raccourcis" => Page::Shortcuts,
             "tailscale" => Page::Tailscale,
             "dispositions" => Page::Layouts,
+            k if k.starts_with("module:") => Page::Module(k["module:".len()..].to_string()),
             _ => Page::General,
         }
     }
@@ -64,6 +67,8 @@ pub struct SettingsState {
     tailnet_host: Option<String>,
     /// Compte dont le retrait attend confirmation (il vaut pour toute la suite).
     confirm_remove: Option<String>,
+    /// Fenêtre détachée où les réglages s'affichent (limités à Eyrie et à ses modules) ; `None` : la principale.
+    pub window: Option<u64>,
 }
 
 impl Default for SettingsState {
@@ -78,6 +83,7 @@ impl Default for SettingsState {
             shortcut_edit: Default::default(),
             tailnet_host: None,
             confirm_remove: None,
+            window: None,
         }
     }
 }
@@ -85,6 +91,34 @@ impl Default for SettingsState {
 /// Les noms des thèmes, définis dans le SDK (`ThemeChoice::label`) et traduits ici.
 #[allow(dead_code)]
 const THEME_NAMES: [&str; 4] = [mark("Système"), mark("Graphite"), mark("Fluent"), mark("Nuit colorée")];
+
+/// Ce que la fenêtre de réglages lit et change. Elle se dessine dans la fenêtre principale (tous les modules) ou dans
+/// une fenêtre détachée (Eyrie et les seuls modules de cette fenêtre).
+pub struct SettingsCx<'a> {
+    pub core: &'a mut Core,
+    pub shell: &'a mut ShellState,
+    /// Modules montrés : `None` : tous.
+    pub modules: Option<Vec<String>>,
+}
+
+impl SettingsCx<'_> {
+    fn shows(&self, module: &str) -> bool {
+        self.modules.as_ref().is_none_or(|list| list.iter().any(|m| m == module))
+    }
+}
+
+/// Les modules d'une fenêtre (ses cases), dans l'ordre, sans doublon.
+pub fn window_modules(tree: &egui_tiles::Tree<Pane>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for (_, pane) in crate::layout::panes(tree) {
+        if let Some(m) = pane.module_id()
+            && !out.iter().any(|o| o == m)
+        {
+            out.push(m.to_string());
+        }
+    }
+    out
+}
 
 fn section(ui: &mut egui::Ui, title: &str) {
     ui.add_space(10.0);
@@ -96,7 +130,7 @@ fn hint(ui: &mut egui::Ui, p: &theme::Palette, text: &str) {
     ui.add(egui::Label::new(RichText::new(text).color(p.text_dim)).wrap());
 }
 
-pub fn show(suite: &mut Suite, ctx: &egui::Context) {
+pub fn show(suite: &mut SettingsCx<'_>, ctx: &egui::Context) {
     if !suite.shell.settings.open {
         return;
     }
@@ -126,7 +160,7 @@ pub fn show(suite: &mut Suite, ctx: &egui::Context) {
     }
 }
 
-fn nav(suite: &mut Suite, ui: &mut egui::Ui) {
+fn nav(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui) {
     let p = suite.core.palette();
     let st = &mut suite.shell.settings;
     for (page, label) in [
@@ -144,6 +178,9 @@ fn nav(suite: &mut Suite, ui: &mut egui::Ui) {
     ui.separator();
     ui.label(RichText::new(tr("Modules")).color(p.text_dim).small());
     for s in &suite.core.slots {
+        if !suite.shows(s.info.id) {
+            continue;
+        }
         let page = Page::Module(s.info.id.to_string());
         let text = RichText::new(format!("{}  {}", s.info.icon, s.info.name)).color(theme::readable(p, s.info.color));
         if ui.selectable_label(suite.shell.settings.page == page, text).clicked() {
@@ -152,7 +189,13 @@ fn nav(suite: &mut Suite, ui: &mut egui::Ui) {
     }
 }
 
-fn page(suite: &mut Suite, ui: &mut egui::Ui) {
+fn page(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui) {
+    // Dans une fenêtre détachée, la page d'un module qui n'y est pas cède la place à Général.
+    if let Page::Module(id) = &suite.shell.settings.page
+        && !suite.shows(id)
+    {
+        suite.shell.settings.page = Page::General;
+    }
     match suite.shell.settings.page.clone() {
         Page::General => general(suite, ui),
         Page::Modules => modules(suite, ui),
@@ -164,7 +207,7 @@ fn page(suite: &mut Suite, ui: &mut egui::Ui) {
     }
 }
 
-fn general(suite: &mut Suite, ui: &mut egui::Ui) {
+fn general(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui) {
     let p = suite.core.palette();
     ui.heading(tr("Général"));
 
@@ -233,7 +276,7 @@ fn general(suite: &mut Suite, ui: &mut egui::Ui) {
     restart_hint(suite, ui);
 }
 
-fn restart_hint(suite: &mut Suite, ui: &mut egui::Ui) {
+fn restart_hint(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui) {
     if suite.core.restart_needed {
         ui.add_space(10.0);
         ui.horizontal(|ui| {
@@ -245,7 +288,7 @@ fn restart_hint(suite: &mut Suite, ui: &mut egui::Ui) {
     }
 }
 
-fn modules(suite: &mut Suite, ui: &mut egui::Ui) {
+fn modules(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui) {
     let p = suite.core.palette();
     ui.heading(tr("Modules"));
     hint(ui, p, tr("Un module désactivé ne démarre pas et ne coûte rien."));
@@ -312,7 +355,7 @@ fn slot_state(s: &crate::core::Slot, p: &theme::Palette, ui: &mut egui::Ui, acti
     }
 }
 
-fn accounts(suite: &mut Suite, ui: &mut egui::Ui) {
+fn accounts(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui) {
     let p = suite.core.palette();
     ui.heading(tr("Comptes"));
     hint(ui, p, tr("Valables dans toute la suite : Eyrie, DragonTree et Owlery, seuls ou intégrés."));
@@ -437,7 +480,7 @@ fn accounts(suite: &mut Suite, ui: &mut egui::Ui) {
     }
 }
 
-fn tailscale(suite: &mut Suite, ui: &mut egui::Ui) {
+fn tailscale(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui) {
     let p = suite.core.palette();
     ui.heading("Tailscale");
     hint(ui, p, tr("Un seul nœud pour toute la suite, pour la synchro avec le mobile."));
@@ -479,7 +522,7 @@ fn tailscale(suite: &mut Suite, ui: &mut egui::Ui) {
     }
 }
 
-fn shortcuts(suite: &mut Suite, ui: &mut egui::Ui) {
+fn shortcuts(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui) {
     let p = suite.core.palette();
     ui.heading(tr("Raccourcis"));
     hint(ui, p, tr("Ceux d'Eyrie passent avant ceux des modules ; ceux d'un module valent dans sa case."));
@@ -546,7 +589,7 @@ fn shortcuts(suite: &mut Suite, ui: &mut egui::Ui) {
     hint(ui, p, tr("Entre deux modules, c'est celui qui a le clavier qui l'emporte."));
 }
 
-fn layouts(suite: &mut Suite, ui: &mut egui::Ui) {
+fn layouts(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui) {
     let p = suite.core.palette();
     ui.heading(tr("Dispositions"));
     hint(ui, p, tr("Plusieurs dispositions nommées, et une par configuration d'écrans, appliquée au branchement."));
@@ -610,7 +653,7 @@ pub fn module_settings_label(name: &str) -> String {
     format!("⚙ {} {name}", tr("Réglages de"))
 }
 
-fn module_page(suite: &mut Suite, ui: &mut egui::Ui, id: &str) {
+fn module_page(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui, id: &str) {
     let p = suite.core.palette();
     let mut actions = Vec::new();
     let Some(s) = suite.core.slots.iter_mut().find(|s| s.info.id == id) else { return };
@@ -621,19 +664,18 @@ fn module_page(suite: &mut Suite, ui: &mut egui::Ui, id: &str) {
         slot_toggle(s, ui, &mut actions);
         slot_state(s, p, ui, &mut actions);
     });
-    let has_settings = s.module().is_some_and(|m| m.commands().iter().any(|c| c.id == "reglages"));
-    if has_settings {
-        ui.add_space(6.0);
-        if ui.button(module_settings_label(s.info.name)).clicked() {
-            actions.push(Action::RunCommand { module: id.to_string(), command: "reglages".into() });
-        }
-    }
-    // Un module natif peut montrer ses réglages ici ; un module embarqué les garde dans sa case.
-    let host = suite.core.host.clone();
-    if matches!(s.info.origin, Origin::Native) && s.module().is_some() {
+    // Ses réglages, ici même, dans le bac à sable comme ses autres appels.
+    if s.is_running() {
         section(ui, tr("Réglages"));
-        let shown = s.module_mut().is_some_and(|m| m.settings_ui(ui, &host));
-        if !shown && !has_settings {
+        let host = suite.core.host.clone();
+        let shown = crate::core::settings(s, &host, ui, &suite.core.wish, &mut suite.core.journal);
+        let has_command = s.module().is_some_and(|m| m.commands().iter().any(|c| c.id == "reglages"));
+        if !shown && has_command {
+            // Un module sans page de réglages ici : les siens s'ouvrent dans sa case.
+            if ui.button(module_settings_label(s.info.name)).clicked() {
+                actions.push(Action::RunCommand { module: id.to_string(), command: "reglages".into() });
+            }
+        } else if !shown {
             ui.label(RichText::new(tr("Aucun réglage propre.")).color(p.text_dim));
         }
     }
