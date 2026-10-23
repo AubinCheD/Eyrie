@@ -4,6 +4,7 @@
 //! ce que fait son `main.rs`, en lui donnant les services de la suite.
 //! - **comptes** : ceux de toute la suite (`suite-accounts`), qu'Owlery lit lui-même ; « Comptes… » ouvre la page
 //!   Comptes d'Eyrie ;
+//! - **réglages** : les siens sont dans ceux d'Eyrie (page Owlery, avec l'état de lecture des comptes) ;
 //! - **notifications** : dans le centre de notifications de la suite (une seule icône) ;
 //! - **Fawkes** : `ouvrir` passe par le bus de la suite, en appel Rust, au Fawkes de la suite ;
 //! - même verrou, même `state.lock` et même canal nommé que `owlery.exe` (`afficher`, `etat`).
@@ -171,7 +172,16 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
     // Les comptes se règlent dans Eyrie, pour toute la suite.
     let link = host.clone();
     app.set_accounts_link(Box::new(move || link.open_settings("comptes")));
-    Ok(Box::new(Embedded::new(info(), host, app).title_badge(badge).key_commands(commands()).keep(lock)))
+    // Ses réglages sont dans ceux d'Eyrie : « Réglages » y mène, sur sa page.
+    let settings = host.clone();
+    app.set_settings_link(Box::new(move || settings.open_settings(&format!("module:{ID}"))));
+    Ok(Box::new(
+        Embedded::new(info(), host, app)
+            .title_badge(badge)
+            .key_commands(commands())
+            .settings_panel(|app, ui| app.settings_ui(ui))
+            .keep(lock),
+    ))
 }
 
 #[cfg(test)]
