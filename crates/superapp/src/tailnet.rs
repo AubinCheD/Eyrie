@@ -33,7 +33,11 @@ pub fn find_companion() -> Option<PathBuf> {
 }
 
 pub fn hostname(settings: &TailnetSettings) -> String {
-    let chosen = if settings.hostname.trim().is_empty() { format!("suite-{}", fawkes_tailnet::computer_name()) } else { settings.hostname.clone() };
+    let chosen = if settings.hostname.trim().is_empty() {
+        format!("suite-{}", fawkes_tailnet::computer_name())
+    } else {
+        settings.hostname.clone()
+    };
     fawkes_tailnet::hostname_for(&chosen, &fawkes_tailnet::computer_name())
 }
 

@@ -92,7 +92,9 @@ fn panic_message(payload: Box<dyn Any + Send>) -> String {
 type StyleSnapshot = (Arc<egui::Style>, Arc<egui::Style>, egui::ThemePreference, f32, bool);
 
 fn style_snapshot(ctx: &egui::Context) -> StyleSnapshot {
-    ctx.options(|o| (o.dark_style.clone(), o.light_style.clone(), o.theme_preference, o.zoom_factor, o.zoom_with_keyboard))
+    ctx.options(|o| {
+        (o.dark_style.clone(), o.light_style.clone(), o.theme_preference, o.zoom_factor, o.zoom_with_keyboard)
+    })
 }
 
 /// Appelle `f` (un appel de module) dans le bac à sable.
@@ -172,7 +174,12 @@ pub fn call(ctx: &egui::Context, policy: Policy, wish: &WindowWish, f: impl FnOn
 
     // Style global : rétabli.
     let after = style_snapshot(ctx);
-    if !Arc::ptr_eq(&after.0, &style.0) || !Arc::ptr_eq(&after.1, &style.1) || after.2 != style.2 || after.3 != style.3 || after.4 != style.4 {
+    if !Arc::ptr_eq(&after.0, &style.0)
+        || !Arc::ptr_eq(&after.1, &style.1)
+        || after.2 != style.2
+        || after.3 != style.3
+        || after.4 != style.4
+    {
         observed.touched_style = true;
         ctx.options_mut(|o| {
             o.dark_style = style.0.clone();
@@ -184,7 +191,8 @@ pub fn call(ctx: &egui::Context, policy: Policy, wish: &WindowWish, f: impl FnOn
     }
 
     // Commandes de fenêtre : relevées et contrées.
-    let commands: Vec<ViewportCommand> = ctx.viewport(|v| v.commands.get(first_command..).map(<[_]>::to_vec).unwrap_or_default());
+    let commands: Vec<ViewportCommand> =
+        ctx.viewport(|v| v.commands.get(first_command..).map(<[_]>::to_vec).unwrap_or_default());
     if !commands.is_empty() {
         let (maximized, fullscreen) = ctx.input(|i| (i.viewport().maximized, i.viewport().fullscreen));
         let mut counter = Vec::new();
@@ -194,7 +202,9 @@ pub fn call(ctx: &egui::Context, policy: Policy, wish: &WindowWish, f: impl FnOn
                 ViewportCommand::Decorations(_) => counter.push(ViewportCommand::Decorations(wish.decorations)),
                 ViewportCommand::Minimized(true) => counter.push(ViewportCommand::Minimized(false)),
                 ViewportCommand::Maximized(_) => counter.push(ViewportCommand::Maximized(maximized.unwrap_or(false))),
-                ViewportCommand::Fullscreen(_) => counter.push(ViewportCommand::Fullscreen(fullscreen.unwrap_or(false))),
+                ViewportCommand::Fullscreen(_) => {
+                    counter.push(ViewportCommand::Fullscreen(fullscreen.unwrap_or(false)))
+                }
                 ViewportCommand::Visible(false) => counter.push(ViewportCommand::Visible(true)),
                 ViewportCommand::Close => observed.wants_close = true,
                 ViewportCommand::CancelClose => observed.cancels_close = true,
@@ -235,9 +245,13 @@ mod tests {
             let off = Policy { keyboard: false, visible: true, sees_close: false };
             let on = Policy { keyboard: true, ..off };
             let mut seen = 0;
-            call(ui.ctx(), off, &wish(), || seen = ui.ctx().input(|i| i.events.iter().filter(|e| is_keyboard(e)).count()));
+            call(ui.ctx(), off, &wish(), || {
+                seen = ui.ctx().input(|i| i.events.iter().filter(|e| is_keyboard(e)).count())
+            });
             assert_eq!(seen, 0);
-            call(ui.ctx(), on, &wish(), || seen = ui.ctx().input(|i| i.events.iter().filter(|e| is_keyboard(e)).count()));
+            call(ui.ctx(), on, &wish(), || {
+                seen = ui.ctx().input(|i| i.events.iter().filter(|e| is_keyboard(e)).count())
+            });
             assert_eq!(seen, 3);
         });
     }

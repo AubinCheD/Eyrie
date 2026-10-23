@@ -76,7 +76,8 @@ impl Drop for TrayCleanup {
 
 fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
     let dir = data_dir(&bcx.data);
-    let guard = NamedMutex::try_acquire(&instance_name(&dir)).ok_or(Unavailable::AlreadyRunning { exe: "patronus.exe" })?;
+    let guard =
+        NamedMutex::try_acquire(&instance_name(&dir)).ok_or(Unavailable::AlreadyRunning { exe: "patronus.exe" })?;
     let (st, problems) = patronus_app::state::load(&dir);
     // L'icône de notification de Patronus, sur la fenêtre de la suite (aucun autre module ne pose la
     // sienne : Fawkes cherche sa fenêtre par son titre, Owlery passe par le centre de la suite).
@@ -87,9 +88,17 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
         }
         _ => None,
     };
-    let app = patronus_app::app::App::new(bcx.cc, dir, st, problems);
+    let mut app = patronus_app::app::App::new(bcx.cc, dir, st, problems);
+    // La fenêtre est celle de la suite : sa taille n'entre pas dans l'état de Patronus. Sa palette
+    // suit déjà le thème clair ou sombre d'egui, donc celui de la suite.
+    app.set_hosted(true);
     Ok(Box::new(
-        Embedded::new(info(), bcx.host.clone(), app).hidden_ui(true).title_badge(badge).key_commands(commands()).keep(guard).keep(tray),
+        Embedded::new(info(), bcx.host.clone(), app)
+            .hidden_ui(true)
+            .title_badge(badge)
+            .key_commands(commands())
+            .keep(guard)
+            .keep(tray),
     ))
 }
 

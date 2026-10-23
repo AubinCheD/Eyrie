@@ -84,7 +84,8 @@ fn read_token(service: &str, id: &str) -> Option<String> {
 impl Accounts {
     pub fn load(dir: &Path) -> Self {
         let path = dir.join("accounts.json");
-        let file: File = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        let file: File =
+            std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
         Accounts { list: file.accounts, path, extra: file.extra, pending: None, message: None }
     }
 
@@ -98,7 +99,10 @@ impl Accounts {
 
     /// Donne aux modules la liste (sans jeton) et la lecture du coffre.
     pub fn publish(&self, host: &Host) {
-        host.set_accounts(self.list.iter().map(|a| a.info.clone()).collect(), Arc::new(|id: &str| read_token(SERVICE, id)));
+        host.set_accounts(
+            self.list.iter().map(|a| a.info.clone()).collect(),
+            Arc::new(|id: &str| read_token(SERVICE, id)),
+        );
     }
 
     pub fn is_busy(&self) -> bool {
@@ -108,7 +112,10 @@ impl Accounts {
     /// Vérifie le jeton auprès de la forge, puis range le compte (en arrière-plan).
     pub fn add(&mut self, kind: ForgeKind, host: &str, token: &str, orgs: Vec<String>) {
         let (tx, rx) = channel();
-        let (host, token) = (if host.trim().is_empty() { kind.default_host().to_string() } else { host.trim().to_string() }, token.trim().to_string());
+        let (host, token) = (
+            if host.trim().is_empty() { kind.default_host().to_string() } else { host.trim().to_string() },
+            token.trim().to_string(),
+        );
         std::thread::spawn(move || {
             let r = dragontree_forges::verify_new(kind, &host, &token, &orgs).map_err(|e| e.to_string()).map(|u| {
                 let acc = StoredAccount {
@@ -137,15 +144,17 @@ impl Accounts {
         let Ok(r) = rx.try_recv() else { return };
         self.pending = None;
         match r {
-            Ok((acc, token)) => match entry(SERVICE, &acc.info.id).and_then(|e| e.set_password(&token).map_err(|e| e.to_string())) {
-                Ok(()) => {
-                    self.message = Some((true, format!("{} : compte ajouté.", acc.title())));
-                    self.list.push(acc);
-                    self.save();
-                    self.publish(host);
+            Ok((acc, token)) => {
+                match entry(SERVICE, &acc.info.id).and_then(|e| e.set_password(&token).map_err(|e| e.to_string())) {
+                    Ok(()) => {
+                        self.message = Some((true, format!("{} : compte ajouté.", acc.title())));
+                        self.list.push(acc);
+                        self.save();
+                        self.publish(host);
+                    }
+                    Err(e) => self.message = Some((false, format!("Coffre de Windows : {e}"))),
                 }
-                Err(e) => self.message = Some((false, format!("Coffre de Windows : {e}"))),
-            },
+            }
             Err(e) => self.message = Some((false, e)),
         }
     }
@@ -187,7 +196,10 @@ impl Accounts {
             } else {
                 "github"
             };
-            if self.list.iter().any(|x| x.info.id == id || (x.info.forge == forge && x.info.host == s("host") && x.info.username == s("username"))) {
+            if self.list.iter().any(|x| {
+                x.info.id == id
+                    || (x.info.forge == forge && x.info.host == s("host") && x.info.username == s("username"))
+            }) {
                 known += 1;
                 continue;
             }
@@ -198,7 +210,13 @@ impl Accounts {
             }
             let orgs = a.get("orgs").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
             self.list.push(StoredAccount {
-                info: AccountInfo { id, forge: forge.into(), host: s("host"), username: s("username"), shared_with: FORGE_MODULES.iter().map(|m| m.to_string()).collect() },
+                info: AccountInfo {
+                    id,
+                    forge: forge.into(),
+                    host: s("host"),
+                    username: s("username"),
+                    shared_with: FORGE_MODULES.iter().map(|m| m.to_string()).collect(),
+                },
                 display_name: s("display_name"),
                 orgs,
                 source: source.into(),
@@ -216,7 +234,9 @@ impl Accounts {
     }
 
     pub fn import_owlery(&mut self, host: &Host) {
-        let dir = std::env::var_os("OWLERY_DATA_DIR").map(PathBuf::from).unwrap_or_else(|| dirs::config_dir().unwrap_or_default().join("Owlery"));
+        let dir = std::env::var_os("OWLERY_DATA_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| dirs::config_dir().unwrap_or_default().join("Owlery"));
         self.import_from(&dir.join("state.json"), "owlery", "Owlery", host);
     }
 
@@ -242,7 +262,13 @@ mod tests {
     #[test]
     fn titles() {
         let a = StoredAccount {
-            info: AccountInfo { id: "x".into(), forge: "azure".into(), host: "dev.azure.com".into(), username: "a@b.c".into(), shared_with: vec![] },
+            info: AccountInfo {
+                id: "x".into(),
+                forge: "azure".into(),
+                host: "dev.azure.com".into(),
+                username: "a@b.c".into(),
+                shared_with: vec![],
+            },
             display_name: "Camille Martin".into(),
             orgs: vec![],
             source: "suite".into(),

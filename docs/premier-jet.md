@@ -1,5 +1,8 @@
 # Premier jet de la suite (23/10/2026)
 
+> Suite : `etape-2.md` (premières retouches dans les modules, sur des branches à part). Ce
+> document décrit le premier jet tel qu'il est sur la branche `premier-jet`.
+
 Ce document décrit ce qui est construit, les choix faits pour avancer sur les questions ouvertes
 (`reflexions.md` §11) et ce qui reste. Le constat de départ est dans `etat-des-lieux.md`.
 

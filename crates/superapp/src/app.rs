@@ -52,7 +52,10 @@ pub enum Action {
     LoadLayout(String),
     SaveLayout(String),
     DeleteLayout(String),
-    RunCommand { module: String, command: String },
+    RunCommand {
+        module: String,
+        command: String,
+    },
     OpenSettings(settings::Page),
     TogglePalette,
     SetTheme(ThemeChoice),
@@ -103,6 +106,7 @@ pub struct CloseSequence {
     held_by: Option<(String, Instant)>,
 }
 
+#[cfg(test)]
 impl CloseSequence {
     /// Tous les modules ont vu la fermeture et aucun ne la retient.
     pub fn is_done(&self) -> bool {
@@ -232,7 +236,8 @@ pub fn suite_shortcuts(st: &SuiteState) -> Vec<(&'static str, &'static str, Shor
         egui::Key::Num8,
         egui::Key::Num9,
     ];
-    const IDS: [&str; 9] = ["module_1", "module_2", "module_3", "module_4", "module_5", "module_6", "module_7", "module_8", "module_9"];
+    const IDS: [&str; 9] =
+        ["module_1", "module_2", "module_3", "module_4", "module_5", "module_6", "module_7", "module_8", "module_9"];
     for (i, k) in DIGITS.iter().enumerate() {
         v.push((IDS[i], mark("Aller au module n"), Shortcut::alt(*k)));
     }
@@ -344,7 +349,8 @@ impl Suite {
 
     /// Prépare la scène d'une capture d'essai (`SUPERAPP_CAPTURE_SCENE`).
     fn capture_scene(&mut self, scene: &str) {
-        let first = self.core.slots.iter().find(|s| s.is_running()).map(|s| Pane::module(s.info.id, suite_sdk::ViewInfo::MAIN));
+        let first =
+            self.core.slots.iter().find(|s| s.is_running()).map(|s| Pane::module(s.info.id, suite_sdk::ViewInfo::MAIN));
         for part in scene.split(',') {
             match part.trim() {
                 "palette" => self.shell.palette.toggle(),
@@ -372,7 +378,9 @@ impl Suite {
                         data: serde_json::json!({ "dir": dir, "titre": "Ouvert par la suite" }),
                     });
                 }
-                m if m.starts_with("module:") => self.core.act(Action::Reveal(Pane::module(&m[7..], suite_sdk::ViewInfo::MAIN))),
+                m if m.starts_with("module:") => {
+                    self.core.act(Action::Reveal(Pane::module(&m[7..], suite_sdk::ViewInfo::MAIN)))
+                }
                 m if m.starts_with("theme:") => {
                     let t = match &m[6..] {
                         "fluent" => ThemeChoice::Fluent,
@@ -390,7 +398,11 @@ impl Suite {
     fn drop_unknown_panes(&mut self) {
         let known: BTreeSet<&str> = self.core.slots.iter().map(|s| s.info.id).collect();
         let unknown = |t: &Tree<Pane>| -> Vec<egui_tiles::TileId> {
-            layout::panes(t).into_iter().filter(|(_, p)| p.module_id().is_some_and(|m| !known.contains(m))).map(|(id, _)| id).collect()
+            layout::panes(t)
+                .into_iter()
+                .filter(|(_, p)| p.module_id().is_some_and(|m| !known.contains(m)))
+                .map(|(id, _)| id)
+                .collect()
         };
         for id in unknown(&self.main) {
             layout::remove_pane(&mut self.main, id);
@@ -432,7 +444,11 @@ impl Suite {
     }
 
     fn tree_mut(&mut self, window: u64) -> Option<&mut Tree<Pane>> {
-        if window == 0 { Some(&mut self.main) } else { self.windows.iter_mut().find(|w| w.id == window).map(|w| &mut w.tree) }
+        if window == 0 {
+            Some(&mut self.main)
+        } else {
+            self.windows.iter_mut().find(|w| w.id == window).map(|w| &mut w.tree)
+        }
     }
 
     fn reveal(&mut self, ctx: &egui::Context, pane: Pane) {
@@ -572,7 +588,11 @@ impl Suite {
                     self.core.st.screen_layouts.retain(|_, v| *v != name);
                 }
                 Action::RunCommand { module, command } => {
-                    let main = self.core.slot(&module).and_then(|s| s.module()).and_then(|m| m.views().first().map(|v| v.id.clone()));
+                    let main = self
+                        .core
+                        .slot(&module)
+                        .and_then(|s| s.module())
+                        .and_then(|m| m.views().first().map(|v| v.id.clone()));
                     if let Some(view) = main {
                         self.reveal(ctx, Pane::module(&module, &view));
                     }
@@ -602,8 +622,12 @@ impl Suite {
                     i18n::set_lang(l.unwrap_or_else(Lang::system));
                 }
                 Action::CycleCase(forward) => {
-                    let visible: Vec<egui_tiles::TileId> =
-                        self.main.active_tiles().into_iter().filter(|t| matches!(self.main.tiles.get(*t), Some(egui_tiles::Tile::Pane(_)))).collect();
+                    let visible: Vec<egui_tiles::TileId> = self
+                        .main
+                        .active_tiles()
+                        .into_iter()
+                        .filter(|t| matches!(self.main.tiles.get(*t), Some(egui_tiles::Tile::Pane(_))))
+                        .collect();
                     let current = self.core.focus.module.as_ref().and_then(|m| {
                         visible.iter().copied().find(|t| matches!(self.main.tiles.get(*t), Some(egui_tiles::Tile::Pane(p)) if p.module_id() == Some(m)))
                     });
@@ -685,7 +709,9 @@ impl Suite {
             }
         }
         self.core.registry = registry;
-        self.core.host.set_running(self.core.slots.iter().filter(|s| s.is_running()).map(|s| s.info.id.to_string()).collect());
+        self.core
+            .host
+            .set_running(self.core.slots.iter().filter(|s| s.is_running()).map(|s| s.info.id.to_string()).collect());
     }
 
     /// La file de l'hôte : notifications, événements, demandes, « montre-moi », attention.
@@ -695,7 +721,9 @@ impl Suite {
             self.core.notes.push(n);
         }
         for m in out.show {
-            if let Some(view) = self.core.slot(&m).and_then(|s| s.module()).and_then(|m| m.views().first().map(|v| v.id.clone())) {
+            if let Some(view) =
+                self.core.slot(&m).and_then(|s| s.module()).and_then(|m| m.views().first().map(|v| v.id.clone()))
+            {
                 self.reveal(ctx, Pane::module(&m, &view));
                 ctx.send_viewport_cmd(ViewportCommand::Focus);
             }
@@ -718,10 +746,14 @@ impl Suite {
             let policy = Policy { keyboard: false, visible: shown_prev.contains(slot.info.id), sees_close: false };
             let mut reply = Err(String::new());
             let req: &Request = &r;
-            core::call(slot, host, frame, ctx, CallKind::Other, policy, wish, journal, |m, cx| reply = m.on_request(req, cx));
+            core::call(slot, host, frame, ctx, CallKind::Other, policy, wish, journal, |m, cx| {
+                reply = m.on_request(req, cx)
+            });
             match reply {
                 Ok(_) => journal.push(&r.from, Tone::Ok, format!("{} → {} : {}", r.from, r.to, r.demande)),
-                Err(e) if !e.is_empty() => journal.push(&r.from, Tone::Warn, format!("{} → {} : {} ({e})", r.from, r.to, r.demande)),
+                Err(e) if !e.is_empty() => {
+                    journal.push(&r.from, Tone::Warn, format!("{} → {} : {} ({e})", r.from, r.to, r.demande))
+                }
                 Err(_) => {}
             }
         }
@@ -773,13 +805,18 @@ impl Suite {
             && let Some((held, since)) = &seq.held_by
             && since.elapsed() > HOLD_EXPIRES
         {
-            self.core.journal.push("suite", Tone::Info, format!("{held} : {}", tr("question restée sans réponse, fermeture abandonnée.")));
+            self.core.journal.push(
+                "suite",
+                Tone::Info,
+                format!("{held} : {}", tr("question restée sans réponse, fermeture abandonnée.")),
+            );
             self.core.quit.abandon();
         }
         if !close {
             return;
         }
-        let running: Vec<String> = self.core.slots.iter().filter(|s| s.is_running()).map(|s| s.info.id.to_string()).collect();
+        let running: Vec<String> =
+            self.core.slots.iter().filter(|s| s.is_running()).map(|s| s.info.id.to_string()).collect();
         let quit = &mut self.core.quit;
         match &mut quit.sequence {
             None => {
@@ -788,7 +825,11 @@ impl Suite {
                     // suite, cela ne ferme pas la suite.
                     ctx.send_viewport_cmd(ViewportCommand::CancelClose);
                     let who = asked.join(", ");
-                    self.core.journal.push("suite", Tone::Info, format!("{who} : {}", tr("a demandé à fermer la fenêtre ; la suite reste ouverte.")));
+                    self.core.journal.push(
+                        "suite",
+                        Tone::Info,
+                        format!("{who} : {}", tr("a demandé à fermer la fenêtre ; la suite reste ouverte.")),
+                    );
                     return;
                 }
                 if !quit.forced {
@@ -863,7 +904,9 @@ impl Suite {
                 visible: shown_prev.contains(slot.info.id),
                 sees_close: quit.sees(slot.info.id),
             };
-            if let Some(o) = core::call(slot, host, frame, ctx, CallKind::Logic, policy, wish, journal, |m, cx| m.logic(ctx, cx)) {
+            if let Some(o) =
+                core::call(slot, host, frame, ctx, CallKind::Logic, policy, wish, journal, |m, cx| m.logic(ctx, cx))
+            {
                 quit.observe(slot.info.id, &o);
             }
         }
@@ -875,7 +918,9 @@ impl Suite {
         for (module, command) in pending {
             if let Some(slot) = slots.iter_mut().find(|s| s.info.id == module) {
                 let policy = Policy { keyboard: true, visible: true, sees_close: false };
-                core::call(slot, host, frame, ctx, CallKind::Other, policy, wish, journal, |m, cx| m.run_command(&command, cx));
+                core::call(slot, host, frame, ctx, CallKind::Other, policy, wish, journal, |m, cx| {
+                    m.run_command(&command, cx)
+                });
             }
         }
     }
@@ -891,11 +936,13 @@ impl Suite {
                 continue;
             }
             let view = slot.module().and_then(|m| m.views().first().map(|v| v.id.clone())).unwrap_or_default();
-            let mut child = ui.new_child(egui::UiBuilder::new().id_salt(("module-masque", slot.info.id)).max_rect(offscreen).invisible());
+            let mut child = ui.new_child(
+                egui::UiBuilder::new().id_salt(("module-masque", slot.info.id)).max_rect(offscreen).invisible(),
+            );
             let policy = Policy { keyboard: false, visible: false, sees_close: quit.sees(slot.info.id) };
-            if let Some(o) =
-                core::call(slot, host, frame, &ctx, CallKind::HiddenUi, policy, wish, journal, |m, cx| m.ui(&mut child, &view, cx))
-            {
+            if let Some(o) = core::call(slot, host, frame, &ctx, CallKind::HiddenUi, policy, wish, journal, |m, cx| {
+                m.ui(&mut child, &view, cx)
+            }) {
                 quit.observe(slot.info.id, &o);
             }
         }
@@ -903,7 +950,8 @@ impl Suite {
 
     /// Taille, position et agrandissement de la fenêtre principale, pour le prochain lancement.
     fn track_window(&mut self, ctx: &egui::Context) {
-        let (outer, inner, maximized) = ctx.input(|i| (i.viewport().outer_rect, i.viewport().inner_rect, i.viewport().maximized));
+        let (outer, inner, maximized) =
+            ctx.input(|i| (i.viewport().outer_rect, i.viewport().inner_rect, i.viewport().maximized));
         let w = &mut self.core.st.window;
         w.maximized = maximized.unwrap_or(false);
         if !w.maximized {
@@ -994,8 +1042,11 @@ fn default_layout(core: &Core) -> Tree<Pane> {
 }
 
 /// Les dispositions proposées d'office, si l'utilisateur ne les a pas redéfinies.
-pub const DEFAULT_LAYOUTS: [(&str, &[&str]); 3] =
-    [("Dev", &["dragontree", "fawkes"]), ("Revue", &["owlery", "dragontree"]), ("Exploitation", &["menagerie", "fawkes", "patronus"])];
+pub const DEFAULT_LAYOUTS: [(&str, &[&str]); 3] = [
+    ("Dev", &["dragontree", "fawkes"]),
+    ("Revue", &["owlery", "dragontree"]),
+    ("Exploitation", &["menagerie", "fawkes", "patronus"]),
+];
 
 fn named_default(core: &Core, name: &str) -> Option<SavedLayout> {
     let (_, modules) = DEFAULT_LAYOUTS.iter().find(|(n, _)| *n == name)?;

@@ -29,6 +29,12 @@ garde son dépôt et son exécutable ; la suite compile leurs bibliothèques et 
 - **Tout ou partie des modules**, activables et arrêtables à chaud ; un module natif d'exemple,
   **Carnet** (notes par dépôt, journal du bus), sert de gabarit (`docs/ecrire-un-module.md`).
 
+## Branches
+
+Rien n'est sur `main` pour l'instant : `premier-jet` (l'hôte, sans toucher aux modules) et
+`suite/etape-2` (premières retouches dans les modules, essais approfondis), qui se compile avec les
+six modules sur leur branche `suite/module`. Voir `docs/etape-2.md`.
+
 ## Compiler
 
 Les dépôts des modules doivent être **voisins** de celui-ci (`../Fawkes`, `../DragonTree`,
@@ -41,9 +47,12 @@ Toolchain `x86_64-pc-windows-gnu` (comme les modules) : `tools\setup.ps1` écrit
 ```powershell
 tools\setup.ps1
 cargo build --release        # target\release\superapp.exe
-cargo test --workspace --exclude suite-fawkes
-cargo test -p suite-fawkes suite::   # l'adaptateur seul (les tests de Fawkes restent dans son dépôt)
+cargo test --workspace
+cargo test -p superapp -- --ignored --test-threads=1   # essais avec les sept modules réels (mode essai)
 ```
+
+Formater : `cargo fmt -p superapp -p suite-sdk -p suite-carnet …`, **pas `cargo fmt --all`**, qui
+formaterait aussi les dépôts des modules (dépendances par chemin).
 
 La première compilation prend quelques minutes : toutes les dépendances des six modules (un seul
 egui 0.37 pour tous).
@@ -100,7 +109,7 @@ crates/
                     langue, raccourcis, état versionné, instance unique
   superapp/         l'hôte (exe superapp) : cases, fenêtres, bac à sable, palette, réglages…
   modules/
-    fawkes/         Fawkes : ses sources compilées en bibliothèque (build.rs), plus l'adaptateur
+    fawkes/         Fawkes : sa bibliothèque, plus l'adaptateur
     dragontree/     adaptateurs des cinq autres modules (leur bibliothèque, telle quelle)
     owlery/
     patronus/
@@ -111,6 +120,7 @@ docs/
   etat-des-lieux.md, audit/   le constat (avant ce premier jet)
   reflexions.md               le raisonnement, les questions ouvertes
   premier-jet.md              ce qui est fait, les choix provisoires, les limites
+  etape-2.md                  premières retouches dans les modules, essais approfondis
   ecrire-un-module.md         écrire un module, ou embarquer une application existante
   feuille-de-route.md         le suivi
 ```

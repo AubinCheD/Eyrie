@@ -18,7 +18,9 @@ use owlery::forges::{Fetcher, ForgeFetcher, http::UreqHttp};
 use owlery::secrets::SecretStore;
 use owlery::state;
 use suite_sdk::embed::{Embedded, KeyCommand, first_number};
-use suite_sdk::{Badge, BuildCx, Host, Module, ModuleFactory, ModuleInfo, Notification, Origin, Request, Tone, Unavailable};
+use suite_sdk::{
+    Badge, BuildCx, Host, Module, ModuleFactory, ModuleInfo, Notification, Origin, Request, Tone, Unavailable,
+};
 
 pub const ID: &str = "owlery";
 
@@ -141,7 +143,9 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
     let writable = match &lock {
         Ok(_) => loaded.writable,
         Err(e) => {
-            loaded.problems.push(format!("Dossier d'état verrouillé ({e}) : rien ne sera enregistré pendant cette session."));
+            loaded
+                .problems
+                .push(format!("Dossier d'état verrouillé ({e}) : rien ne sera enregistré pendant cette session."));
             false
         }
     };
@@ -158,11 +162,14 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
         reply
     });
     if let Err(e) = served {
-        loaded.problems.push(format!("Canal local indisponible ({e}) : les autres applications ne pourront pas joindre Owlery."));
+        loaded
+            .problems
+            .push(format!("Canal local indisponible ({e}) : les autres applications ne pourront pas joindre Owlery."));
     }
 
     let host = bcx.host.clone();
-    let store: Arc<dyn SecretStore> = Arc::new(SuiteSecrets { host: host.clone(), own: owlery::secrets::store_for(demo) });
+    let store: Arc<dyn SecretStore> =
+        Arc::new(SuiteSecrets { host: host.clone(), own: owlery::secrets::store_for(demo) });
     let fetcher: Arc<dyn Fetcher> = if demo {
         Arc::new(owlery::demo::DemoFetcher)
     } else {
@@ -181,7 +188,9 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
         writable,
         fetch_on_start: true,
     };
-    let app = App::new(bcx.cc, opts, loaded);
+    let mut app = App::new(bcx.cc, opts, loaded);
+    // La fenêtre est celle de la suite : sa taille n'entre pas dans l'état d'Owlery.
+    app.set_hosted(true);
     Ok(Box::new(Embedded::new(info(), host, app).title_badge(badge).key_commands(commands()).keep(lock)))
 }
 

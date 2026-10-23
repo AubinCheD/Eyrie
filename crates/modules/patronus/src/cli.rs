@@ -57,9 +57,13 @@ fn run_cli(data_dir: &Path, task_id: &str) -> i32 {
         Some(_) => {}
     }
     let before: Vec<String> = engine.runs.iter().map(|r| r.id.clone()).collect();
-    let launched =
-        engine.try_launch(task_id, Context { trigger: "ligne de commande".into(), files: vec![], ..Default::default() }, now());
-    let Some(id) = engine.runs.iter().find(|r| r.tache == task_id && !before.contains(&r.id)).map(|r| r.id.clone()) else {
+    let launched = engine.try_launch(
+        task_id,
+        Context { trigger: "ligne de commande".into(), files: vec![], ..Default::default() },
+        now(),
+    );
+    let Some(id) = engine.runs.iter().find(|r| r.tache == task_id && !before.contains(&r.id)).map(|r| r.id.clone())
+    else {
         eprintln!("{}", launched.err().unwrap_or_default());
         return 3;
     };

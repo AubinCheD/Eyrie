@@ -60,58 +60,82 @@ fn overview(core: &mut Core, ui: &mut egui::Ui) {
         let mut actions = Vec::new();
         let per_row = cols as usize;
         for row in core.slots.chunks(per_row) {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(gap, gap);
-            for s in row {
-                let (state, state_color) = state_label(core, &s.state);
-                let status = s.module().map(|m| m.status()).unwrap_or_default();
-                let resp = egui::Frame::new()
-                    .fill(p.surface)
-                    .stroke(egui::Stroke::new(1.0, if status.badge.is_some() { s.info.color.gamma_multiply(0.6) } else { p.border }))
-                    .corner_radius(egui::CornerRadius::same(p.radius))
-                    .inner_margin(egui::Margin::same(10))
-                    .show(ui, |ui| {
-                        ui.set_width(card_w - 22.0);
-                        ui.set_height(118.0);
-                        ui.vertical(|ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(s.info.icon).size(18.0).color(suite_sdk::theme::readable(p, s.info.color)));
-                                ui.label(RichText::new(s.info.name).strong().color(p.text));
-                                ui.label(RichText::new(state).color(state_color).small());
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(gap, gap);
+                for s in row {
+                    let (state, state_color) = state_label(core, &s.state);
+                    let status = s.module().map(|m| m.status()).unwrap_or_default();
+                    let resp = egui::Frame::new()
+                        .fill(p.surface)
+                        .stroke(egui::Stroke::new(
+                            1.0,
+                            if status.badge.is_some() { s.info.color.gamma_multiply(0.6) } else { p.border },
+                        ))
+                        .corner_radius(egui::CornerRadius::same(p.radius))
+                        .inner_margin(egui::Margin::same(10))
+                        .show(ui, |ui| {
+                            ui.set_width(card_w - 22.0);
+                            ui.set_height(118.0);
+                            ui.vertical(|ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(s.info.icon)
+                                            .size(18.0)
+                                            .color(suite_sdk::theme::readable(p, s.info.color)),
+                                    );
+                                    ui.label(RichText::new(s.info.name).strong().color(p.text));
+                                    ui.label(RichText::new(state).color(state_color).small());
+                                    if let Some(b) = &status.badge {
+                                        let text = b.count.map(|c| c.to_string()).unwrap_or_else(|| "●".into());
+                                        ui.label(
+                                            RichText::new(format!(" {text} "))
+                                                .background_color(b.tone.color(p))
+                                                .color(p.on_alert_badge)
+                                                .small(),
+                                        );
+                                    }
+                                });
+                                ui.add(
+                                    egui::Label::new(RichText::new(s.info.summary).color(p.text_dim).small())
+                                        .truncate(),
+                                );
+                                ui.add_space(2.0);
                                 if let Some(b) = &status.badge {
-                                    let text = b.count.map(|c| c.to_string()).unwrap_or_else(|| "●".into());
-                                    ui.label(RichText::new(format!(" {text} ")).background_color(b.tone.color(p)).color(p.on_alert_badge).small());
+                                    ui.label(RichText::new(&b.tip).color(b.tone.color(p)));
+                                }
+                                for w in status.waiting.iter().take(2) {
+                                    ui.add(
+                                        egui::Label::new(RichText::new(format!("• {w}")).color(p.text_muted))
+                                            .truncate(),
+                                    );
+                                }
+                                if let SlotState::Crashed(m) = &s.state {
+                                    ui.add(egui::Label::new(RichText::new(m).color(p.danger).small()).truncate());
+                                }
+                                if let SlotState::Unavailable(u) = &s.state {
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(crate::app::unavailable_text(u)).color(p.warn).small(),
+                                        )
+                                        .truncate(),
+                                    );
+                                }
+                                if status.badge.is_none() && status.waiting.is_empty() && s.is_running() {
+                                    let quiet =
+                                        status.title.clone().unwrap_or_else(|| tr("Rien en attente.").to_string());
+                                    ui.add(egui::Label::new(RichText::new(quiet).color(p.text_dim).small()).truncate());
                                 }
                             });
-                            ui.add(egui::Label::new(RichText::new(s.info.summary).color(p.text_dim).small()).truncate());
-                            ui.add_space(2.0);
-                            if let Some(b) = &status.badge {
-                                ui.label(RichText::new(&b.tip).color(b.tone.color(p)));
-                            }
-                            for w in status.waiting.iter().take(2) {
-                                ui.add(egui::Label::new(RichText::new(format!("• {w}")).color(p.text_muted)).truncate());
-                            }
-                            if let SlotState::Crashed(m) = &s.state {
-                                ui.add(egui::Label::new(RichText::new(m).color(p.danger).small()).truncate());
-                            }
-                            if let SlotState::Unavailable(u) = &s.state {
-                                ui.add(egui::Label::new(RichText::new(crate::app::unavailable_text(u)).color(p.warn).small()).truncate());
-                            }
-                            if status.badge.is_none() && status.waiting.is_empty() && s.is_running() {
-                                let quiet = status.title.clone().unwrap_or_else(|| tr("Rien en attente.").to_string());
-                                ui.add(egui::Label::new(RichText::new(quiet).color(p.text_dim).small()).truncate());
-                            }
-                        });
-                    })
-                    .response
-                    .interact(egui::Sense::click())
-                    .on_hover_cursor(egui::CursorIcon::PointingHand);
-                if resp.clicked() && !matches!(s.state, SlotState::Disabled) {
-                    actions.push(Action::Reveal(Pane::module(s.info.id, suite_sdk::ViewInfo::MAIN)));
+                        })
+                        .response
+                        .interact(egui::Sense::click())
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    if resp.clicked() && !matches!(s.state, SlotState::Disabled) {
+                        actions.push(Action::Reveal(Pane::module(s.info.id, suite_sdk::ViewInfo::MAIN)));
+                    }
                 }
-            }
-        });
-        ui.add_space(gap);
+            });
+            ui.add_space(gap);
         }
         for a in actions {
             core.act(a);
@@ -158,7 +182,10 @@ fn notifications(core: &mut Core, ui: &mut egui::Ui) {
             }
         });
     });
-    ui.label(RichText::new(tr("Un seul centre pour tous les modules (Owlery, Patronus et la suite y écrivent).")).color(p.text_dim));
+    ui.label(
+        RichText::new(tr("Un seul centre pour tous les modules (Owlery, Patronus et la suite y écrivent)."))
+            .color(p.text_dim),
+    );
     ui.separator();
     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         if core.notes.items.is_empty() {
@@ -173,11 +200,23 @@ fn notifications(core: &mut Core, ui: &mut egui::Ui) {
 fn resources(core: &mut Core, ui: &mut egui::Ui) {
     let p = core.palette();
     heading(ui, tr("Ressources"));
-    ui.label(RichText::new(tr("Tous les modules partagent un processus : temps passé par chacun, à chaque image.")).color(p.text_dim));
+    ui.label(
+        RichText::new(tr("Tous les modules partagent un processus : temps passé par chacun, à chaque image."))
+            .color(p.text_dim),
+    );
     ui.add_space(6.0);
     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         egui::Grid::new("ressources").striped(true).num_columns(8).spacing([14.0, 6.0]).show(ui, |ui| {
-            for h in [mark("Module"), mark("État"), mark("Logique (ms)"), mark("Affichage (ms)"), mark("Pic (ms)"), mark("Appels"), mark("Style rétabli"), mark("Commandes contenues")] {
+            for h in [
+                mark("Module"),
+                mark("État"),
+                mark("Logique (ms)"),
+                mark("Affichage (ms)"),
+                mark("Pic (ms)"),
+                mark("Appels"),
+                mark("Style rétabli"),
+                mark("Commandes contenues"),
+            ] {
                 ui.label(RichText::new(tr(h)).strong());
             }
             ui.end_row();
@@ -196,8 +235,19 @@ fn resources(core: &mut Core, ui: &mut egui::Ui) {
         });
         ui.add_space(10.0);
         let shown: Vec<&str> = core.shown_prev.iter().map(String::as_str).collect();
-        ui.label(RichText::new(format!("{} : {}", tr("Affichés"), if shown.is_empty() { "—".to_string() } else { shown.join(", ") })).color(p.text_dim));
-        ui.label(RichText::new(tr("La mémoire n'est pas mesurable par module dans un seul processus ; le temps l'est.")).color(p.text_dim).small());
+        ui.label(
+            RichText::new(format!(
+                "{} : {}",
+                tr("Affichés"),
+                if shown.is_empty() { "—".to_string() } else { shown.join(", ") }
+            ))
+            .color(p.text_dim),
+        );
+        ui.label(
+            RichText::new(tr("La mémoire n'est pas mesurable par module dans un seul processus ; le temps l'est."))
+                .color(p.text_dim)
+                .small(),
+        );
     });
 }
 

@@ -5,14 +5,17 @@
 //! - ses polices (Segoe UI, Cascadia, **Phosphor** pour ses icônes) entrent dans celles de la suite :
 //!   il remplace toutes les polices au démarrage et quand la police du diff change, la suite les
 //!   rétablit en gardant les siennes ;
-//! - sa palette suit `dark_mode` d'egui : elle suit le thème de la suite ;
+//! - **thème et langue de la suite** : passés comme `--theme` et `--lang` (`set_host_overrides`),
+//!   ils remplacent ses réglages pour la session sans y être écrits ;
 //! - le titre « <dépôt> — DragonTree » devient le titre du module.
 
 use std::sync::Arc;
 use std::time::Duration;
 
+use dragontree_app::settings::ThemeChoice;
 use dragontree_app::single_instance::{self, Forwarded, Startup};
 use dragontree_app::{DragonTreeApp, StartOptions};
+use dragontree_i18n::Lang;
 use eframe::egui::{self, Color32, FontData};
 use suite_sdk::embed::{Embedded, KeyCommand};
 use suite_sdk::fonts::FontPlan;
@@ -38,7 +41,8 @@ pub fn factory() -> ModuleFactory {
 /// Les icônes de DragonTree sont dans la zone privée d'Unicode : Phosphor juste après la police
 /// principale, avant Segoe UI Symbol qui y a d'autres dessins.
 fn fonts(plan: &mut FontPlan) {
-    let phosphor = Arc::new(FontData::from_static(include_bytes!("../../../../../DragonTree/assets/fonts/Phosphor.ttf")));
+    let phosphor =
+        Arc::new(FontData::from_static(include_bytes!("../../../../../DragonTree/assets/fonts/Phosphor.ttf")));
     plan.add_second(egui::FontFamily::Proportional, "phosphor", phosphor.clone());
     plan.add_second(egui::FontFamily::Monospace, "phosphor", phosphor.clone());
     plan.add_second(egui::FontFamily::Name(suite_sdk::fonts::BOLD.into()), "phosphor", phosphor);
@@ -69,7 +73,11 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
         DataMode::Shared => None,
         DataMode::Trial(dir) => Some(dir.clone()),
     };
-    let start = StartOptions { screenshot_after: Duration::from_millis(2500), profile_dir: profile_dir.clone(), ..Default::default() };
+    let start = StartOptions {
+        screenshot_after: Duration::from_millis(2500),
+        profile_dir: profile_dir.clone(),
+        ..Default::default()
+    };
     let profile = profile_dir.unwrap_or_else(dragontree_app::settings::config_dir);
     let key = single_instance::profile_key(&profile);
     let instance = match single_instance::start(&key, &Forwarded { open: Vec::new() }, Duration::from_secs(3)) {
@@ -82,5 +90,13 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
     if let Some(i) = instance {
         app.set_instance(i);
     }
-    Ok(Box::new(Embedded::new(info(), bcx.host.clone(), app).key_commands(commands())))
+    let module = Embedded::new(info(), bcx.host.clone(), app).key_commands(commands()).before_logic(|app, cx| {
+        let theme = if cx.host.palette().dark { ThemeChoice::Dark } else { ThemeChoice::Light };
+        let lang = match cx.host.lang() {
+            suite_sdk::i18n::Lang::Fr => Lang::Fr,
+            suite_sdk::i18n::Lang::En => Lang::En,
+        };
+        app.set_host_overrides(Some(theme), Some(lang));
+    });
+    Ok(Box::new(module))
 }

@@ -9,7 +9,8 @@ Le raisonnement est dans `reflexions.md`, le constat technique dans `etat-des-li
 | Dépôt créé (`git init`, branche `main`) | fait (22/10) |
 | État des lieux des six modules (audits en lecture seule) | fait (22/10) : `etat-des-lieux.md`, `audit/` |
 | Conception de l'intégration (questions ouvertes de `reflexions.md` §11) | choix provisoires (23/10) : `premier-jet.md` §5 |
-| Premier jet de l'hôte, sans toucher au code des modules | fait (23/10) : `premier-jet.md`, `README.md` |
+| Premier jet de l'hôte, sans toucher au code des modules | fait (23/10) : `premier-jet.md`, `README.md` ; branche `premier-jet` |
+| Étape 2 : premières retouches dans les modules, essais approfondis | fait (23/10) : `etape-2.md` ; branches `suite/etape-2` et `suite/module` |
 
 ## Fait dans le premier jet (23/10)
 

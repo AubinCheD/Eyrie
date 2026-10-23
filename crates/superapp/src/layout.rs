@@ -24,7 +24,8 @@ pub enum SuiteView {
 }
 
 impl SuiteView {
-    pub const ALL: [SuiteView; 4] = [SuiteView::Overview, SuiteView::Notifications, SuiteView::Resources, SuiteView::Journal];
+    pub const ALL: [SuiteView; 4] =
+        [SuiteView::Overview, SuiteView::Notifications, SuiteView::Resources, SuiteView::Journal];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -196,7 +197,9 @@ pub fn add_pane(tree: &mut Tree<Pane>, pane: Pane, near: Option<TileId>) -> Tile
             if matches!(tree.tiles.get(n), Some(Tile::Container(Container::Tabs(_)))) {
                 Some(n)
             } else {
-                tree.tiles.parent_of(n).filter(|p| matches!(tree.tiles.get(*p), Some(Tile::Container(Container::Tabs(_)))))
+                tree.tiles
+                    .parent_of(n)
+                    .filter(|p| matches!(tree.tiles.get(*p), Some(Tile::Container(Container::Tabs(_)))))
             }
         })
         .or_else(|| first_tabs(tree));

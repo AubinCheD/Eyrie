@@ -48,9 +48,9 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 }
 
 fn harness(st: SuiteState, dir: std::path::PathBuf) -> Harness<'static, Suite> {
-    let mut h = Harness::builder()
-        .with_size([1500.0, 950.0])
-        .build_eframe(move |cc| Suite::new(cc, dir, suite_sdk::state::Loaded { value: st, problems: Vec::new(), writable: true }));
+    let mut h = Harness::builder().with_size([1500.0, 950.0]).build_eframe(move |cc| {
+        Suite::new(cc, dir, suite_sdk::state::Loaded { value: st, problems: Vec::new(), writable: true })
+    });
     h.run_steps(3);
     h
 }
@@ -80,9 +80,16 @@ fn check_invariants(s: &Suite, step: usize, what: &str) {
     let ids: BTreeSet<u64> = s.windows.iter().map(|w| w.id).collect();
     assert_eq!(ids.len(), s.windows.len(), "pas {step} ({what}) : deux fenêtres ont le même numéro");
     if let Some(c) = &s.core.concentrate {
-        assert_eq!(s.locate(c).map(|(w, _)| w), Some(0), "pas {step} ({what}) : case agrandie hors de la fenêtre principale");
+        assert_eq!(
+            s.locate(c).map(|(w, _)| w),
+            Some(0),
+            "pas {step} ({what}) : case agrandie hors de la fenêtre principale"
+        );
     }
-    assert!(s.core.slots.iter().all(|sl| !matches!(sl.state, SlotState::Crashed(_))), "pas {step} ({what}) : un module s'est arrêté");
+    assert!(
+        s.core.slots.iter().all(|sl| !matches!(sl.state, SlotState::Crashed(_))),
+        "pas {step} ({what}) : un module s'est arrêté"
+    );
 }
 
 #[test]
@@ -141,14 +148,28 @@ fn random_actions(seed: u64, steps: usize) {
         h.state_mut().core.act(action);
         // Parfois un événement du bus, parfois un clic quelque part.
         if rng.below(4) == 0 {
-            h.state().core.host.publish(Event { source: "essai".into(), kind: "essai".into(), data: serde_json::json!({ "pas": step }) });
+            h.state().core.host.publish(Event {
+                source: "essai".into(),
+                kind: "essai".into(),
+                data: serde_json::json!({ "pas": step }),
+            });
         }
         if rng.below(3) == 0 {
             let pos = egui::pos2(rng.below(1500) as f32, rng.below(950) as f32);
             let input = h.input_mut();
             input.events.push(egui::Event::PointerMoved(pos));
-            input.events.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
-            input.events.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
+            input.events.push(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            });
+            input.events.push(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            });
         }
         h.run_steps(2);
         check_invariants(h.state(), step, &what);
@@ -188,8 +209,14 @@ fn real_modules_survive_every_layout_operation() {
     let (mut h, _dir) = real_suite("reels");
     h.run_steps(10);
     let started = running(h.state());
-    assert_eq!(started.len(), 7, "tous les modules démarrent en mode essai : {started:?} ; journal : {:?}", h.state().core.journal.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>());
-    let mains: Vec<Pane> = started.iter().filter(|m| **m != "carnet").map(|m| Pane::module(m, suite_sdk::ViewInfo::MAIN)).collect();
+    assert_eq!(
+        started.len(),
+        7,
+        "tous les modules démarrent en mode essai : {started:?} ; journal : {:?}",
+        h.state().core.journal.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>()
+    );
+    let mains: Vec<Pane> =
+        started.iter().filter(|m| **m != "carnet").map(|m| Pane::module(m, suite_sdk::ViewInfo::MAIN)).collect();
 
     // Toutes les dispositions, chacune dessinée plusieurs images.
     for kind in Preset::ALL {
@@ -199,7 +226,12 @@ fn real_modules_survive_every_layout_operation() {
     }
     // Chaque module agrandi, détaché, rattaché.
     for p in &mains {
-        for a in [Action::Concentrate(Some(p.clone())), Action::Concentrate(None), Action::Detach(p.clone()), Action::MoveToMain(p.clone())] {
+        for a in [
+            Action::Concentrate(Some(p.clone())),
+            Action::Concentrate(None),
+            Action::Detach(p.clone()),
+            Action::MoveToMain(p.clone()),
+        ] {
             let what = format!("{a:?}");
             h.state_mut().core.act(a);
             h.run_steps(3);
@@ -216,7 +248,11 @@ fn real_modules_survive_every_layout_operation() {
     h.run_steps(3);
     assert!(h.state().windows.is_empty());
     // Les trois thèmes : le style de la suite tient malgré les modules qui posent le leur.
-    for t in [suite_sdk::theme::ThemeChoice::Fluent, suite_sdk::theme::ThemeChoice::Nuit, suite_sdk::theme::ThemeChoice::Graphite] {
+    for t in [
+        suite_sdk::theme::ThemeChoice::Fluent,
+        suite_sdk::theme::ThemeChoice::Nuit,
+        suite_sdk::theme::ThemeChoice::Graphite,
+    ] {
         h.state_mut().core.act(Action::SetTheme(t));
         h.state_mut().core.act(Action::Preset(Preset::Grid));
         h.run_steps(4);
@@ -241,10 +277,14 @@ fn real_modules_can_be_stopped_and_restarted() {
         h.run_steps(4);
         let state = &h.state().core.slot(id).unwrap().state;
         assert!(!matches!(state, SlotState::Crashed(_)), "{id} relancé sans panique");
-        assert!(matches!(state, SlotState::Running(_)), "{id} relancé : {}", match state {
-            SlotState::Unavailable(u) => crate::app::unavailable_text(u),
-            _ => String::new(),
-        });
+        assert!(
+            matches!(state, SlotState::Running(_)),
+            "{id} relancé : {}",
+            match state {
+                SlotState::Unavailable(u) => crate::app::unavailable_text(u),
+                _ => String::new(),
+            }
+        );
     }
 }
 

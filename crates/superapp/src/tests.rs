@@ -17,7 +17,11 @@ use crate::registry;
 static N: AtomicU32 = AtomicU32::new(0);
 
 fn temp_dir() -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("superapp-essai-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+    let d = std::env::temp_dir().join(format!(
+        "superapp-essai-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::Relaxed)
+    ));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     d
@@ -30,9 +34,9 @@ fn suite() -> Harness<'static, Suite> {
         st.modules.insert(f.info.id.to_string(), ModuleSettings { enabled: f.info.id == "carnet" });
     }
     let dir = temp_dir();
-    let mut h = Harness::builder()
-        .with_size([1400.0, 900.0])
-        .build_eframe(move |cc| Suite::new(cc, dir, suite_sdk::state::Loaded { value: st, problems: Vec::new(), writable: true }));
+    let mut h = Harness::builder().with_size([1400.0, 900.0]).build_eframe(move |cc| {
+        Suite::new(cc, dir, suite_sdk::state::Loaded { value: st, problems: Vec::new(), writable: true })
+    });
     h.run_steps(3);
     h
 }
@@ -82,7 +86,11 @@ fn a_view_is_never_open_twice() {
     act(&mut h, Action::OpenInNewWindow(notes()));
     act(&mut h, Action::OpenInNewWindow(notes()));
     let s = h.state();
-    let count = layout::panes(&s.main).iter().chain(s.windows.iter().flat_map(|w| layout::panes(&w.tree)).collect::<Vec<_>>().iter()).filter(|(_, p)| *p == notes()).count();
+    let count = layout::panes(&s.main)
+        .iter()
+        .chain(s.windows.iter().flat_map(|w| layout::panes(&w.tree)).collect::<Vec<_>>().iter())
+        .filter(|(_, p)| *p == notes())
+        .count();
     assert_eq!(count, 1);
 }
 
@@ -111,7 +119,11 @@ fn layouts_are_saved_and_loaded_by_name() {
 #[test]
 fn bus_events_reach_the_other_modules() {
     let mut h = suite();
-    h.state().core.host.publish(Event { source: "essai".into(), kind: "pr_ouverte".into(), data: serde_json::json!({}) });
+    h.state().core.host.publish(Event {
+        source: "essai".into(),
+        kind: "pr_ouverte".into(),
+        data: serde_json::json!({}),
+    });
     h.run_steps(2);
     let badge = h.state().core.slot("carnet").and_then(|s| s.module()).and_then(|m| m.status().badge);
     assert_eq!(badge.and_then(|b| b.count), Some(1));
@@ -147,7 +159,14 @@ impl Module for Boom {
 }
 
 fn boom_info() -> ModuleInfo {
-    ModuleInfo { id: "boum", name: "Boum", icon: "!", color: egui::Color32::RED, summary: "essai", origin: Origin::Native }
+    ModuleInfo {
+        id: "boum",
+        name: "Boum",
+        icon: "!",
+        color: egui::Color32::RED,
+        summary: "essai",
+        origin: Origin::Native,
+    }
 }
 
 fn build_boom(_: &suite_sdk::BuildCx) -> Result<Box<dyn Module>, suite_sdk::Unavailable> {
@@ -271,7 +290,8 @@ fn modules_see_the_close_one_by_one_and_a_question_holds_the_others() {
         let s = h.state_mut();
         let cc = eframe::CreationContext::_new_kittest(ctx.clone());
         type Build = fn(&suite_sdk::BuildCx) -> Result<Box<dyn Module>, suite_sdk::Unavailable>;
-        let modules: [(ModuleInfo, Build); 2] = [(closing_info("questionneur"), build_asker), (closing_info("veilleur"), build_watcher)];
+        let modules: [(ModuleInfo, Build); 2] =
+            [(closing_info("questionneur"), build_asker), (closing_info("veilleur"), build_watcher)];
         for (info, build) in modules {
             let mut slot = Slot::new(info, build);
             slot.start(&cc, &s.core.host, suite_sdk::DataMode::Shared, &mut s.core.journal);
@@ -286,7 +306,10 @@ fn modules_see_the_close_one_by_one_and_a_question_holds_the_others() {
     // Il pose sa question : rien de plus, le veilleur n'a rien vu.
     close_frame(&mut h, false);
     close_frame(&mut h, false);
-    assert!(CLOSE_LOG.with(|l| l.borrow().seen.iter().all(|(m, _)| *m != "veilleur")), "le veilleur ne voit rien tant que la question est posée");
+    assert!(
+        CLOSE_LOG.with(|l| l.borrow().seen.iter().all(|(m, _)| *m != "veilleur")),
+        "le veilleur ne voit rien tant que la question est posée"
+    );
     // L'utilisateur répond « quitter » : le questionneur demande la fermeture, la séquence reprend après lui.
     CLOSE_LOG.with(|l| l.borrow_mut().consent = true);
     close_frame(&mut h, false);

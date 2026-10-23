@@ -1389,6 +1389,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
+name = "fawkes"
+version = "0.1.0"
+dependencies = [
+ "alacritty_terminal",
+ "arboard",
+ "dirs",
+ "eframe",
+ "epaint",
+ "parking_lot",
+ "portable-pty",
+ "rfd",
+ "serde",
+ "serde_json",
+ "uuid",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "fax"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3901,19 +3919,10 @@ dependencies = [
 name = "suite-fawkes"
 version = "0.1.0"
 dependencies = [
- "alacritty_terminal",
- "arboard",
- "dirs",
  "eframe",
- "epaint",
- "parking_lot",
- "portable-pty",
- "rfd",
- "serde",
+ "fawkes",
  "serde_json",
  "suite-sdk",
- "uuid",
- "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -1,11 +1,6 @@
-//! Fawkes, module de la suite.
-//!
-//! Les modules de Fawkes sont compilés à la racine de cette crate (voir `build.rs`) ; l'adaptateur
-//! vit dans `suite`.
+//! Fawkes, module de la suite : la bibliothèque de Fawkes (`../Fawkes/src/lib.rs`) et l'adaptateur
+//! (`suite`).
 
-include!(concat!(env!("OUT_DIR"), "/fawkes_mods.rs"));
-
-/// Repris de `Fawkes/src/main.rs` : lu par la barre de titre et par `winhook`.
-pub const APP_TITLE: &str = "Fawkes";
+pub use fawkes::tailnet;
 
 pub mod suite;

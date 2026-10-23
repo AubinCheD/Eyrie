@@ -53,7 +53,9 @@ impl SuiteTiles<'_> {
         if !self.core.drawn.insert((module.to_string(), view.to_string())) {
             // Déjà dessinée ailleurs pendant cette image (garde-fou : un module n'est jamais appelé
             // deux fois pour la même vue).
-            ui.label(RichText::new(tr("Cette vue est affichée dans une autre case.")).color(self.core.palette().text_dim));
+            ui.label(
+                RichText::new(tr("Cette vue est affichée dans une autre case.")).color(self.core.palette().text_dim),
+            );
             return;
         }
         let palette = self.core.palette();
@@ -66,22 +68,38 @@ impl SuiteTiles<'_> {
         match &slot.state {
             SlotState::Running(_) => {
                 let mut child = ui.new_child(
-                    egui::UiBuilder::new().id_salt(("module", module, view)).max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)),
+                    egui::UiBuilder::new()
+                        .id_salt(("module", module, view))
+                        .max_rect(rect)
+                        .layout(egui::Layout::top_down(egui::Align::Min)),
                 );
                 child.set_clip_rect(rect.intersect(ui.clip_rect()));
                 let policy = Policy { keyboard: active, visible: true, sees_close: quit.sees(module) };
                 if let Some(o) =
-                    core::call(slot, host, self.frame, &ctx, CallKind::Ui, policy, &self.wish, journal, |m, cx| m.ui(&mut child, view, cx))
+                    core::call(slot, host, self.frame, &ctx, CallKind::Ui, policy, &self.wish, journal, |m, cx| {
+                        m.ui(&mut child, view, cx)
+                    })
                 {
                     quit.observe(module, &o);
                 }
                 if active {
-                    ui.painter().rect_stroke(rect.shrink(0.5), 0.0, Stroke::new(1.0, palette.accent.gamma_multiply(0.7)), egui::StrokeKind::Inside);
+                    ui.painter().rect_stroke(
+                        rect.shrink(0.5),
+                        0.0,
+                        Stroke::new(1.0, palette.accent.gamma_multiply(0.7)),
+                        egui::StrokeKind::Inside,
+                    );
                 }
             }
             SlotState::Disabled => {
                 let info = slot.info.clone();
-                views::card(ui, info.icon, &format!("{} {}", info.name, tr("est désactivé")), tr("Un module désactivé n'est pas construit et ne coûte rien."), palette.text_dim);
+                views::card(
+                    ui,
+                    info.icon,
+                    &format!("{} {}", info.name, tr("est désactivé")),
+                    tr("Un module désactivé n'est pas construit et ne coûte rien."),
+                    palette.text_dim,
+                );
                 let id = info.id.to_string();
                 ui.vertical_centered(|ui| {
                     ui.horizontal(|ui| {
@@ -96,7 +114,13 @@ impl SuiteTiles<'_> {
             }
             SlotState::Unavailable(u) => {
                 let (info, u) = (slot.info.clone(), u.clone());
-                views::card(ui, info.icon, &format!("{} {}", info.name, tr("n'est pas disponible")), &crate::app::unavailable_text(&u), palette.warn);
+                views::card(
+                    ui,
+                    info.icon,
+                    &format!("{} {}", info.name, tr("n'est pas disponible")),
+                    &crate::app::unavailable_text(&u),
+                    palette.warn,
+                );
                 ui.vertical_centered(|ui| {
                     ui.horizontal(|ui| {
                         if let Unavailable::AlreadyRunning { exe } = u
@@ -133,7 +157,9 @@ impl SuiteTiles<'_> {
 /// Un clic vient d'être fait dans la case, et pas sur une fenêtre posée par-dessus (fenêtre d'un
 /// module, palette, dialogue de la suite) : il donne le clavier au module de la case.
 fn pressed_on(ui: &egui::Ui, rect: egui::Rect) -> bool {
-    let Some(p) = ui.input(|i| if i.pointer.any_pressed() { i.pointer.press_origin() } else { None }) else { return false };
+    let Some(p) = ui.input(|i| if i.pointer.any_pressed() { i.pointer.press_origin() } else { None }) else {
+        return false;
+    };
     rect.contains(p) && ui.ctx().layer_id_at(p).is_none_or(|l| l == ui.layer_id())
 }
 
@@ -184,7 +210,11 @@ pub fn pane_menu(core: &mut Core, ui: &mut egui::Ui, pane: &Pane, window: u64) {
         }
     }
     ui.separator();
-    if ui.button(format!("✕  {}", tr("Fermer la case"))).on_hover_text(tr("Le module continue de tourner ; rouvrez-le depuis la barre d'activité.")).clicked() {
+    if ui
+        .button(format!("✕  {}", tr("Fermer la case")))
+        .on_hover_text(tr("Le module continue de tourner ; rouvrez-le depuis la barre d'activité."))
+        .clicked()
+    {
         core.act(Action::ClosePane(pane.clone()));
         ui.close();
     }
@@ -218,9 +248,26 @@ impl Behavior<Pane> for SuiteTiles<'_> {
         let mut job = LayoutJob::default();
         job.append(icon, 0.0, egui::TextFormat { font_id: font.clone(), color, ..Default::default() });
         let active = pane.module_id().is_some_and(|m| self.core.focus.module.as_deref() == Some(m));
-        job.append(&title, 6.0, egui::TextFormat { font_id: font.clone(), color: if active { p.text } else { p.text_muted }, ..Default::default() });
+        job.append(
+            &title,
+            6.0,
+            egui::TextFormat {
+                font_id: font.clone(),
+                color: if active { p.text } else { p.text_muted },
+                ..Default::default()
+            },
+        );
         if let Some((badge, c)) = self.badge_of(pane) {
-            job.append(&format!(" {badge} "), 6.0, egui::TextFormat { font_id: egui::FontId::proportional(11.0), color: p.on_alert_badge, background: c, ..Default::default() });
+            job.append(
+                &format!(" {badge} "),
+                6.0,
+                egui::TextFormat {
+                    font_id: egui::FontId::proportional(11.0),
+                    color: p.on_alert_badge,
+                    background: c,
+                    ..Default::default()
+                },
+            );
         }
         job.into()
     }
@@ -263,7 +310,14 @@ impl Behavior<Pane> for SuiteTiles<'_> {
         response
     }
 
-    fn top_bar_right_ui(&mut self, tiles: &Tiles<Pane>, ui: &mut egui::Ui, _tile_id: TileId, tabs: &egui_tiles::Tabs, _scroll: &mut f32) {
+    fn top_bar_right_ui(
+        &mut self,
+        tiles: &Tiles<Pane>,
+        ui: &mut egui::Ui,
+        _tile_id: TileId,
+        tabs: &egui_tiles::Tabs,
+        _scroll: &mut f32,
+    ) {
         let Some(active) = tabs.active.and_then(|a| tiles.get_pane(&a)).cloned() else { return };
         let p = self.core.palette();
         let small = |t: &str| RichText::new(t).color(p.text_dim).size(13.0);
@@ -272,14 +326,26 @@ impl Behavior<Pane> for SuiteTiles<'_> {
         let core = &mut *self.core;
         ui.menu_button(small("⋯"), |ui| pane_menu(core, ui, &active, window)).response.on_hover_text(tr("Case"));
         let concentrated = self.core.concentrate.as_ref() == Some(&active);
-        if ui.add(egui::Button::new(small("⛶")).frame(false)).on_hover_text(tr("Agrandir ou restaurer (Alt+Maj+Entrée)")).clicked() {
+        if ui
+            .add(egui::Button::new(small("⛶")).frame(false))
+            .on_hover_text(tr("Agrandir ou restaurer (Alt+Maj+Entrée)"))
+            .clicked()
+        {
             self.core.act(Action::Concentrate((!concentrated).then(|| active.clone())));
         }
         if self.window == 0 {
-            if ui.add(egui::Button::new(small("⧉")).frame(false)).on_hover_text(tr("Détacher dans une fenêtre (Alt+Maj+D)")).clicked() {
+            if ui
+                .add(egui::Button::new(small("⧉")).frame(false))
+                .on_hover_text(tr("Détacher dans une fenêtre (Alt+Maj+D)"))
+                .clicked()
+            {
                 self.core.act(Action::Detach(active.clone()));
             }
-        } else if ui.add(egui::Button::new(small("⇲")).frame(false)).on_hover_text(tr("Remettre dans la fenêtre principale")).clicked() {
+        } else if ui
+            .add(egui::Button::new(small("⇲")).frame(false))
+            .on_hover_text(tr("Remettre dans la fenêtre principale"))
+            .clicked()
+        {
             self.core.act(Action::MoveToMain(active.clone()));
         }
     }
@@ -304,12 +370,24 @@ impl Behavior<Pane> for SuiteTiles<'_> {
         self.core.palette().sidebar
     }
 
-    fn tab_bg_color(&self, _visuals: &egui::Visuals, _tiles: &Tiles<Pane>, _tile_id: TileId, state: &TabState) -> Color32 {
+    fn tab_bg_color(
+        &self,
+        _visuals: &egui::Visuals,
+        _tiles: &Tiles<Pane>,
+        _tile_id: TileId,
+        state: &TabState,
+    ) -> Color32 {
         let p = self.core.palette();
         if state.active { p.panel } else { p.sidebar }
     }
 
-    fn tab_outline_stroke(&self, _visuals: &egui::Visuals, _tiles: &Tiles<Pane>, _tile_id: TileId, state: &TabState) -> Stroke {
+    fn tab_outline_stroke(
+        &self,
+        _visuals: &egui::Visuals,
+        _tiles: &Tiles<Pane>,
+        _tile_id: TileId,
+        state: &TabState,
+    ) -> Stroke {
         let p = self.core.palette();
         if state.active { Stroke::new(1.0, p.border) } else { Stroke::NONE }
     }
@@ -332,21 +410,23 @@ impl Behavior<Pane> for SuiteTiles<'_> {
 pub fn concentrated(t: &mut SuiteTiles, ui: &mut egui::Ui, pane: &Pane) {
     let p = t.core.palette();
     let (title, icon, color) = t.core.pane_title(pane);
-    egui::Panel::top("concentration").exact_size(28.0).frame(egui::Frame::new().fill(p.sidebar).inner_margin(egui::Margin::symmetric(8, 4))).show(ui, |ui| {
-        ui.horizontal_centered(|ui| {
-            ui.label(RichText::new(icon).color(color));
-            ui.label(RichText::new(title).color(p.text).strong());
-            ui.label(RichText::new(tr("· concentration")).color(p.text_dim));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button(tr("Restaurer la disposition")).clicked() {
-                    t.core.act(Action::Concentrate(None));
-                }
+    egui::Panel::top("concentration")
+        .exact_size(28.0)
+        .frame(egui::Frame::new().fill(p.sidebar).inner_margin(egui::Margin::symmetric(8, 4)))
+        .show(ui, |ui| {
+            ui.horizontal_centered(|ui| {
+                ui.label(RichText::new(icon).color(color));
+                ui.label(RichText::new(title).color(p.text).strong());
+                ui.label(RichText::new(tr("· concentration")).color(p.text_dim));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button(tr("Restaurer la disposition")).clicked() {
+                        t.core.act(Action::Concentrate(None));
+                    }
+                });
             });
         });
-    });
     egui::CentralPanel::default().frame(egui::Frame::new().fill(p.panel)).show(ui, |ui| {
         let mut pane = pane.clone();
         let _ = t.pane_ui(ui, TileId::from_u64(u64::MAX), &mut pane);
     });
 }
-

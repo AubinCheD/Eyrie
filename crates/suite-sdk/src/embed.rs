@@ -56,6 +56,7 @@ pub struct Embedded<A: eframe::App> {
     before_ui: Option<UiHook<A>>,
     after_ui: Option<UiHook<A>>,
     after_logic: Option<UiHook<A>>,
+    before_logic: Option<UiHook<A>>,
     status_hook: Option<StatusHook<A>>,
     close_hook: Option<CloseHook<A>>,
     request_hook: Option<RequestHook<A>>,
@@ -77,6 +78,7 @@ impl<A: eframe::App> Embedded<A> {
             before_ui: None,
             after_ui: None,
             after_logic: None,
+            before_logic: None,
             status_hook: None,
             close_hook: None,
             request_hook: None,
@@ -108,6 +110,13 @@ impl<A: eframe::App> Embedded<A> {
 
     pub fn after_ui(mut self, f: impl FnMut(&mut A, &mut Cx) + 'static) -> Self {
         self.after_ui = Some(Box::new(f));
+        self
+    }
+
+    /// Avant sa logique, à chaque image : lui passer ce que la suite impose (DragonTree : thème et
+    /// langue).
+    pub fn before_logic(mut self, f: impl FnMut(&mut A, &mut Cx) + 'static) -> Self {
+        self.before_logic = Some(Box::new(f));
         self
     }
 
@@ -161,6 +170,9 @@ impl<A: eframe::App> Module for Embedded<A> {
             let keys = std::mem::take(&mut self.pending);
             ctx.input_mut(|i| i.events.extend(keys.iter().cloned()));
             self.injected = keys;
+        }
+        if let Some(h) = &mut self.before_logic {
+            h(&mut self.app, cx);
         }
         self.app.logic(ctx, cx.frame);
         if let Some(h) = &mut self.after_logic {

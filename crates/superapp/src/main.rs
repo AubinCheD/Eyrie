@@ -43,7 +43,9 @@ pub fn restart() {
 
 /// `--apres=<pid>` : attendre la fin de l'ancienne suite (elle tient le verrou de chaque module).
 fn wait_for_previous(args: &[String]) {
-    let Some(pid) = args.iter().find_map(|a| a.strip_prefix("--apres=")).and_then(|p| p.parse::<u32>().ok()) else { return };
+    let Some(pid) = args.iter().find_map(|a| a.strip_prefix("--apres=")).and_then(|p| p.parse::<u32>().ok()) else {
+        return;
+    };
     #[cfg(windows)]
     unsafe {
         use windows_sys::Win32::Foundation::CloseHandle;

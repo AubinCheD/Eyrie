@@ -15,20 +15,22 @@ pub const fn mark(fr: &'static str) -> &'static str {
     fr
 }
 
-/// Les clés `tr("…")` et `mark("…")` d'un texte source.
+/// Les clés `tr("…")` et `mark("…")` d'un texte source (le texte peut aller à la ligne après la
+/// parenthèse, comme rustfmt le coupe).
 #[cfg(test)]
 pub fn keys_in(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let bytes = text.as_bytes();
-    for (needle, skip) in [("tr(\"", 4), ("mark(\"", 6)] {
+    for needle in ["tr(", "mark("] {
         let mut from = 0;
         while let Some(i) = text[from..].find(needle).map(|i| i + from) {
-            from = i + skip;
+            from = i + needle.len();
             // `from_str("…")`, `to_str("…")` : pas une clé.
             if i > 0 && (bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_') {
                 continue;
             }
-            let rest = &text[i + skip..];
+            let rest = text[i + needle.len()..].trim_start();
+            let Some(rest) = rest.strip_prefix('"') else { continue };
             let mut key = String::new();
             let mut chars = rest.chars();
             while let Some(c) = chars.next() {
@@ -77,7 +79,8 @@ mod tests {
 
     #[test]
     fn keys_are_read_like_the_compiler_reads_them() {
-        let src = r#"tr("a « b »") mark("c\"d") from_str("x") tr(view.title())"#;
-        assert_eq!(super::keys_in(src), vec!["a « b »".to_string(), "c\"d".to_string()]);
+        // Le dernier : coupé par rustfmt après la parenthèse.
+        let src = "tr(\"a « b »\") mark(\"c\\\"d\") from_str(\"x\") tr(view.title()) tr(\n    \"e\",\n)";
+        assert_eq!(super::keys_in(src), vec!["a « b »".to_string(), "e".to_string(), "c\"d".to_string()]);
     }
 }

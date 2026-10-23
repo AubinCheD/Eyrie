@@ -13,8 +13,20 @@ pub fn render(size: usize) -> Vec<u8> {
     for y in 0..size {
         for x in 0..size {
             let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
-            let col = if fx < half { 0 } else if fx > half + gap { 1 } else { continue };
-            let row = if fy < half { 0 } else if fy > half + gap { 1 } else { continue };
+            let col = if fx < half {
+                0
+            } else if fx > half + gap {
+                1
+            } else {
+                continue;
+            };
+            let row = if fy < half {
+                0
+            } else if fy > half + gap {
+                1
+            } else {
+                continue;
+            };
             // Coin arrondi de chaque case.
             let (x0, y0) = (col as f32 * (half + gap), row as f32 * (half + gap));
             let (lx, ly) = (fx - x0, fy - y0);

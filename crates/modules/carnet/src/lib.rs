@@ -94,7 +94,10 @@ impl Carnet {
         if self.current.is_empty() {
             "Hors dépôt".into()
         } else {
-            std::path::Path::new(&self.current).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| self.current.clone())
+            std::path::Path::new(&self.current)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| self.current.clone())
         }
     }
 
@@ -140,14 +143,23 @@ impl Carnet {
                     self.events.clear();
                 }
                 if ui.small_button("Publier un essai").clicked() {
-                    self.host.publish(Event { source: ID.into(), kind: "essai".into(), data: serde_json::json!({"texte": "bonjour du Carnet"}) });
+                    self.host.publish(Event {
+                        source: ID.into(),
+                        kind: "essai".into(),
+                        data: serde_json::json!({"texte": "bonjour du Carnet"}),
+                    });
                 }
             });
         });
         ui.separator();
         egui::ScrollArea::vertical().auto_shrink(false).stick_to_bottom(true).show(ui, |ui| {
             if self.events.is_empty() {
-                ui.label(RichText::new("Rien pour l'instant. Choisissez un contexte dans la barre du haut, ou publiez un essai.").color(p.text_dim));
+                ui.label(
+                    RichText::new(
+                        "Rien pour l'instant. Choisissez un contexte dans la barre du haut, ou publiez un essai.",
+                    )
+                    .color(p.text_dim),
+                );
             }
             for (at, e) in &self.events {
                 let secs = SystemTime::now().duration_since(*at).map(|d| d.as_secs()).unwrap_or(0);
@@ -188,18 +200,32 @@ impl Module for Carnet {
     }
 
     fn status(&self) -> ModuleStatus {
-        let note = self.saved.notes.get(&self.current).map(|t| t.lines().filter(|l| !l.trim().is_empty()).count()).unwrap_or(0);
+        let note = self
+            .saved
+            .notes
+            .get(&self.current)
+            .map(|t| t.lines().filter(|l| !l.trim().is_empty()).count())
+            .unwrap_or(0);
         ModuleStatus {
             title: Some(format!("Carnet — {}", self.label())),
-            badge: (self.unseen > 0).then(|| Badge::count(self.unseen, Tone::Info, format!("{} événement(s) du bus non lus", self.unseen))),
-            waiting: if note > 0 { vec![format!("{note} ligne(s) de notes pour {}", self.label())] } else { Vec::new() },
+            badge: (self.unseen > 0)
+                .then(|| Badge::count(self.unseen, Tone::Info, format!("{} événement(s) du bus non lus", self.unseen))),
+            waiting: if note > 0 {
+                vec![format!("{note} ligne(s) de notes pour {}", self.label())]
+            } else {
+                Vec::new()
+            },
         }
     }
 
     fn commands(&self) -> Vec<CommandInfo> {
         vec![
             CommandInfo { id: "hors_depot".into(), title: "Notes hors dépôt".into(), shortcut: None },
-            CommandInfo { id: "effacer_bus".into(), title: "Effacer le journal du bus".into(), shortcut: Shortcut::parse("Ctrl+Maj+K") },
+            CommandInfo {
+                id: "effacer_bus".into(),
+                title: "Effacer le journal du bus".into(),
+                shortcut: Shortcut::parse("Ctrl+Maj+K"),
+            },
         ]
     }
 
@@ -218,7 +244,11 @@ impl Module for Carnet {
         if ui.checkbox(&mut self.saved.follow_context, "Suivre le contexte partagé (dépôt courant)").changed() {
             self.dirty = true;
         }
-        ui.label(RichText::new(format!("Notes enregistrées dans {}", host.module_dir(ID).display())).color(host.palette().text_dim).small());
+        ui.label(
+            RichText::new(format!("Notes enregistrées dans {}", host.module_dir(ID).display()))
+                .color(host.palette().text_dim)
+                .small(),
+        );
         true
     }
 
@@ -274,7 +304,8 @@ mod tests {
         let mut c = Carnet::open(host("contexte"));
         c.saved.follow_context = true;
         let ctx = SharedContext { dir: "C:/dev/ozmo".into(), label: "ozmo".into(), source: "suite".into() };
-        let ev = Event { source: "suite".into(), kind: "contexte".into(), data: serde_json::to_value(Some(ctx)).unwrap() };
+        let ev =
+            Event { source: "suite".into(), kind: "contexte".into(), data: serde_json::to_value(Some(ctx)).unwrap() };
         let mut frame = eframe::Frame::_new_kittest();
         let h = c.host.clone();
         let mut cx = Cx { host: &h, frame: &mut frame, active: false, visible: false };
@@ -288,7 +319,12 @@ mod tests {
     fn another_module_can_add_a_note_and_it_is_saved() {
         let h = host("noter");
         let mut c = Carnet::open(h.clone());
-        let req = Request { from: "owlery".into(), to: ID.into(), demande: "noter".into(), data: serde_json::json!({"dir": "C:/dev/ozmo", "texte": "relire la PR 12"}) };
+        let req = Request {
+            from: "owlery".into(),
+            to: ID.into(),
+            demande: "noter".into(),
+            data: serde_json::json!({"dir": "C:/dev/ozmo", "texte": "relire la PR 12"}),
+        };
         let mut frame = eframe::Frame::_new_kittest();
         let mut cx = Cx { host: &h, frame: &mut frame, active: false, visible: false };
         assert!(c.on_request(&req, &mut cx).is_ok());

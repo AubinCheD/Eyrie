@@ -64,14 +64,24 @@ impl Slot {
     /// Construit le module (au démarrage avec le `CreationContext` d'eframe ; plus tard, pour le
     /// relancer ou l'activer, avec un contexte sans fenêtre : les modules n'en lisent que
     /// `egui_ctx`, sauf l'icône de notification de Patronus, alors absente).
-    pub fn start(&mut self, cc: &eframe::CreationContext<'_>, host: &Host, data: suite_sdk::DataMode, journal: &mut Journal) {
+    pub fn start(
+        &mut self,
+        cc: &eframe::CreationContext<'_>,
+        host: &Host,
+        data: suite_sdk::DataMode,
+        journal: &mut Journal,
+    ) {
         self.stop();
         let bcx = suite_sdk::BuildCx { cc, host: host.clone(), data };
         let started = std::time::Instant::now();
         let build = self.build;
         self.state = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| build(&bcx))) {
             Ok(Ok(m)) => {
-                journal.push(self.info.id, Tone::Ok, format!("{} prêt ({} ms)", self.info.name, started.elapsed().as_millis()));
+                journal.push(
+                    self.info.id,
+                    Tone::Ok,
+                    format!("{} prêt ({} ms)", self.info.name, started.elapsed().as_millis()),
+                );
                 SlotState::Running(m)
             }
             Ok(Err(u)) => {
@@ -205,13 +215,22 @@ pub fn call(
         module.observe_viewport_commands(&observed.commands);
         for c in &observed.commands {
             let what: Option<(&'static str, &'static str)> = match c {
-                egui::ViewportCommand::Title(_) => {
-                    Some(("titre", mark("a voulu renommer la fenêtre : la suite garde son titre, celui du module va dans sa case.")))
+                egui::ViewportCommand::Title(_) => Some((
+                    "titre",
+                    mark("a voulu renommer la fenêtre : la suite garde son titre, celui du module va dans sa case."),
+                )),
+                egui::ViewportCommand::Minimized(true) => {
+                    Some(("reduire", mark("a voulu réduire la fenêtre : ignoré.")))
                 }
-                egui::ViewportCommand::Minimized(true) => Some(("reduire", mark("a voulu réduire la fenêtre : ignoré."))),
-                egui::ViewportCommand::Maximized(_) => Some(("agrandir", mark("a voulu agrandir ou restaurer la fenêtre : ignoré."))),
-                egui::ViewportCommand::Decorations(_) => Some(("decorations", mark("a voulu changer la barre de titre de la fenêtre : ignoré."))),
-                egui::ViewportCommand::Close => Some(("fermer", mark("a voulu fermer la fenêtre : ignoré (fermez plutôt sa case)."))),
+                egui::ViewportCommand::Maximized(_) => {
+                    Some(("agrandir", mark("a voulu agrandir ou restaurer la fenêtre : ignoré.")))
+                }
+                egui::ViewportCommand::Decorations(_) => {
+                    Some(("decorations", mark("a voulu changer la barre de titre de la fenêtre : ignoré.")))
+                }
+                egui::ViewportCommand::Close => {
+                    Some(("fermer", mark("a voulu fermer la fenêtre : ignoré (fermez plutôt sa case).")))
+                }
                 _ => None,
             };
             if let Some((kind, text)) = what
@@ -225,7 +244,11 @@ pub fn call(
         journal.push(
             slot.info.id,
             Tone::Info,
-            format!("{} {}", slot.info.name, tr("a changé le style global (thème, visuels ou zoom) : rétabli après chacun de ses appels.")),
+            format!(
+                "{} {}",
+                slot.info.name,
+                tr("a changé le style global (thème, visuels ou zoom) : rétabli après chacun de ses appels.")
+            ),
         );
     }
     if let Some(msg) = &observed.panic {

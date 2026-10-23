@@ -10,6 +10,7 @@
 use std::sync::mpsc;
 
 use eframe::egui::Color32;
+use grimoire::state::ThemeId;
 use suite_sdk::embed::{Embedded, KeyCommand};
 use suite_sdk::{BuildCx, Module, ModuleFactory, ModuleInfo, Origin, Unavailable};
 
@@ -53,7 +54,8 @@ fn commands() -> Vec<KeyCommand> {
 fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
     // `GRIMOIRE_DATA_DIR` est posé par la suite en mode essai (avant tout fil).
     let custom = grimoire::instance::custom_data_dir();
-    let guard = grimoire::instance::acquire(custom.as_deref()).ok_or(Unavailable::AlreadyRunning { exe: "grimoire.exe" })?;
+    let guard =
+        grimoire::instance::acquire(custom.as_deref()).ok_or(Unavailable::AlreadyRunning { exe: "grimoire.exe" })?;
     let (tx, rx) = mpsc::channel();
     let pipe = grimoire::instance::pipe_name(custom.as_deref());
     let wake = bcx.cc.egui_ctx.clone();
@@ -63,6 +65,17 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
         .map_err(|e| Unavailable::Failed(format!("canal nommé : {e}")))?;
     let loaded = grimoire::state::load();
     grimoire::state::remove_roaming_index();
-    let app = grimoire::app::App::new(&bcx.cc.egui_ctx, loaded, None, rx);
-    Ok(Box::new(Embedded::new(info(), bcx.host.clone(), app).hidden_ui(true).key_commands(commands()).keep(guard)))
+    let mut app = grimoire::app::App::new(&bcx.cc.egui_ctx, loaded, None, rx);
+    // La fenêtre est celle de la suite : sa taille n'entre pas dans l'état de Grimoire.
+    app.set_hosted(true);
+    let module = Embedded::new(info(), bcx.host.clone(), app)
+        .hidden_ui(true)
+        .key_commands(commands())
+        // Ses couleurs suivent le thème clair ou sombre de la suite (sans toucher à son réglage).
+        .before_logic(|app, cx| {
+            let t = if cx.host.palette().dark { ThemeId::Sombre } else { ThemeId::Clair };
+            app.set_theme_override(Some(t));
+        })
+        .keep(guard);
+    Ok(Box::new(module))
 }

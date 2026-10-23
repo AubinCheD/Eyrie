@@ -20,7 +20,8 @@ pub enum ThemeChoice {
 }
 
 impl ThemeChoice {
-    pub const ALL: [ThemeChoice; 4] = [ThemeChoice::Systeme, ThemeChoice::Graphite, ThemeChoice::Fluent, ThemeChoice::Nuit];
+    pub const ALL: [ThemeChoice; 4] =
+        [ThemeChoice::Systeme, ThemeChoice::Graphite, ThemeChoice::Fluent, ThemeChoice::Nuit];
 
     /// Nom affiché (en français : la clé du catalogue de traduction).
     pub fn label(self) -> &'static str {
@@ -317,9 +318,13 @@ mod tests {
                     failures.push(format!("{what} : {c:.2} < {min}"));
                 }
             };
-            for (bg_name, bg) in
-                [("barre", p.sidebar), ("case", p.panel), ("onglet", p.surface), ("fenêtre", p.window), ("titre", p.chrome)]
-            {
+            for (bg_name, bg) in [
+                ("barre", p.sidebar),
+                ("case", p.panel),
+                ("onglet", p.surface),
+                ("fenêtre", p.window),
+                ("titre", p.chrome),
+            ] {
                 check(&format!("texte / {bg_name}"), p.text, bg, 4.5);
                 check(&format!("texte secondaire / {bg_name}"), p.text_dim, bg, 4.5);
             }
@@ -352,7 +357,11 @@ mod tests {
     fn module_colors_become_readable() {
         for id in ThemeId::ALL {
             let p = palette(id);
-            for c in [Color32::from_rgb(0x9f, 0xc5, 0xff), Color32::from_rgb(0xd9, 0xb4, 0x3c), Color32::from_rgb(0x3a, 0xa8, 0xd8)] {
+            for c in [
+                Color32::from_rgb(0x9f, 0xc5, 0xff),
+                Color32::from_rgb(0xd9, 0xb4, 0x3c),
+                Color32::from_rgb(0x3a, 0xa8, 0xd8),
+            ] {
                 assert!(contrast(readable(p, c), p.surface) >= 3.0, "{id:?} {c:?}");
             }
         }

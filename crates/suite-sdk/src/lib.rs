@@ -24,6 +24,6 @@ pub use egui;
 
 pub use host::{Event, Host, Notification, Request, Tone};
 pub use module::{
-    BuildCx, Badge, CloseCheck, CommandInfo, Cx, DataMode, Module, ModuleFactory, ModuleInfo, ModuleStatus, Origin,
+    Badge, BuildCx, CloseCheck, CommandInfo, Cx, DataMode, Module, ModuleFactory, ModuleInfo, ModuleStatus, Origin,
     Unavailable, ViewInfo,
 };

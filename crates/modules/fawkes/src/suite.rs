@@ -16,10 +16,12 @@ use suite_sdk::embed::{Embedded, KeyCommand};
 use suite_sdk::instance::NamedMutex;
 use suite_sdk::module::ModuleStatus;
 use suite_sdk::theme::ThemeId;
-use suite_sdk::{Badge, BuildCx, DataMode, Module, ModuleFactory, ModuleInfo, Notification, Origin, Request, Tone, Unavailable};
+use suite_sdk::{
+    Badge, BuildCx, DataMode, Module, ModuleFactory, ModuleInfo, Notification, Origin, Request, Tone, Unavailable,
+};
 
-use crate::app::{App, NewClaude, NewTerm};
-use crate::model::ThemeId as FawkesTheme;
+use fawkes::app::{App, NewClaude, NewTerm};
+use fawkes::model::ThemeId as FawkesTheme;
 
 pub const ID: &str = "fawkes";
 
@@ -72,7 +74,10 @@ fn fawkes_theme(id: ThemeId) -> FawkesTheme {
 
 fn suite_theme_of(host: &suite_sdk::Host) -> FawkesTheme {
     let p = host.palette();
-    let id = suite_sdk::theme::ThemeId::ALL.into_iter().find(|t| std::ptr::eq(suite_sdk::theme::palette(*t), p)).unwrap_or(ThemeId::Graphite);
+    let id = suite_sdk::theme::ThemeId::ALL
+        .into_iter()
+        .find(|t| std::ptr::eq(suite_sdk::theme::palette(*t), p))
+        .unwrap_or(ThemeId::Graphite);
     fawkes_theme(id)
 }
 
@@ -80,7 +85,8 @@ fn suite_theme_of(host: &suite_sdk::Host) -> FawkesTheme {
 fn status(app: &App, base: &ModuleStatus) -> ModuleStatus {
     let mut s = base.clone();
     let waiting = app.ui.waiting.len() as u32;
-    s.badge = (waiting > 0).then(|| Badge::count(waiting, Tone::Warn, format!("{waiting} session(s) Claude en attente de réponse")));
+    s.badge = (waiting > 0)
+        .then(|| Badge::count(waiting, Tone::Warn, format!("{waiting} session(s) Claude en attente de réponse")));
     s.waiting = app
         .st
         .terminals
@@ -114,23 +120,25 @@ fn on_request(app: &mut App, r: &Request, cx: &mut suite_sdk::Cx) -> Result<serd
 fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
     // `FAWKES_DATA_DIR` est posé par la suite en mode essai (avant tout fil).
     let custom = std::env::var_os("FAWKES_DATA_DIR");
-    let guard = NamedMutex::try_acquire(&instance_name(custom.as_deref())).ok_or(Unavailable::AlreadyRunning { exe: "fawkes.exe" })?;
+    let guard = NamedMutex::try_acquire(&instance_name(custom.as_deref()))
+        .ok_or(Unavailable::AlreadyRunning { exe: "fawkes.exe" })?;
     let mut problems: Vec<String> = match bcx.data {
-        DataMode::Shared => crate::persist::migrate_old_data_dir().into_iter().collect(),
+        DataMode::Shared => fawkes::persist::migrate_old_data_dir().into_iter().collect(),
         DataMode::Trial(_) => Vec::new(),
     };
-    let crate::persist::Loaded { state, problems: load_problems } = crate::persist::load();
+    let fawkes::persist::Loaded { state, problems: load_problems } = fawkes::persist::load();
     problems.extend(load_problems);
     let app = App::new(bcx.cc, state, problems);
 
     // Pendant l'affichage : le thème de la suite, et la géométrie de la fenêtre où Fawkes est
     // dessiné (il la relève à chaque image pour son propre lancement : sans cela, `fawkes.exe`
     // rouvrirait à la taille de la suite). Les deux reprennent ensuite la valeur de Fawkes.
-    let saved = std::rc::Rc::new(std::cell::RefCell::new(None::<(FawkesTheme, FawkesTheme, crate::model::WindowGeom)>));
+    let saved =
+        std::rc::Rc::new(std::cell::RefCell::new(None::<(FawkesTheme, FawkesTheme, fawkes::model::WindowGeom)>));
     let (before, after) = (saved.clone(), saved);
     // Fawkes pose ses notifications sur sa propre fenêtre, qu'il ne trouve pas dans la suite : les
     // sessions Claude qui se mettent à attendre vont au centre de notifications de la suite.
-    let mut waiting_before: std::collections::HashSet<crate::model::TermId> = Default::default();
+    let mut waiting_before: std::collections::HashSet<fawkes::model::TermId> = Default::default();
     let module = Embedded::new(info(), bcx.host.clone(), app)
         .after_logic(move |app, cx| {
             let now = &app.ui.waiting;

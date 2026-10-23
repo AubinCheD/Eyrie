@@ -86,8 +86,18 @@ pub fn items(suite: &Suite) -> Vec<Item> {
         let views = s.module().map(|m| m.views()).unwrap_or_else(|| vec![suite_sdk::ViewInfo::main(s.info.name)]);
         for view in &views {
             let pane = Pane::module(s.info.id, &view.id);
-            let title = if views.len() > 1 { format!("{} : {}", s.info.name, view.title) } else { format!("{} {}", tr("Aller à"), s.info.name) };
-            v.push(Item { icon: s.info.icon.into(), color: suite_sdk::theme::readable(p, s.info.color), title, detail: s.info.summary.into(), action: Action::Reveal(pane.clone()) });
+            let title = if views.len() > 1 {
+                format!("{} : {}", s.info.name, view.title)
+            } else {
+                format!("{} {}", tr("Aller à"), s.info.name)
+            };
+            v.push(Item {
+                icon: s.info.icon.into(),
+                color: suite_sdk::theme::readable(p, s.info.color),
+                title,
+                detail: s.info.summary.into(),
+                action: Action::Reveal(pane.clone()),
+            });
             v.push(Item {
                 icon: "⧉".into(),
                 color: suite_sdk::theme::readable(p, s.info.color),
@@ -109,10 +119,22 @@ pub fn items(suite: &Suite) -> Vec<Item> {
         }
     }
     for view in SuiteView::ALL {
-        v.push(Item { icon: view.icon().into(), color: p.accent, title: tr(view.title()).into(), detail: tr("vue de la suite").into(), action: Action::Reveal(Pane::Suite { view }) });
+        v.push(Item {
+            icon: view.icon().into(),
+            color: p.accent,
+            title: tr(view.title()).into(),
+            detail: tr("vue de la suite").into(),
+            action: Action::Reveal(Pane::Suite { view }),
+        });
     }
     for kind in Preset::ALL {
-        v.push(Item { icon: kind.icon().into(), color: p.text_muted, title: format!("{} : {}", tr("Disposition"), tr(kind.label())), detail: String::new(), action: Action::Preset(kind) });
+        v.push(Item {
+            icon: kind.icon().into(),
+            color: p.text_muted,
+            title: format!("{} : {}", tr("Disposition"), tr(kind.label())),
+            detail: String::new(),
+            action: Action::Preset(kind),
+        });
     }
     let mut names: Vec<String> = core.st.layouts.keys().cloned().collect();
     for (n, _) in DEFAULT_LAYOUTS {
@@ -121,20 +143,56 @@ pub fn items(suite: &Suite) -> Vec<Item> {
         }
     }
     for name in names {
-        v.push(Item { icon: "▦".into(), color: p.text_muted, title: format!("{} « {name} »", tr("Disposition")), detail: tr("enregistrée").into(), action: Action::LoadLayout(name) });
+        v.push(Item {
+            icon: "▦".into(),
+            color: p.text_muted,
+            title: format!("{} « {name} »", tr("Disposition")),
+            detail: tr("enregistrée").into(),
+            action: Action::LoadLayout(name),
+        });
     }
     if let Some(pane) = suite.active_pane() {
-        v.push(Item { icon: "⛶".into(), color: p.text_muted, title: tr("Agrandir ou restaurer la case active").into(), detail: "Alt+Maj+Entrée".into(), action: Action::Concentrate(if core.concentrate.is_some() { None } else { Some(pane.clone()) }) });
-        v.push(Item { icon: "⧉".into(), color: p.text_muted, title: tr("Détacher la case active").into(), detail: "Alt+Maj+D".into(), action: Action::Detach(pane) });
+        v.push(Item {
+            icon: "⛶".into(),
+            color: p.text_muted,
+            title: tr("Agrandir ou restaurer la case active").into(),
+            detail: "Alt+Maj+Entrée".into(),
+            action: Action::Concentrate(if core.concentrate.is_some() { None } else { Some(pane.clone()) }),
+        });
+        v.push(Item {
+            icon: "⧉".into(),
+            color: p.text_muted,
+            title: tr("Détacher la case active").into(),
+            detail: "Alt+Maj+D".into(),
+            action: Action::Detach(pane),
+        });
     }
     if !suite.windows.is_empty() {
-        v.push(Item { icon: "⇲".into(), color: p.text_muted, title: tr("Remettre toutes les fenêtres dans la principale").into(), detail: String::new(), action: Action::AttachAll });
+        v.push(Item {
+            icon: "⇲".into(),
+            color: p.text_muted,
+            title: tr("Remettre toutes les fenêtres dans la principale").into(),
+            detail: String::new(),
+            action: Action::AttachAll,
+        });
     }
     for t in ThemeChoice::ALL {
-        v.push(Item { icon: "◐".into(), color: p.text_muted, title: format!("{} : {}", tr("Thème"), tr(t.label())), detail: String::new(), action: Action::SetTheme(t) });
+        v.push(Item {
+            icon: "◐".into(),
+            color: p.text_muted,
+            title: format!("{} : {}", tr("Thème"), tr(t.label())),
+            detail: String::new(),
+            action: Action::SetTheme(t),
+        });
     }
     for l in Lang::ALL {
-        v.push(Item { icon: "🌐".into(), color: p.text_muted, title: format!("{} : {}", tr("Langue"), l.label()), detail: String::new(), action: Action::SetLang(Some(l)) });
+        v.push(Item {
+            icon: "🌐".into(),
+            color: p.text_muted,
+            title: format!("{} : {}", tr("Langue"), l.label()),
+            detail: String::new(),
+            action: Action::SetLang(Some(l)),
+        });
     }
     for (page, title) in [
         (Page::General, mark("Réglages de la suite")),
@@ -144,9 +202,21 @@ pub fn items(suite: &Suite) -> Vec<Item> {
         (Page::Shortcuts, mark("Réglages : raccourcis")),
         (Page::Layouts, mark("Réglages : dispositions")),
     ] {
-        v.push(Item { icon: "⚙".into(), color: p.text_muted, title: tr(title).into(), detail: String::new(), action: Action::OpenSettings(page) });
+        v.push(Item {
+            icon: "⚙".into(),
+            color: p.text_muted,
+            title: tr(title).into(),
+            detail: String::new(),
+            action: Action::OpenSettings(page),
+        });
     }
-    v.push(Item { icon: "⟳".into(), color: p.text_muted, title: tr("Relancer la suite").into(), detail: String::new(), action: Action::Restart });
+    v.push(Item {
+        icon: "⟳".into(),
+        color: p.text_muted,
+        title: tr("Relancer la suite").into(),
+        detail: String::new(),
+        action: Action::Restart,
+    });
     v
 }
 
@@ -183,48 +253,59 @@ pub fn show(suite: &mut Suite, ctx: &egui::Context) {
         .order(egui::Order::Foreground)
         .fixed_pos(egui::pos2(screen.center().x - width / 2.0, screen.top() + 60.0))
         .show(ctx, |ui| {
-            egui::Frame::popup(ui.style()).fill(p.window).stroke(egui::Stroke::new(1.0, p.border)).inner_margin(egui::Margin::same(8)).show(ui, |ui| {
-                ui.set_width(width);
-                let edit = egui::TextEdit::singleline(&mut state.query).hint_text(tr("Module, case, disposition, commande…")).desired_width(f32::INFINITY);
-                let r = ui.add(edit);
-                if state.focus_next || !r.has_focus() {
-                    r.request_focus();
-                    state.focus_next = false;
-                }
-                if r.changed() {
-                    state.selected = 0;
-                }
-                ui.add_space(4.0);
-                for (row, (_, i)) in ranked.iter().enumerate() {
-                    let it = &all[*i];
-                    let selected = row == state.selected;
-                    let frame = egui::Frame::new().fill(if selected { p.selection } else { Color32::TRANSPARENT }).corner_radius(egui::CornerRadius::same(p.radius)).inner_margin(egui::Margin::symmetric(6, 3));
-                    let resp = frame
-                        .show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(&it.icon).color(it.color));
-                                ui.label(RichText::new(&it.title).color(p.text));
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    ui.label(RichText::new(&it.detail).color(p.text_dim).small());
+            egui::Frame::popup(ui.style())
+                .fill(p.window)
+                .stroke(egui::Stroke::new(1.0, p.border))
+                .inner_margin(egui::Margin::same(8))
+                .show(ui, |ui| {
+                    ui.set_width(width);
+                    let edit = egui::TextEdit::singleline(&mut state.query)
+                        .hint_text(tr("Module, case, disposition, commande…"))
+                        .desired_width(f32::INFINITY);
+                    let r = ui.add(edit);
+                    if state.focus_next || !r.has_focus() {
+                        r.request_focus();
+                        state.focus_next = false;
+                    }
+                    if r.changed() {
+                        state.selected = 0;
+                    }
+                    ui.add_space(4.0);
+                    for (row, (_, i)) in ranked.iter().enumerate() {
+                        let it = &all[*i];
+                        let selected = row == state.selected;
+                        let frame = egui::Frame::new()
+                            .fill(if selected { p.selection } else { Color32::TRANSPARENT })
+                            .corner_radius(egui::CornerRadius::same(p.radius))
+                            .inner_margin(egui::Margin::symmetric(6, 3));
+                        let resp = frame
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new(&it.icon).color(it.color));
+                                    ui.label(RichText::new(&it.title).color(p.text));
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        ui.label(RichText::new(&it.detail).color(p.text_dim).small());
+                                    });
                                 });
-                            });
-                        })
-                        .response
-                        .interact(egui::Sense::click());
-                    if resp.clicked() {
-                        chosen = Some(*i);
+                            })
+                            .response
+                            .interact(egui::Sense::click());
+                        if resp.clicked() {
+                            chosen = Some(*i);
+                        }
+                        if resp.hovered() {
+                            state.selected = row;
+                        }
                     }
-                    if resp.hovered() {
-                        state.selected = row;
+                    if ranked.is_empty() {
+                        ui.label(RichText::new(tr("Rien ne correspond.")).color(p.text_dim));
                     }
-                }
-                if ranked.is_empty() {
-                    ui.label(RichText::new(tr("Rien ne correspond.")).color(p.text_dim));
-                }
-            });
+                });
         });
-    let clicked_outside = ctx.input(|i| i.pointer.any_pressed() && i.pointer.press_origin().is_some_and(|o| !resp.response.rect.contains(o)));
+    let clicked_outside = ctx.input(|i| {
+        i.pointer.any_pressed() && i.pointer.press_origin().is_some_and(|o| !resp.response.rect.contains(o))
+    });
     if escape || clicked_outside {
         suite.shell.palette.open = false;
     }
@@ -243,7 +324,9 @@ mod tests {
         assert!(score("faw", "Aller à Fawkes").is_some());
         assert!(score("reg", "Réglages de la suite").is_some(), "sans accents");
         assert!(score("zzz", "Fawkes").is_none());
-        assert!(score("dra", "DragonTree").unwrap() > score("dra", "Disposition : grille avec Dragon").unwrap_or(0) - 1000);
+        assert!(
+            score("dra", "DragonTree").unwrap() > score("dra", "Disposition : grille avec Dragon").unwrap_or(0) - 1000
+        );
         assert!(score("dt", "DragonTree").is_some(), "lettres dans l'ordre");
     }
 }

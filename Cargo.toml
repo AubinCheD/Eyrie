@@ -20,6 +20,7 @@ suite-menagerie = { path = "crates/modules/menagerie" }
 suite-grimoire = { path = "crates/modules/grimoire" }
 
 # Les modules, dans les dépôts voisins (lecture seule : la suite ne modifie pas leur code).
+fawkes = { path = "../Fawkes" }
 dragontree-app = { path = "../DragonTree/crates/dragontree-app" }
 dragontree-i18n = { path = "../DragonTree/crates/dragontree-i18n" }
 dragontree-forges = { path = "../DragonTree/crates/dragontree-forges" }

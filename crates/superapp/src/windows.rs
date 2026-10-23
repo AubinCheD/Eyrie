@@ -31,7 +31,14 @@ pub fn viewport_id(id: u64) -> egui::ViewportId {
 impl Detached {
     pub fn new(id: u64, pane: Pane) -> Self {
         let size = egui::vec2(960.0, 680.0);
-        Detached { id, tree: Tree::new_tabs(layout::tree_id(id), vec![pane]), initial_pos: None, initial_size: size, pos: None, size }
+        Detached {
+            id,
+            tree: Tree::new_tabs(layout::tree_id(id), vec![pane]),
+            initial_pos: None,
+            initial_size: size,
+            pos: None,
+            size,
+        }
     }
 
     pub fn from_saved(s: SavedWindow) -> Self {
@@ -42,7 +49,12 @@ impl Detached {
     }
 
     pub fn to_saved(&self) -> SavedWindow {
-        SavedWindow { id: self.id, tree: self.tree.clone(), pos: self.pos.map(|p| [p.x, p.y]), size: [self.size.x, self.size.y] }
+        SavedWindow {
+            id: self.id,
+            tree: self.tree.clone(),
+            pos: self.pos.map(|p| [p.x, p.y]),
+            size: [self.size.x, self.size.y],
+        }
     }
 }
 
@@ -88,16 +100,26 @@ pub fn show_all(suite: &mut Suite, ctx: &egui::Context, frame: &mut eframe::Fram
                     ui.horizontal_centered(|ui| {
                         ui.label(RichText::new(format!("{} {}", tr("Fenêtre"), w.id)).color(p.text_dim).small());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button(format!("⇲ {}", tr("Tout remettre dans la fenêtre principale"))).clicked() {
+                            if ui
+                                .small_button(format!("⇲ {}", tr("Tout remettre dans la fenêtre principale")))
+                                .clicked()
+                            {
                                 core.act(Action::AttachWindow(w.id));
                             }
                         });
                     });
                 });
-            egui::CentralPanel::default().frame(egui::Frame::new().fill(p.sidebar).inner_margin(egui::Margin::same(3))).show(ui, |ui| {
-                let mut tiles = SuiteTiles { core: &mut *core, frame: &mut *frame, window: w.id, wish: WindowWish { title: title.clone(), decorations: true } };
-                w.tree.ui(&mut tiles, ui);
-            });
+            egui::CentralPanel::default()
+                .frame(egui::Frame::new().fill(p.sidebar).inner_margin(egui::Margin::same(3)))
+                .show(ui, |ui| {
+                    let mut tiles = SuiteTiles {
+                        core: &mut *core,
+                        frame: &mut *frame,
+                        window: w.id,
+                        wish: WindowWish { title: title.clone(), decorations: true },
+                    };
+                    w.tree.ui(&mut tiles, ui);
+                });
         });
         // Dernier onglet fermé : la fenêtre n'a plus lieu d'être.
         if w.tree.is_empty() {

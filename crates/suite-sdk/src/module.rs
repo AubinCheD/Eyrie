@@ -194,7 +194,9 @@ pub struct BuildCx<'a, 'b> {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Unavailable {
     /// Son exécutable autonome tourne déjà sur le même dossier d'état.
-    AlreadyRunning { exe: &'static str },
+    AlreadyRunning {
+        exe: &'static str,
+    },
     Failed(String),
 }
 

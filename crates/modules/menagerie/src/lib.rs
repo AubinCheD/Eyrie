@@ -3,11 +3,14 @@
 //! - même verrou d'instance que `menagerie.exe` ;
 //! - la supervision (arrêts et relances, santé, sauvegarde) est dans `ui` : appelé même masqué ;
 //! - le relais `--relais` (`current_exe()`) est pris en charge par `superapp.exe` ;
-//! - le titre « Menagerie — N à voir » devient la pastille.
+//! - le titre « Menagerie — N à voir » devient la pastille ;
+//! - embarqué (`set_hosted`) : il n'enregistre pas la géométrie de la fenêtre de la suite ; ses
+//!   couleurs suivent le thème clair ou sombre de la suite (`set_theme_override`).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use eframe::egui::Color32;
+use menagerie::persist::ThemeId;
 use suite_sdk::embed::{Embedded, KeyCommand, first_number};
 use suite_sdk::{Badge, BuildCx, Module, ModuleFactory, ModuleInfo, Origin, Tone, Unavailable};
 
@@ -57,8 +60,19 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
         HELD.store(true, Ordering::Relaxed);
     }
     let menagerie::persist::Loaded { state, problems } = menagerie::persist::load();
-    let app = menagerie::app::App::new(bcx.cc, state, problems);
-    Ok(Box::new(Embedded::new(info(), bcx.host.clone(), app).hidden_ui(true).title_badge(badge).key_commands(commands())))
+    let mut app = menagerie::app::App::new(bcx.cc, state, problems);
+    // La fenêtre est celle de la suite : sa géométrie n'entre pas dans l'état de Menagerie.
+    app.set_hosted(true);
+    let module = Embedded::new(info(), bcx.host.clone(), app)
+        .hidden_ui(true)
+        .title_badge(badge)
+        .key_commands(commands())
+        // Ses couleurs suivent le thème clair ou sombre de la suite (sans toucher à son réglage).
+        .before_logic(|app, cx| {
+            let t = if cx.host.palette().dark { ThemeId::Dark } else { ThemeId::Light };
+            app.set_theme_override(Some(t));
+        });
+    Ok(Box::new(module))
 }
 
 #[cfg(test)]
