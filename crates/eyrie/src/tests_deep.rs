@@ -406,3 +406,20 @@ fn real_modules_forget_an_unfinished_shortcut_when_their_page_is_left() {
         assert!(h.query_by_label(waiting).is_none(), "{id} : page quittée, saisie abandonnée");
     }
 }
+
+/// Dans la page de Menagerie, rien ne se ferme : le bouton du bas remet les champs aux réglages enregistrés, et le dit.
+#[test]
+#[ignore = "lent : les sept modules réels ; à lancer seul"]
+fn menagerie_in_eyrie_cancels_instead_of_closing() {
+    use egui_kittest::kittest::Queryable;
+    let (mut h, _dir) = real_suite("menagerie");
+    h.run_steps(10);
+    // D'autres « Fermer » et « Annuler » peuvent être à l'écran : on compte ceux qu'ajoute la page.
+    let count = |h: &egui_kittest::Harness<'static, Suite>, label: &str| h.query_all_by_label(label).count();
+    let (close, cancel) = (count(&h, "Fermer"), count(&h, "Annuler"));
+    h.state_mut().core.act(Action::OpenSettings(crate::settings::Page::Module("menagerie".into())));
+    h.run_steps(4);
+    assert!(h.query_by_label("Commande des conteneurs").is_some(), "sa page");
+    assert_eq!(count(&h, "Fermer"), close, "rien à fermer dans la page d'Eyrie");
+    assert_eq!(count(&h, "Annuler"), cancel + 1);
+}
