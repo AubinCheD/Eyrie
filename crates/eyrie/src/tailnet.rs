@@ -15,7 +15,7 @@ pub struct Tailnet {
     running: Option<(fawkes_tailnet::Tailnet, String)>,
 }
 
-/// Où trouver le compagnon : `FAWKES_TAILNET_EXE`, à côté de `superapp.exe`, ou compilé dans le
+/// Où trouver le compagnon : `FAWKES_TAILNET_EXE`, à côté de `eyrie.exe`, ou compilé dans le
 /// dépôt voisin de Fawkes (`tools\compagnon.ps1`).
 pub fn find_companion() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("FAWKES_TAILNET_EXE") {

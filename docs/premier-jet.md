@@ -29,13 +29,13 @@ terminal pwsh dans Fawkes.
 ## 2. Architecture
 
 ```
-superapp (exe)            l'hôte : cases, fenêtres, bac à sable, palette, réglages, comptes…
+eyrie (exe)               l'hôte : cases, fenêtres, bac à sable, palette, réglages, comptes…
   └─ suite-sdk            interface Module, services Host, adaptateur Embedded, thème, polices,
   │                       langue, raccourcis, état versionné, instance unique
   ├─ suite-fawkes         sources de ../Fawkes compilées en bibliothèque + adaptateur
   ├─ suite-dragontree     dragontree-app (bibliothèque) + adaptateur
   ├─ suite-owlery         owlery (bibliothèque) + adaptateur, coffre/notifications/Fawkes de la suite
-  ├─ suite-patronus       patronus-app + adaptateur, `lancer` et `planifie` pour superapp.exe
+  ├─ suite-patronus       patronus-app + adaptateur, `lancer` et `planifie` pour eyrie.exe
   ├─ suite-menagerie      menagerie (bibliothèque) + adaptateur
   ├─ suite-grimoire       grimoire (bibliothèque) + adaptateur
   └─ suite-carnet         module natif
@@ -51,7 +51,7 @@ bus d'événements, demandes entre modules, « montre-moi », attention, context
 jetons (partage compte par compte), modules présents. `Host` se clone et passe d'un fil à l'autre ;
 tout est mis en file et traité par l'hôte à l'image suivante, jamais pendant l'appel d'un autre module.
 
-**À chaque image** (`superapp/src/app.rs`) :
+**À chaque image** (`eyrie/src/app.rs`) :
 1. `logic` : polices rétablies si un module les a remplacées ; thème suivi si « Système » ; fermeture
    concertée ; file de l'hôte (notifications, événements, demandes, « montre-moi ») ; logique de tous
    les modules actifs, affichés ou non, chacun dans le bac à sable ;
@@ -89,14 +89,14 @@ Ce que chaque adaptateur fait en plus :
 |---|---|
 | Fawkes | thème de la suite pendant son affichage, puis son propre réglage rétabli (son état garde le thème choisi dans Fawkes seul) ; géométrie de la fenêtre rendue après chaque affichage (sinon `fawkes.exe` rouvrirait à la taille de la suite) ; sessions Claude en attente → pastille et vue d'ensemble ; reçoit `ouvrir{dir, titre, groupe, claude, resume}` en appel Rust |
 | Owlery | coffre : les comptes de la suite partagés avec Owlery, puis son propre coffre ; notifications → centre de la suite ; `FawkesLink` → bus de la suite (ses boutons « ouvrir dans Fawkes » ouvrent le Fawkes de la suite) |
-| Patronus | même verrou que `patronus.exe` ; icône de notification sur la fenêtre de la suite ; `superapp.exe lancer|planifie <tâche>` (repris de son `main.rs`) |
-| Menagerie | `superapp.exe --relais …` (son relais chiffré, lancé par `current_exe()`) |
+| Patronus | même verrou que `patronus.exe` ; icône de notification sur la fenêtre de la suite ; `eyrie.exe lancer|planifie <tâche>` (repris de son `main.rs`) |
+| Menagerie | `eyrie.exe --relais …` (son relais chiffré, lancé par `current_exe()`) |
 | DragonTree | ses polices (Phosphor pour ses icônes) entrent dans le plan de polices de la suite ; instance unique du profil (`dragontree.exe <dépôt>` ouvre le dépôt dans la suite) |
 | Grimoire | même verrou et même canal nommé que `grimoire.exe` |
 
 ## 4. Le bac à sable
 
-Autour de **chaque** appel de module (`superapp/src/sandbox.rs`), en reprenant la liste des
+Autour de **chaque** appel de module (`eyrie/src/sandbox.rs`), en reprenant la liste des
 problèmes de l'état des lieux (§3) :
 
 | # | Problème | Ce que fait la suite | Ce qui reste |
@@ -148,12 +148,14 @@ Pris pour pouvoir avancer ; tous se changent sans reprendre l'architecture.
    pas dans ce premier jet.
 6. **Langue : la suite en français et en anglais.** La traduction des cinq modules non traduits reste
    un chantier à part.
-7. **Comptes : copie proposée au premier lancement** (DragonTree, Owlery). Owlery lit déjà les comptes
-   partagés avec lui. Les profils Claude de Grimoire sont un type de compte prévu (`forge: "claude"`),
+7. **Comptes : communs à toute la suite** (décidé le 23/10/2026, `docs/comptes.md`). Eyrie, DragonTree
+   et Owlery lisent et écrivent les mêmes, seuls ou intégrés ; chacun y reprend ses anciens comptes au
+   premier lancement. Les profils Claude de Grimoire sont un type de compte prévu (`forge: "claude"`),
    pas encore géré.
 8. **Crate commune : dans ce dépôt** (`crates/suite-sdk`). Un dépôt à part se justifiera quand les
    modules en dépendront eux-mêmes.
-9. **Nom : SuperApp**, nom de travail.
+9. **Nom : Eyrie** (décidé le 23/10/2026 ; « SuperApp » était le nom de travail) ; **EyrieSuite** pour
+   ce qui est commun à toute la suite.
 
 Données des modules : par défaut celles des exécutables (décision du 22/10) ; un **mode essai** range
 l'état de chaque module dans `<suite>\essai\<module>` (Réglages > Général). Au premier lancement,
@@ -174,7 +176,7 @@ coûteux. À faire module par module, avec accord.
 | Commandes et raccourcis déclarés (registre), plus de lecture du clavier global | tous | raccourcis remappables, palette exacte |
 | Ne plus relever la géométrie de la fenêtre en mode module | Owlery, Patronus, Menagerie, Grimoire | exe autonome rouvert à sa taille |
 | Crochet d'arrêt de Windows fourni par l'hôte | Fawkes | sauvegarde finale à l'arrêt de Windows |
-| Comptes lus via la suite (`Host::accounts_for`, `Host::token`) | DragonTree, Patronus | comptes communs partout |
+| ~~Comptes lus via la suite~~ : fait le 23/10/2026 par les comptes communs (`suite-accounts`) | DragonTree, Owlery | comptes communs partout |
 | Contexte partagé publié et suivi | DragonTree (dépôt actif), Fawkes (groupe), Owlery (filtre) | « Suivre le contexte » pour tous |
 | Notifications par le centre de la suite | Patronus, Fawkes | une seule icône |
 
@@ -191,5 +193,5 @@ coûteux. À faire module par module, avec accord.
 - Relecture indépendante du code (13 points) : fermeture, premier lancement, zoom, double affichage,
   focus, fenêtres détachées (polices, commandes de la palette, fermeture), Tailscale, raccourcis —
   corrigés ; ce qui ne peut pas l'être sans toucher aux modules est dans le tableau §4.
-- Lancements réels en mode essai, avec captures (`SUPERAPP_CAPTURE_SCENE`).
+- Lancements réels en mode essai, avec captures (`EYRIE_CAPTURE_SCENE`).
 - Les six dépôts des modules sont inchangés (`git status` vide dans chacun).

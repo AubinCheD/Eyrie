@@ -4,7 +4,7 @@
 //!   fixe), avec des clics à des endroits quelconques, et des invariants vérifiés après chacune ;
 //! - `real_modules_*` (ignorés par défaut, lents, lancent de vrais terminaux) : les sept modules
 //!   réels, en mode essai, dans un dossier temporaire. À lancer seuls :
-//!   `cargo test -p superapp -- --ignored --test-threads=1`.
+//!   `cargo test -p eyrie -- --ignored --test-threads=1`.
 
 use std::collections::BTreeSet;
 
@@ -41,7 +41,7 @@ impl Rng {
 }
 
 fn temp_dir(name: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("superapp-approfondi-{name}-{}", std::process::id()));
+    let d = std::env::temp_dir().join(format!("eyrie-approfondi-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     d
@@ -179,7 +179,7 @@ fn random_actions(seed: u64, steps: usize) {
 // --- Les sept modules réels -------------------------------------------------------------------
 
 /// La suite avec tous les modules, en mode essai dans un dossier temporaire (variables posées
-/// avant toute construction, comme `superapp.exe`), Owlery en démonstration.
+/// avant toute construction, comme `eyrie.exe`), Owlery en démonstration.
 fn real_suite(name: &str) -> (Harness<'static, Suite>, std::path::PathBuf) {
     let dir = temp_dir(name);
     for (module, var) in [

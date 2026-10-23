@@ -2,7 +2,7 @@
 //!
 //! - même verrou d'instance que `menagerie.exe` ;
 //! - la supervision (arrêts et relances, santé, sauvegarde) est dans `ui` : appelé même masqué ;
-//! - le relais `--relais` (`current_exe()`) est pris en charge par `superapp.exe` ;
+//! - le relais `--relais` (`current_exe()`) est pris en charge par `eyrie.exe` ;
 //! - le titre « Menagerie — N à voir » devient la pastille ;
 //! - embarqué (`set_hosted`) : il n'enregistre pas la géométrie de la fenêtre de la suite ; ses
 //!   couleurs suivent le thème clair ou sombre de la suite (`set_theme_override`).

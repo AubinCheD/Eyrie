@@ -1060,6 +1060,7 @@ dependencies = [
  "serde",
  "serde_json",
  "similar",
+ "suite-accounts",
  "syntect",
  "windows-sys 0.61.2",
 ]
@@ -1073,6 +1074,7 @@ dependencies = [
  "keyring",
  "serde",
  "serde_json",
+ "suite-accounts",
  "ureq",
  "windows-sys 0.61.2",
 ]
@@ -1369,6 +1371,36 @@ checksum = "8be9f3dfaaffdae2972880079a491a1a8bb7cbed0b8dd7a347f668b4150a3b93"
 dependencies = [
  "event-listener",
  "pin-project-lite",
+]
+
+[[package]]
+name = "eyrie"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "dragontree-app",
+ "dragontree-forges",
+ "eframe",
+ "egui",
+ "egui_kittest",
+ "egui_tiles",
+ "image",
+ "keyring",
+ "menagerie",
+ "rfd",
+ "serde",
+ "serde_json",
+ "suite-accounts",
+ "suite-carnet",
+ "suite-dragontree",
+ "suite-fawkes",
+ "suite-grimoire",
+ "suite-menagerie",
+ "suite-owlery",
+ "suite-patronus",
+ "suite-sdk",
+ "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2987,6 +3019,7 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
+ "suite-accounts",
  "ureq",
  "windows-sys 0.61.2",
 ]
@@ -3895,6 +3928,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
+name = "suite-accounts"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "keyring",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "suite-carnet"
 version = "0.1.0"
 dependencies = [
@@ -3950,6 +3994,7 @@ dependencies = [
  "eframe",
  "owlery",
  "serde_json",
+ "suite-accounts",
  "suite-sdk",
 ]
 
@@ -3975,34 +4020,6 @@ dependencies = [
  "epaint",
  "serde",
  "serde_json",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "superapp"
-version = "0.1.0"
-dependencies = [
- "dirs",
- "dragontree-app",
- "dragontree-forges",
- "eframe",
- "egui",
- "egui_kittest",
- "egui_tiles",
- "image",
- "keyring",
- "menagerie",
- "rfd",
- "serde",
- "serde_json",
- "suite-carnet",
- "suite-dragontree",
- "suite-fawkes",
- "suite-grimoire",
- "suite-menagerie",
- "suite-owlery",
- "suite-patronus",
- "suite-sdk",
  "windows-sys 0.61.2",
 ]
 

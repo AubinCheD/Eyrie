@@ -225,7 +225,7 @@ mod tests {
     use super::*;
 
     fn wish() -> WindowWish {
-        WindowWish { title: "SuperApp".into(), decorations: true }
+        WindowWish { title: "Eyrie".into(), decorations: true }
     }
 
     fn frame(ctx: &egui::Context, input: egui::RawInput, f: impl FnMut(&mut egui::Ui)) {
@@ -281,7 +281,7 @@ mod tests {
             assert!(o.wants_close);
             assert_eq!(o.commands.len(), 2);
             let last = ui.ctx().viewport(|v| v.commands.last().cloned());
-            assert_eq!(last, Some(ViewportCommand::Title("SuperApp".into())));
+            assert_eq!(last, Some(ViewportCommand::Title("Eyrie".into())));
         });
     }
 

@@ -1,5 +1,5 @@
-//! Capture d'écran d'essai : `SUPERAPP_CAPTURE=<fichier.png>` enregistre la fenêtre principale après
-//! `SUPERAPP_CAPTURE_AFTER_MS` (4 s par défaut), puis ferme la suite. `SUPERAPP_CAPTURE_SCENE`
+//! Capture d'écran d'essai : `EYRIE_CAPTURE=<fichier.png>` enregistre la fenêtre principale après
+//! `EYRIE_CAPTURE_AFTER_MS` (4 s par défaut), puis ferme la suite. `EYRIE_CAPTURE_SCENE`
 //! prépare la scène : `palette`, `reglages`, `detacher`, `ensemble`, `concentration`.
 
 use std::path::PathBuf;
@@ -20,15 +20,15 @@ pub struct Capture {
 
 impl Capture {
     pub fn from_env() -> Option<Capture> {
-        let path = std::env::var_os("SUPERAPP_CAPTURE").map(PathBuf::from)?;
-        let after = std::env::var("SUPERAPP_CAPTURE_AFTER_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
+        let path = std::env::var_os("EYRIE_CAPTURE").map(PathBuf::from)?;
+        let after = std::env::var("EYRIE_CAPTURE_AFTER_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(4000);
         Some(Capture {
             path,
             after: Duration::from_millis(after),
             started: Instant::now(),
             requested: false,
             done: Arc::new(AtomicBool::new(false)),
-            scene: std::env::var("SUPERAPP_CAPTURE_SCENE").ok(),
+            scene: std::env::var("EYRIE_CAPTURE_SCENE").ok(),
         })
     }
 

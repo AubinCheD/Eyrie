@@ -42,7 +42,7 @@ Dans la suite, les adaptateurs appellent ces points d'entrée (`before_logic`, n
 - `random_actions_keep_the_layout_sound` : 4 graines × 400 actions au hasard (ouvrir, détacher,
   rattacher, agrandir, dispositions, thèmes, arrêt et relance, clics quelconques, événements du
   bus), invariants vérifiés après chacune.
-- `real_modules_*` (lents, `cargo test -p superapp -- --ignored --test-threads=1`) : les sept modules
+- `real_modules_*` (lents, `cargo test -p eyrie -- --ignored --test-threads=1`) : les sept modules
   réels en mode essai — toutes les dispositions, chaque module agrandi, détaché, rattaché, les trois
   thèmes, arrêt et relance de chaque module, fermeture en séquence jusqu'au bout.
 - `real_dragontree_shares_its_active_repository` : le vrai DragonTree reçoit un dépôt par le canal de

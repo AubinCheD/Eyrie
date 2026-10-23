@@ -11,3 +11,4 @@ suite-sdk.workspace = true
 owlery.workspace = true
 eframe.workspace = true
 serde_json.workspace = true
+suite-accounts.workspace = true

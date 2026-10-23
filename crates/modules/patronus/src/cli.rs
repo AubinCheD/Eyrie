@@ -1,6 +1,6 @@
-//! `superapp.exe lancer <tâche>` et `superapp.exe planifie <tâche>`.
+//! `eyrie.exe lancer <tâche>` et `eyrie.exe planifie <tâche>`.
 //!
-//! Dans la suite, Patronus inscrit `current_exe()` — donc `superapp.exe` — dans le Planificateur de
+//! Dans la suite, Patronus inscrit `current_exe()` — donc `eyrie.exe` — dans le Planificateur de
 //! Windows et la clé `Run`. Ces deux commandes sont reprises de `Patronus/crates/patronus-app/src/
 //! main.rs` (`run_cli`, `run_planned`), qui n'est pas une bibliothèque, avec le cœur de Patronus
 //! (`patronus-core`) tel quel.

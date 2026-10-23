@@ -3,7 +3,7 @@
 //! - même verrou d'instance que `patronus.exe` (`Local\Patronus-single-instance:<dossier>`) : deux
 //!   fenêtres sur le même dossier lanceraient chaque tâche deux fois ;
 //! - la synchro du Planificateur de Windows est dans `ui` : appelé même masqué ;
-//! - le Planificateur et la clé `Run` visent `current_exe()` : dans la suite, `superapp.exe`, qui
+//! - le Planificateur et la clé `Run` visent `current_exe()` : dans la suite, `eyrie.exe`, qui
 //!   comprend `lancer <tâche>` et `planifie <tâche>` ([`cli`]) ;
 //! - le titre « (N) Patronus » devient la pastille.
 

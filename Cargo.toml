@@ -1,16 +1,17 @@
 [workspace]
 resolver = "3"
-members = ["crates/suite-sdk", "crates/superapp", "crates/modules/*"]
+members = ["crates/suite-sdk", "crates/suite-accounts", "crates/eyrie", "crates/modules/*"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
-authors = ["SuperApp"]
+authors = ["Eyrie"]
 
 [workspace.dependencies]
 suite-sdk = { path = "crates/suite-sdk" }
+suite-accounts = { path = "crates/suite-accounts" }
 suite-carnet = { path = "crates/modules/carnet" }
 suite-fawkes = { path = "crates/modules/fawkes" }
 suite-dragontree = { path = "crates/modules/dragontree" }

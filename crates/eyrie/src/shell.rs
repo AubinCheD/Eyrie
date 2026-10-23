@@ -487,7 +487,7 @@ fn status_bar(suite: &mut Suite, ui: &mut egui::Ui) {
                 suite.core.act(Action::OpenSettings(settings::Page::Tailscale));
             }
             ui.separator();
-            let n = suite.core.accounts.list.len();
+            let n = suite.core.accounts.list().len();
             if ui.add(egui::Button::new(small(format!("👤 {n} {}", tr("comptes")), p.text_dim)).frame(false)).clicked()
             {
                 suite.core.act(Action::OpenSettings(settings::Page::Accounts));
@@ -634,8 +634,7 @@ fn welcome(suite: &mut Suite, ctx: &egui::Context) {
         ui.label(RichText::new(tr("Aucun module n'a encore démarré : la suite se relance pour les démarrer sur les données choisies.")).color(p.text_dim));
         ui.add_space(8.0);
         ui.label(RichText::new(tr("Comptes")).strong());
-        ui.label(RichText::new(tr("La suite peut reprendre les comptes de DragonTree et d'Owlery (copie : les exécutables gardent les leurs).")).color(p.text_dim));
-        ui.label(RichText::new(tr("Après le démarrage : Réglages > Comptes > Importer.")).color(p.text_dim));
+        ui.label(RichText::new(tr("Communs à toute la suite : ceux de DragonTree et d'Owlery sont repris d'eux-mêmes (Réglages › Comptes).")).color(p.text_dim));
         ui.add_space(10.0);
         ui.horizontal(|ui| {
             if ui.button(RichText::new(tr("Commencer")).strong()).clicked() {

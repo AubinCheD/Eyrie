@@ -1,8 +1,9 @@
-//! État de la suite : `%APPDATA%\SuperApp\state.json` (ou `SUPERAPP_DATA_DIR`).
+//! État d'Eyrie : `%APPDATA%\EyrieSuite\Eyrie\state.json` (ou `EYRIE_DATA_DIR`).
 //!
-//! Seulement ce qui appartient à la suite : réglages communs, modules activés, dispositions,
+//! Seulement ce qui appartient à Eyrie : réglages communs, modules activés, dispositions,
 //! fenêtres. L'état de chaque module reste dans son propre dossier, lu et écrit de la même façon
-//! seul ou dans la suite.
+//! seul ou dans Eyrie ; ce qui est commun à toute la suite (les comptes) est à la racine de
+//! `EyrieSuite` (crate `suite-accounts`).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -17,9 +18,12 @@ use crate::layout::Pane;
 pub const VERSION: u32 = 1;
 
 pub fn data_dir() -> PathBuf {
-    std::env::var_os("SUPERAPP_DATA_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| dirs::config_dir().unwrap_or_else(std::env::temp_dir).join("SuperApp"))
+    std::env::var_os("EYRIE_DATA_DIR").filter(|d| !d.is_empty()).map(PathBuf::from).unwrap_or_else(default_data_dir)
+}
+
+/// `<EyrieSuite>\Eyrie` : le dossier d'Eyrie dans celui de la suite.
+pub fn default_data_dir() -> PathBuf {
+    suite_accounts::suite_dir().join("Eyrie")
 }
 
 /// Où les modules embarqués rangent leur état dans la suite.
@@ -96,7 +100,7 @@ pub struct SuiteState {
     pub tailnet: TailnetSettings,
     /// Les cases suivent le contexte partagé (dépôt courant).
     pub follow_context: bool,
-    /// Le premier lancement est passé (accueil, import des comptes proposé).
+    /// Le premier lancement est passé (accueil, choix des données des modules).
     pub welcomed: bool,
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_json::Value>,

@@ -2,8 +2,8 @@
 //!
 //! Owlery est pensé pour l'injection (`SecretStore`, `Notifier`, `FawkesLink`, `Fetcher`) : on refait
 //! ce que fait son `main.rs`, en lui donnant les services de la suite.
-//! - **coffre** : les comptes de la suite partagés avec Owlery d'abord (même identifiant), puis son
-//!   propre coffre ;
+//! - **comptes** : ceux de toute la suite (`suite-accounts`), qu'Owlery lit lui-même ; « Comptes… » ouvre la page
+//!   Comptes d'Eyrie ;
 //! - **notifications** : dans le centre de notifications de la suite (une seule icône) ;
 //! - **Fawkes** : `ouvrir` passe par le bus de la suite, en appel Rust, au Fawkes de la suite ;
 //! - même verrou, même `state.lock` et même canal nommé que `owlery.exe` (`afficher`, `etat`).
@@ -59,35 +59,6 @@ fn badge(title: &str) -> Option<Badge> {
     first_number(title).filter(|n| *n > 0).map(|n| Badge::count(n, Tone::Info, format!("{n} élément(s) en attente")))
 }
 
-/// Les comptes de la suite partagés avec Owlery, puis le coffre d'Owlery.
-struct SuiteSecrets {
-    host: Host,
-    own: Arc<dyn SecretStore>,
-}
-
-impl SecretStore for SuiteSecrets {
-    fn get(&self, key: &str) -> Result<Option<String>, String> {
-        if let Some(id) = key.strip_prefix("account:")
-            && let Some(token) = self.host.token(ID, id)
-        {
-            return Ok(Some(token));
-        }
-        self.own.get(key)
-    }
-
-    fn set(&self, key: &str, secret: &str) -> Result<(), String> {
-        self.own.set(key, secret)
-    }
-
-    fn delete(&self, key: &str) -> Result<(), String> {
-        self.own.delete(key)
-    }
-
-    fn is_os(&self) -> bool {
-        self.own.is_os()
-    }
-}
-
 struct SuiteNotifier {
     host: Host,
 }
@@ -130,6 +101,12 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
     let demo = std::env::var_os("OWLERY_DEMO").is_some_and(|v| v == "1");
     let dir = if demo { state::data_dir().join("demo") } else { state::data_dir() };
     let scope = (dir != state::default_data_dir()).then_some(dir.as_path());
+    // Les comptes de toute la suite, dans le dossier donné par Eyrie ; la démonstration n'y touche jamais.
+    let host_accounts = bcx.host.accounts_dir();
+    let accounts = (!demo).then(|| {
+        let dir = host_accounts.clone().unwrap_or_else(|| suite_accounts::accounts_dir(scope));
+        suite_accounts::Store::new(&dir, Arc::new(suite_accounts::OsVault::suite()))
+    });
     let sid = owlery::win::pipe::current_user_sid().unwrap_or_default();
     let pipe = contract::pipe_name("owlery", &sid, scope);
     if !HELD.load(Ordering::Relaxed) {
@@ -168,8 +145,7 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
     }
 
     let host = bcx.host.clone();
-    let store: Arc<dyn SecretStore> =
-        Arc::new(SuiteSecrets { host: host.clone(), own: owlery::secrets::store_for(demo) });
+    let store: Arc<dyn SecretStore> = owlery::secrets::store_for(demo);
     let fetcher: Arc<dyn Fetcher> = if demo {
         Arc::new(owlery::demo::DemoFetcher)
     } else {
@@ -187,10 +163,14 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
         notifier: Arc::new(SuiteNotifier { host: host.clone() }),
         writable,
         fetch_on_start: true,
+        accounts,
     };
     let mut app = App::new(bcx.cc, opts, loaded);
     // La fenêtre est celle de la suite : sa taille n'entre pas dans l'état d'Owlery.
     app.set_hosted(true);
+    // Les comptes se règlent dans Eyrie, pour toute la suite.
+    let link = host.clone();
+    app.set_accounts_link(Box::new(move || link.open_settings("comptes")));
     Ok(Box::new(Embedded::new(info(), host, app).title_badge(badge).key_commands(commands()).keep(lock)))
 }
 

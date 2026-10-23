@@ -3,7 +3,7 @@
 //! Les six modules dessinent déjà leurs panneaux dans le `Ui` reçu (en egui 0.37, `Panel::show(ui)`
 //! est rattaché au `Ui` parent) : leur `eframe::App` se pose tel quel dans une case. Ce qui déborde
 //! de la case (style global, polices, clavier lu sur toute la fenêtre, commandes de fenêtre, focus)
-//! est contenu par l'hôte autour de chaque appel (`superapp/src/sandbox.rs`) ; cet adaptateur ne fait
+//! est contenu par l'hôte autour de chaque appel (`eyrie/src/sandbox.rs`) ; cet adaptateur ne fait
 //! que relier l'application à l'interface [`Module`] :
 //! - `logic` et `ui` d'eframe ;
 //! - le titre que l'application donne à sa fenêtre devient le titre et la pastille du module ;

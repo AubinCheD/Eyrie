@@ -8,7 +8,7 @@ Deux façons d'entrer dans la suite :
   `suite_sdk::embed::Embedded` (les six modules d'aujourd'hui).
 
 Dans les deux cas : une crate dans `crates/modules/<id>`, qui expose `factory()`, et une ligne dans
-`crates/superapp/src/registry.rs`. Rien d'autre à retoucher : la barre d'activité, la palette, la vue
+`crates/eyrie/src/registry.rs`. Rien d'autre à retoucher : la barre d'activité, la palette, la vue
 d'ensemble, les réglages et les dispositions le prennent en compte.
 
 ## Module natif

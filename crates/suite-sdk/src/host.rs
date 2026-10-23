@@ -85,21 +85,6 @@ pub struct SharedContext {
     pub source: String,
 }
 
-/// Un compte connecté de la suite, sans son jeton.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct AccountInfo {
-    pub id: String,
-    /// `github`, `gitlab`, `azure`, `claude`.
-    pub forge: String,
-    pub host: String,
-    pub username: String,
-    /// Modules qui ont le droit de lire ce compte (partage compte par compte).
-    #[serde(default)]
-    pub shared_with: Vec<String>,
-}
-
-type TokenReader = dyn Fn(&str) -> Option<String> + Send + Sync;
-
 /// Ce que l'hôte doit traiter à l'image suivante.
 #[derive(Default)]
 pub struct Outbox {
@@ -110,6 +95,8 @@ pub struct Outbox {
     pub show: Vec<String>,
     /// Modules qui demandent l'attention (clignotement de la barre des tâches).
     pub attention: Vec<String>,
+    /// Page des réglages d'Eyrie à ouvrir (`comptes`…), demandée par un module.
+    pub settings: Option<String>,
 }
 
 struct Shared {
@@ -120,7 +107,8 @@ struct Shared {
     theme: ThemeChoice,
     palette: &'static Palette,
     context: Option<SharedContext>,
-    accounts: Vec<AccountInfo>,
+    /// Dossier des comptes de toute la suite, donné par l'hôte (voir `accounts_dir`).
+    accounts_dir: Option<PathBuf>,
     outbox: Outbox,
 }
 
@@ -128,7 +116,6 @@ struct Inner {
     ctx: egui::Context,
     suite_dir: PathBuf,
     shared: Mutex<Shared>,
-    token_reader: Mutex<Option<Arc<TokenReader>>>,
 }
 
 /// Les services de l'hôte.
@@ -150,10 +137,9 @@ impl Host {
                     theme: theme_choice,
                     palette,
                     context: None,
-                    accounts: Vec::new(),
+                    accounts_dir: None,
                     outbox: Outbox::default(),
                 }),
-                token_reader: Mutex::new(None),
             }),
         }
     }
@@ -210,7 +196,7 @@ impl Host {
 
     // --- Dossiers ---
 
-    /// Dossier de la suite (`%APPDATA%\SuperApp`, ou `SUPERAPP_DATA_DIR`).
+    /// Dossier d'Eyrie (`%APPDATA%\EyrieSuite\Eyrie`, ou `EYRIE_DATA_DIR`).
     pub fn suite_dir(&self) -> &Path {
         &self.inner.suite_dir
     }
@@ -243,6 +229,13 @@ impl Host {
         self.repaint();
     }
 
+    /// Ouvre une page des réglages d'Eyrie (`comptes`) : un module intégré y renvoie au lieu de montrer ses
+    /// propres réglages de ce qu'Eyrie gère pour toute la suite.
+    pub fn open_settings(&self, page: &str) {
+        self.shared(|s| s.outbox.settings = Some(page.to_string()));
+        self.repaint();
+    }
+
     /// Fait clignoter la suite dans la barre des tâches, pour ce module.
     pub fn attention(&self, module: &str) {
         self.shared(|s| s.outbox.attention.push(module.to_string()));
@@ -252,6 +245,19 @@ impl Host {
     /// Réservé à l'hôte.
     pub fn take_outbox(&self) -> Outbox {
         self.shared(|s| std::mem::take(&mut s.outbox))
+    }
+
+    // --- Comptes ---
+
+    /// Dossier des comptes de toute la suite (`suite-accounts`) : les modules qui lisent les comptes le reçoivent
+    /// ainsi, et non par une variable d'environnement que leurs processus enfants hériteraient.
+    pub fn accounts_dir(&self) -> Option<PathBuf> {
+        self.shared(|s| s.accounts_dir.clone())
+    }
+
+    /// Réservé à l'hôte.
+    pub fn set_accounts_dir(&self, dir: PathBuf) {
+        self.shared(|s| s.accounts_dir = Some(dir));
     }
 
     // --- Contexte partagé ---
@@ -282,26 +288,6 @@ impl Host {
             let data = serde_json::to_value(&context).unwrap_or_default();
             self.publish(Event { source, kind: "contexte".into(), data });
         }
-    }
-
-    // --- Comptes ---
-
-    /// Les comptes que ce module a le droit de lire.
-    pub fn accounts_for(&self, module: &str) -> Vec<AccountInfo> {
-        self.shared(|s| s.accounts.iter().filter(|a| a.shared_with.iter().any(|m| m == module)).cloned().collect())
-    }
-
-    /// Le jeton d'un compte, si ce module y a droit.
-    pub fn token(&self, module: &str, account: &str) -> Option<String> {
-        let allowed = self.accounts_for(module).iter().any(|a| a.id == account);
-        let reader = self.inner.token_reader.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        if allowed { reader.and_then(|r| r(account)) } else { None }
-    }
-
-    /// Réservé à l'hôte : la liste des comptes et la lecture du coffre.
-    pub fn set_accounts(&self, accounts: Vec<AccountInfo>, reader: Arc<TokenReader>) {
-        self.shared(|s| s.accounts = accounts);
-        *self.inner.token_reader.lock().unwrap_or_else(|e| e.into_inner()) = Some(reader);
     }
 }
 
@@ -336,17 +322,18 @@ mod tests {
     }
 
     #[test]
-    fn tokens_are_shared_account_by_account() {
+    fn the_host_gives_the_accounts_folder_to_its_modules() {
         let h = host();
-        let acc = AccountInfo {
-            id: "a1".into(),
-            forge: "github".into(),
-            host: "github.com".into(),
-            username: "moi".into(),
-            shared_with: vec!["owlery".into()],
-        };
-        h.set_accounts(vec![acc], Arc::new(|id: &str| Some(format!("jeton-{id}"))));
-        assert_eq!(h.token("owlery", "a1").as_deref(), Some("jeton-a1"));
-        assert_eq!(h.token("patronus", "a1"), None);
+        assert_eq!(h.accounts_dir(), None, "pas d'hôte qui le donne : chaque module choisit");
+        h.set_accounts_dir(PathBuf::from(r"C:\Temp\suite"));
+        assert_eq!(h.accounts_dir().as_deref(), Some(Path::new(r"C:\Temp\suite")));
+    }
+
+    #[test]
+    fn open_settings_reaches_the_outbox() {
+        let h = host();
+        h.open_settings("comptes");
+        assert_eq!(h.take_outbox().settings.as_deref(), Some("comptes"));
+        assert_eq!(h.take_outbox().settings, None, "une seule fois");
     }
 }

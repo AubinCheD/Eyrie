@@ -1,5 +1,7 @@
-//! Les réglages de la suite : général (langue, thème, zoom, données des modules), modules, comptes,
-//! Tailscale, raccourcis (et leurs conflits), dispositions, et une page par module.
+//! Les réglages d'Eyrie : général (thème, zoom, langue, données des modules), modules, comptes de toute la
+//! suite, Tailscale, raccourcis (et leurs conflits), dispositions, et une page par module.
+//!
+//! Des libellés qui se suffisent ; une phrase d'aide au plus par page ou par section, le détail en infobulle.
 
 use dragontree_forges::ForgeKind;
 use eframe::egui::{self, RichText};
@@ -8,7 +10,7 @@ use suite_sdk::i18n::Lang;
 use suite_sdk::shortcut::{Owner, Shortcut};
 use suite_sdk::theme::{self, ThemeChoice};
 
-use crate::accounts::FORGE_MODULES;
+use crate::accounts::title;
 use crate::app::{Action, DEFAULT_LAYOUTS, Suite, suite_shortcuts};
 use crate::core::SlotState;
 use crate::i18n::{mark, tr};
@@ -24,6 +26,20 @@ pub enum Page {
     Shortcuts,
     Layouts,
     Module(String),
+}
+
+impl Page {
+    /// Page demandée par un module (`Host::open_settings`) ; inconnue : Général.
+    pub fn from_key(key: &str) -> Page {
+        match key {
+            "comptes" => Page::Accounts,
+            "modules" => Page::Modules,
+            "raccourcis" => Page::Shortcuts,
+            "tailscale" => Page::Tailscale,
+            "dispositions" => Page::Layouts,
+            _ => Page::General,
+        }
+    }
 }
 
 pub struct SettingsState {
@@ -139,13 +155,6 @@ fn page(suite: &mut Suite, ui: &mut egui::Ui) {
 fn general(suite: &mut Suite, ui: &mut egui::Ui) {
     let p = suite.core.palette();
     ui.heading(tr("Général"));
-    hint(
-        ui,
-        p,
-        tr(
-            "Dans la suite, thème, langue, comptes et Tailscale sont communs à tous les modules. Lancé seul, chaque module garde ses propres réglages : ils ne sont ni lus ni écrasés ici.",
-        ),
-    );
 
     section(ui, tr("Thème"));
     ui.horizontal_wrapped(|ui| {
@@ -175,13 +184,6 @@ fn general(suite: &mut Suite, ui: &mut egui::Ui) {
             }
         }
     });
-    hint(
-        ui,
-        p,
-        tr(
-            "Les trois thèmes de Fawkes (contrastes WCAG vérifiés). Système suit Windows : Graphite en sombre, Fluent en clair. Les modules embarqués suivent la palette de la suite là où ils lisent le style d'egui (DragonTree, Owlery) ; Fawkes suit le thème choisi ; les autres gardent leurs couleurs propres dans leurs vues.",
-        ),
-    );
 
     section(ui, tr("Zoom"));
     let mut zoom = suite.core.st.zoom;
@@ -201,48 +203,21 @@ fn general(suite: &mut Suite, ui: &mut egui::Ui) {
             }
         }
     });
-    hint(
-        ui,
-        p,
-        tr(
-            "La suite est traduite ; parmi les modules, seul DragonTree l'est aujourd'hui (les cinq autres sont en français, leur traduction est un chantier à part).",
-        ),
-    );
 
     section(ui, tr("Données des modules"));
     let mut data = suite.core.st.module_data;
-    ui.radio_value(&mut data, ModuleData::Shared, tr("Celles des exécutables autonomes"));
-    hint(
-        ui,
-        p,
-        tr(
-            "Mêmes groupes, terminaux, tâches et filtres des deux côtés. La suite tient le verrou de chaque exe : un module ne tourne jamais deux fois sur le même dossier.",
-        ),
-    );
-    ui.radio_value(&mut data, ModuleData::Trial, tr("Un dossier d'essai propre à la suite"));
-    hint(
-        ui,
-        p,
-        &format!(
-            "{} {}",
-            tr("Pour essayer sans toucher aux données de tous les jours :"),
-            suite.core.dir.join("essai").display()
-        ),
-    );
+    ui.radio_value(&mut data, ModuleData::Shared, tr("Les mêmes que les applications lancées seules"))
+        .on_hover_text(tr("Mêmes groupes, terminaux, tâches et filtres, dans Eyrie ou en dehors."));
+    ui.radio_value(&mut data, ModuleData::Trial, tr("Un dossier d'essai"))
+        .on_hover_text(suite.core.dir.join("essai").display().to_string());
     if data != suite.core.st.module_data {
         suite.core.st.module_data = data;
         suite.core.restart_needed = true;
     }
 
-    section(ui, tr("Contexte partagé"));
-    ui.checkbox(&mut suite.core.st.follow_context, tr("Les cases suivent le contexte (dépôt courant)"));
-    hint(
-        ui,
-        p,
-        tr(
-            "Choisir un dépôt (barre du haut, ou depuis un module) le publie à tous les modules, comme la synchronisation avec le document actif de Visual Studio. Les modules natifs s'y accordent déjà ; les modules embarqués le feront quand ils parleront à la suite.",
-        ),
-    );
+    section(ui, tr("Dépôt courant"));
+    ui.checkbox(&mut suite.core.st.follow_context, tr("Les modules suivent le dépôt choisi"))
+        .on_hover_text(tr("Un dépôt choisi dans la barre du haut ou dans un module s'affiche partout."));
     restart_hint(suite, ui);
 }
 
@@ -261,66 +236,17 @@ fn restart_hint(suite: &mut Suite, ui: &mut egui::Ui) {
 fn modules(suite: &mut Suite, ui: &mut egui::Ui) {
     let p = suite.core.palette();
     ui.heading(tr("Modules"));
-    hint(
-        ui,
-        p,
-        tr(
-            "Tout ou partie des modules : un module désactivé n'est pas construit et ne coûte rien. Les modules sont compilés dans la suite ; en ajouter un ne demande pas de retoucher les autres. Activer ou arrêter un module prend effet tout de suite.",
-        ),
-    );
+    hint(ui, p, tr("Un module désactivé ne démarre pas et ne coûte rien."));
     ui.add_space(6.0);
     let mut actions = Vec::new();
     for s in &suite.core.slots {
-        let color = theme::readable(p, s.info.color);
         egui::Frame::new()
             .fill(p.surface)
             .corner_radius(egui::CornerRadius::same(p.radius))
             .inner_margin(egui::Margin::same(8))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    let mut enabled = !matches!(s.state, SlotState::Disabled);
-                    if ui.checkbox(&mut enabled, "").on_hover_text(tr("Activer ou arrêter le module")).changed() {
-                        actions.push(if enabled {
-                            Action::StartModule(s.info.id.to_string())
-                        } else {
-                            Action::StopModule(s.info.id.to_string())
-                        });
-                    }
-                    ui.label(RichText::new(s.info.icon).size(18.0).color(color));
-                    ui.vertical(|ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(s.info.name).color(color).strong());
-                            let (state, c) = match &s.state {
-                                SlotState::Running(_) => (tr("actif").to_string(), p.ok),
-                                SlotState::Disabled => (tr("désactivé").to_string(), p.text_dim),
-                                SlotState::Unavailable(u) => (crate::app::unavailable_text(u), p.warn),
-                                SlotState::Crashed(m) => (format!("{} : {m}", tr("arrêté")), p.danger),
-                            };
-                            ui.label(RichText::new(state).color(c));
-                        });
-                        ui.label(RichText::new(s.info.summary).color(p.text_dim));
-                        let origin = match &s.info.origin {
-                            Origin::Native => tr("Module natif, écrit pour la suite.").to_string(),
-                            Origin::Embedded { exe, repo } => {
-                                format!("{} {exe} · {repo}", tr("Embarqué sans changer son code :"))
-                            }
-                        };
-                        ui.label(RichText::new(origin).color(p.text_dim).small());
-                        ui.horizontal(|ui| {
-                            if let SlotState::Unavailable(suite_sdk::Unavailable::AlreadyRunning { exe }) = &s.state
-                                && ui.small_button(format!("{} {exe}", tr("Fermer"))).clicked()
-                            {
-                                actions.push(Action::CloseExe(exe));
-                            }
-                            if matches!(s.state, SlotState::Unavailable(_) | SlotState::Crashed(_))
-                                && ui.small_button(tr("Relancer")).clicked()
-                            {
-                                actions.push(Action::StartModule(s.info.id.to_string()));
-                            }
-                        });
-                    });
-                });
+                slot_row(s, p, ui, &mut actions);
             });
         ui.add_space(4.0);
     }
@@ -330,23 +256,61 @@ fn modules(suite: &mut Suite, ui: &mut egui::Ui) {
     restart_hint(suite, ui);
 }
 
+/// Un module : interrupteur, nom, état, résumé, et ce qu'on peut y faire.
+fn slot_row(s: &crate::core::Slot, p: &theme::Palette, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+    let color = theme::readable(p, s.info.color);
+    ui.horizontal(|ui| {
+        slot_toggle(s, ui, actions);
+        ui.label(RichText::new(s.info.icon).size(18.0).color(color));
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(s.info.name).color(color).strong());
+                slot_state(s, p, ui, actions);
+            });
+            ui.label(RichText::new(s.info.summary).color(p.text_dim));
+        });
+    });
+}
+
+fn slot_toggle(s: &crate::core::Slot, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+    let mut enabled = !matches!(s.state, SlotState::Disabled);
+    if ui.checkbox(&mut enabled, "").on_hover_text(tr("Activer ou arrêter le module")).changed() {
+        let id = s.info.id.to_string();
+        actions.push(if enabled { Action::StartModule(id) } else { Action::StopModule(id) });
+    }
+}
+
+/// L'état d'un module, et « Fermer <exe> » ou « Relancer » quand c'est utile.
+fn slot_state(s: &crate::core::Slot, p: &theme::Palette, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+    let (state, c) = match &s.state {
+        SlotState::Running(_) => (tr("actif").to_string(), p.ok),
+        SlotState::Disabled => (tr("désactivé").to_string(), p.text_dim),
+        SlotState::Unavailable(u) => (crate::app::unavailable_text(u), p.warn),
+        SlotState::Crashed(m) => (format!("{} : {m}", tr("arrêté")), p.danger),
+    };
+    ui.label(RichText::new(state).color(c));
+    if let SlotState::Unavailable(suite_sdk::Unavailable::AlreadyRunning { exe }) = &s.state
+        && ui.small_button(format!("{} {exe}", tr("Fermer"))).clicked()
+    {
+        actions.push(Action::CloseExe(exe));
+    }
+    if matches!(s.state, SlotState::Unavailable(_) | SlotState::Crashed(_)) && ui.small_button(tr("Relancer")).clicked()
+    {
+        actions.push(Action::StartModule(s.info.id.to_string()));
+    }
+}
+
 fn accounts(suite: &mut Suite, ui: &mut egui::Ui) {
     let p = suite.core.palette();
     ui.heading(tr("Comptes"));
-    hint(
-        ui,
-        p,
-        tr(
-            "Les comptes de la suite : la liste sans jeton dans le dossier de la suite, les jetons dans le Gestionnaire d'identifiants de Windows (service « SuperApp »). Chaque compte se partage module par module.",
-        ),
-    );
-    section(ui, tr("Comptes connectés"));
-    if suite.core.accounts.list.is_empty() {
+    hint(ui, p, tr("Valables dans toute la suite : Eyrie, DragonTree et Owlery, seuls ou intégrés."));
+    ui.add_space(6.0);
+    let list = suite.core.accounts.list().to_vec();
+    if list.is_empty() {
         ui.label(RichText::new(tr("Aucun compte.")).color(p.text_dim));
     }
-    let mut remove = None;
-    let mut shares = Vec::new();
-    for a in &suite.core.accounts.list {
+    let (mut remove, mut recheck) = (None, None);
+    for a in &list {
         egui::Frame::new()
             .fill(p.surface)
             .corner_radius(egui::CornerRadius::same(p.radius))
@@ -354,32 +318,41 @@ fn accounts(suite: &mut Suite, ui: &mut egui::Ui) {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(a.title()).strong());
-                    ui.label(RichText::new(format!("{} {}", tr("depuis"), a.source)).color(p.text_dim).small());
+                    ui.label(RichText::new(title(a)).strong());
+                    if !a.orgs.is_empty() {
+                        ui.label(RichText::new(a.orgs.join(", ")).color(p.text_dim));
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.small_button(tr("Retirer")).clicked() {
-                            remove = Some(a.info.id.clone());
+                            remove = Some(a.id.clone());
+                        }
+                        if ForgeKind::from_suite_key(&a.forge).is_some() && ui.small_button(tr("Vérifier")).clicked() {
+                            recheck = Some(a.id.clone());
+                        }
+                        let accounts = &suite.core.accounts;
+                        if accounts.is_checking(&a.id) {
+                            ui.spinner();
+                        } else {
+                            match accounts.status.get(&a.id) {
+                                Some(Ok(())) => {
+                                    ui.label(RichText::new(tr("connecté")).color(p.ok));
+                                }
+                                Some(Err(e)) => {
+                                    ui.label(RichText::new(tr("refusé")).color(p.danger)).on_hover_text(e);
+                                }
+                                None => {}
+                            }
                         }
                     });
-                });
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(tr("Partagé avec :")).color(p.text_dim));
-                    for m in FORGE_MODULES {
-                        let mut on = a.info.shared_with.iter().any(|x| x == m);
-                        let name = suite.core.slot(m).map(|s| s.info.name).unwrap_or(m);
-                        if ui.checkbox(&mut on, name).changed() {
-                            shares.push((a.info.id.clone(), m, on));
-                        }
-                    }
                 });
             });
         ui.add_space(4.0);
     }
     if let Some(id) = remove {
-        suite.core.accounts.remove(&id, &suite.core.host);
+        suite.core.accounts.remove(&id);
     }
-    for (id, m, on) in shares {
-        suite.core.accounts.set_share(&id, m, on, &suite.core.host);
+    if let Some(id) = recheck {
+        suite.core.accounts.recheck(&id);
     }
 
     section(ui, tr("Ajouter un compte"));
@@ -389,18 +362,37 @@ fn accounts(suite: &mut Suite, ui: &mut egui::Ui) {
             ui.radio_value(&mut st.new_kind, k, k.label());
         }
     });
+    let kind = st.new_kind;
     egui::Grid::new("nouveau-compte").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-        ui.label(tr("Hôte"));
-        ui.add(egui::TextEdit::singleline(&mut st.new_host).hint_text(st.new_kind.default_host()));
-        ui.end_row();
         ui.label(tr("Jeton (PAT)"));
-        ui.add(egui::TextEdit::singleline(&mut st.new_token).password(true));
+        ui.add(egui::TextEdit::singleline(&mut st.new_token).password(true).desired_width(320.0));
         ui.end_row();
-        if st.new_kind == ForgeKind::AzureDevOps {
+        if kind == ForgeKind::AzureDevOps {
             ui.label(tr("Organisations"));
-            ui.add(egui::TextEdit::singleline(&mut st.new_orgs).hint_text(tr("séparées par des virgules")));
+            ui.add(
+                egui::TextEdit::singleline(&mut st.new_orgs).hint_text(tr("contoso, fabrikam")).desired_width(320.0),
+            )
+            .on_hover_text(tr("Indispensable si le jeton est limité à une organisation."));
             ui.end_row();
         }
+    });
+    egui::CollapsingHeader::new(tr("Serveur")).id_salt("nouveau-compte-serveur").show(ui, |ui| {
+        ui.add(egui::TextEdit::singleline(&mut st.new_host).hint_text(kind.default_host()).desired_width(320.0))
+            .on_hover_text(tr(
+                "GitHub Enterprise, GitLab auto-hébergé ou Azure DevOps Server ; vide : le service en ligne.",
+            ));
+    });
+    ui.horizontal(|ui| {
+        let org = st.new_orgs.split(',').map(str::trim).find(|o| !o.is_empty());
+        if ui.link(tr("Créer un jeton")).clicked() {
+            let url = dragontree_forges::token_creation_url(kind, st.new_host.trim(), org);
+            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+        }
+        ui.label(
+            RichText::new(format!("{} {}", tr("Droits :"), dragontree_forges::recommended_scopes(kind)))
+                .color(p.text_dim)
+                .small(),
+        );
     });
     let busy = suite.core.accounts.is_busy();
     ui.horizontal(|ui| {
@@ -413,42 +405,17 @@ fn accounts(suite: &mut Suite, ui: &mut egui::Ui) {
         }
         if busy {
             ui.spinner();
-            ui.label(RichText::new(tr("vérification auprès de la forge…")).color(p.text_dim));
-        }
-    });
-
-    section(ui, tr("Importer"));
-    hint(ui, p, tr("Copie la liste et les jetons ; DragonTree et Owlery lancés seuls gardent les leurs."));
-    ui.horizontal(|ui| {
-        if ui.button(tr("Depuis DragonTree")).clicked() {
-            suite.core.accounts.import_dragontree(&suite.core.host);
-        }
-        if ui.button(tr("Depuis Owlery")).clicked() {
-            suite.core.accounts.import_owlery(&suite.core.host);
         }
     });
     if let Some((ok, msg)) = &suite.core.accounts.message {
-        ui.label(RichText::new(msg).color(if *ok { p.ok } else { p.danger }));
+        ui.add(egui::Label::new(RichText::new(msg).color(if *ok { p.ok } else { p.danger })).wrap());
     }
-    hint(
-        ui,
-        p,
-        tr(
-            "Owlery lit déjà les comptes partagés avec lui (son coffre est injectable). DragonTree et Patronus les liront quand ils parleront à la suite ; les profils Claude de Grimoire sont un autre type de compte, prévu.",
-        ),
-    );
 }
 
 fn tailscale(suite: &mut Suite, ui: &mut egui::Ui) {
     let p = suite.core.palette();
     ui.heading("Tailscale");
-    hint(
-        ui,
-        p,
-        tr(
-            "Un seul nœud pour la suite (et non un par module), pour la synchro mobile. Le compagnon de Fawkes devient celui de la suite ; Fawkes lancé seul garde son propre nœud.",
-        ),
-    );
+    hint(ui, p, tr("Un seul nœud pour toute la suite, pour la synchro avec le mobile."));
     ui.add_space(6.0);
     ui.checkbox(&mut suite.core.st.tailnet.enabled, tr("Rejoindre mon tailnet"));
     ui.horizontal(|ui| {
@@ -464,7 +431,9 @@ fn tailscale(suite: &mut Suite, ui: &mut egui::Ui) {
     match &companion {
         Some(c) => hint(ui, p, &format!("{} {}", tr("Compagnon :"), c.display())),
         None => {
-            ui.label(RichText::new(tr("Compagnon fawkes-tailnet.exe introuvable : compilez-le dans Fawkes (tools\\compagnon.ps1) ou indiquez-le dans FAWKES_TAILNET_EXE.")).color(p.warn));
+            ui.label(RichText::new(tr("Compagnon fawkes-tailnet.exe introuvable.")).color(p.warn)).on_hover_text(tr(
+                "Compilez-le dans Fawkes (tools\\compagnon.ps1) ou indiquez-le dans FAWKES_TAILNET_EXE.",
+            ));
         }
     }
     let (line, color) = suite.core.tailnet.status_line(p);
@@ -477,7 +446,6 @@ fn tailscale(suite: &mut Suite, ui: &mut egui::Ui) {
         }
         Some(suite_fawkes::tailnet::TailnetState::Running { name, ip }) => {
             ui.label(RichText::new(format!("http://{name}  ·  {ip}")).monospace());
-            hint(ui, p, tr("Un routeur par module (/fawkes, /owlery…) est prévu derrière ce nœud."));
         }
         Some(suite_fawkes::tailnet::TailnetState::Failed(e)) => {
             ui.label(RichText::new(e).color(p.danger));
@@ -489,13 +457,7 @@ fn tailscale(suite: &mut Suite, ui: &mut egui::Ui) {
 fn shortcuts(suite: &mut Suite, ui: &mut egui::Ui) {
     let p = suite.core.palette();
     ui.heading(tr("Raccourcis"));
-    hint(
-        ui,
-        p,
-        tr(
-            "Le module qui a le clavier est celui de la case cliquée en dernier : les autres ne voient aucune frappe. Les raccourcis de la suite passent toujours avant ceux des modules.",
-        ),
-    );
+    hint(ui, p, tr("Ceux d'Eyrie passent avant ceux des modules ; ceux d'un module valent dans sa case."));
     section(ui, tr("La suite"));
     let current = suite_shortcuts(&suite.core.st);
     let mut changed = Vec::new();
@@ -556,25 +518,13 @@ fn shortcuts(suite: &mut Suite, ui: &mut egui::Ui) {
         let color = if c.suite_wins { p.warn } else { p.text_muted };
         ui.label(RichText::new(format!("{}  —  {}", c.shortcut, owners.join(", "))).color(color));
     }
-    hint(
-        ui,
-        p,
-        tr(
-            "Entre deux modules, la même combinaison fait l'action du module qui a le clavier. Quand la suite la revendique, elle gagne : le module ne la reçoit plus.",
-        ),
-    );
+    hint(ui, p, tr("Entre deux modules, c'est celui qui a le clavier qui l'emporte."));
 }
 
 fn layouts(suite: &mut Suite, ui: &mut egui::Ui) {
     let p = suite.core.palette();
     ui.heading(tr("Dispositions"));
-    hint(
-        ui,
-        p,
-        tr(
-            "Comme les dispositions de fenêtre de Visual Studio : plusieurs dispositions nommées, et une par configuration d'écrans, appliquée automatiquement au branchement.",
-        ),
-    );
+    hint(ui, p, tr("Plusieurs dispositions nommées, et une par configuration d'écrans, appliquée au branchement."));
     section(ui, tr("Enregistrées"));
     let mut names: Vec<String> = suite.core.st.layouts.keys().cloned().collect();
     for (n, _) in DEFAULT_LAYOUTS {
@@ -630,58 +580,61 @@ fn layouts(suite: &mut Suite, ui: &mut egui::Ui) {
     }
 }
 
+/// Libellé du bouton qui ouvre les réglages propres d'un module.
+pub fn module_settings_label(name: &str) -> String {
+    format!("⚙ {} {name}", tr("Réglages de"))
+}
+
 fn module_page(suite: &mut Suite, ui: &mut egui::Ui, id: &str) {
     let p = suite.core.palette();
+    let mut actions = Vec::new();
     let Some(s) = suite.core.slots.iter_mut().find(|s| s.info.id == id) else { return };
-    ui.heading(RichText::new(format!("{}  {}", s.info.icon, s.info.name)).color(s.info.color));
+    ui.heading(RichText::new(format!("{}  {}", s.info.icon, s.info.name)).color(theme::readable(p, s.info.color)));
     hint(ui, p, s.info.summary);
-    ui.add_space(6.0);
-    match &s.info.origin {
-        Origin::Native => {
-            hint(ui, p, tr("Module natif : écrit pour la suite."));
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        slot_toggle(s, ui, &mut actions);
+        slot_state(s, p, ui, &mut actions);
+    });
+    let has_settings = s.module().is_some_and(|m| m.commands().iter().any(|c| c.id == "reglages"));
+    if has_settings {
+        ui.add_space(6.0);
+        if ui.button(module_settings_label(s.info.name)).clicked() {
+            actions.push(Action::RunCommand { module: id.to_string(), command: "reglages".into() });
         }
-        Origin::Embedded { exe, repo } => {
-            hint(
-                ui,
-                p,
-                &format!(
-                    "{} {exe}, {} {repo}. {}",
-                    tr("Application autonome embarquée sans changer son code :"),
-                    tr("sources dans"),
-                    tr(
-                        "Ses réglages propres restent dans son propre menu, dans sa case ; ceux de la suite (thème, langue, comptes, Tailscale) s'appliquent là où il sait les suivre."
-                    )
-                ),
-            );
-            section(ui, tr("Ce que la suite contient pour lui"));
-            for line in [
-                mark("style global (visuels, thème, zoom) rétabli après chacun de ses appels"),
-                mark("clavier seulement quand sa case a été cliquée en dernier"),
-                mark("commandes de fenêtre (titre, réduire, agrandir, fermer) relevées, sans effet sur la suite"),
-                mark("sa logique tourne même quand sa case est masquée"),
-                mark("une panique l'arrête, sans arrêter les autres"),
-            ] {
-                ui.label(RichText::new(format!("• {}", tr(line))).color(p.text_muted));
-            }
+    }
+    // Un module natif peut montrer ses réglages ici ; un module embarqué les garde dans sa case.
+    let host = suite.core.host.clone();
+    if matches!(s.info.origin, Origin::Native) && s.module().is_some() {
+        section(ui, tr("Réglages"));
+        let shown = s.module_mut().is_some_and(|m| m.settings_ui(ui, &host));
+        if !shown && !has_settings {
+            ui.label(RichText::new(tr("Aucun réglage propre.")).color(p.text_dim));
+        }
+    }
+    if let Origin::Embedded { exe, repo } = &s.info.origin {
+        ui.add_space(10.0);
+        egui::CollapsingHeader::new(tr("Diagnostic")).id_salt(("diagnostic", id)).show(ui, |ui| {
+            ui.label(RichText::new(format!("{exe} · {repo}")).color(p.text_dim).small());
             ui.label(
                 RichText::new(format!(
                     "{} : {} · {} : {}",
-                    tr("Style rétabli"),
+                    tr("Style remis en place"),
                     s.stats.style_restored,
-                    tr("commandes contenues"),
+                    tr("Commandes de fenêtre ignorées"),
                     s.stats.commands_countered
                 ))
                 .color(p.text_dim)
                 .small(),
             );
-        }
+        });
     }
-    let host = suite.core.host.clone();
-    if s.module().is_some() {
-        section(ui, tr("Réglages propres"));
-        let shown = s.module_mut().is_some_and(|m| m.settings_ui(ui, &host));
-        if !shown {
-            ui.label(RichText::new(tr("Dans le module lui-même (son menu Réglages, dans sa case).")).color(p.text_dim));
-        }
+    let leave = actions.iter().any(|a| matches!(a, Action::RunCommand { .. }));
+    for a in actions {
+        suite.core.act(a);
+    }
+    // Les réglages du module s'ouvrent dans sa case : ceux d'Eyrie s'effacent.
+    if leave {
+        suite.shell.settings.open = false;
     }
 }

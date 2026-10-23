@@ -7,6 +7,8 @@
 //!   rétablit en gardant les siennes ;
 //! - **thème et langue de la suite** : passés comme `--theme` et `--lang` (`set_host_overrides`),
 //!   ils remplacent ses réglages pour la session sans y être écrits ;
+//! - **comptes** : ceux de toute la suite, que DragonTree lit lui-même ; « Comptes… » ouvre la page Comptes d'Eyrie,
+//!   et Thème et Langue disparaissent de ses réglages et de ses menus (`set_hosted`) ;
 //! - le titre « <dépôt> — DragonTree » devient le titre du module.
 
 use std::sync::Arc;
@@ -76,6 +78,8 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
     let start = StartOptions {
         screenshot_after: Duration::from_millis(2500),
         profile_dir: profile_dir.clone(),
+        // Les comptes de toute la suite, dans le dossier donné par Eyrie.
+        accounts_dir: bcx.host.accounts_dir(),
         ..Default::default()
     };
     let profile = profile_dir.unwrap_or_else(dragontree_app::settings::config_dir);
@@ -90,6 +94,9 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
     if let Some(i) = instance {
         app.set_instance(i);
     }
+    app.set_hosted(true);
+    let link = bcx.host.clone();
+    app.set_accounts_link(Box::new(move || link.open_settings("comptes")));
     // Le dépôt de l'onglet actif devient le contexte partagé de la suite (Carnet, Fawkes le suivent).
     let mut published: Option<std::path::PathBuf> = None;
     let module = Embedded::new(info(), bcx.host.clone(), app).key_commands(commands()).after_logic(move |app, cx| {

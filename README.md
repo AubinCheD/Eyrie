@@ -1,8 +1,9 @@
-# SuperApp
+# Eyrie
 
 Les six modules — Fawkes, DragonTree, Patronus, Owlery, Menagerie, Grimoire — réunis dans une seule
-application, « un peu à la manière de Visual Studio et ses différentes fenêtres ». *SuperApp* est un
-nom de travail.
+application, « un peu à la manière de Visual Studio et ses différentes fenêtres ». **Eyrie** est
+l'application ; **EyrieSuite** désigne ce qui est commun à toute la suite (`%APPDATA%\EyrieSuite`, le
+coffre « EyrieSuite » de Windows et, à terme, le dossier d'installation de tous les modules).
 
 **Premier jet** : l'hôte et les modules réunis **sans changer le code des modules**. Chaque module
 garde son dépôt et son exécutable ; la suite compile leurs bibliothèques et les contient (voir
@@ -20,8 +21,11 @@ garde son dépôt et son exécutable ; la suite compile leurs bibliothèques et 
   **centre de notifications** commun, **palette de commandes** (F1) qui exécute aussi les commandes
   des modules, **journal** de la suite, **ressources** (temps passé par module).
 - **Réglages communs** : thème (les trois thèmes de Fawkes + Système), langue (fr/en), zoom,
-  comptes de forges (coffre de Windows, partage compte par compte, import depuis DragonTree et
-  Owlery), Tailscale (un seul nœud pour la suite), raccourcis et leurs conflits.
+  Tailscale (un seul nœud pour la suite), raccourcis et leurs conflits.
+- **Comptes communs à toute la suite** (GitHub, GitLab, Azure DevOps) : on se connecte une fois, dans
+  Eyrie, DragonTree ou Owlery, seuls ou intégrés ; liste dans `%APPDATA%\EyrieSuite`, jetons dans le
+  coffre « EyrieSuite » de Windows. Intégrés, les modules renvoient à la page Comptes d'Eyrie
+  (`docs/comptes.md`).
 - **Bac à sable** autour de chaque appel de module : style global rétabli, clavier au seul module de
   la case cliquée, commandes de fenêtre contenues, plantage isolé.
 - **Contrat local en appel Rust** : un module demande à un autre (`ouvrir` un terminal dans Fawkes
@@ -46,12 +50,12 @@ Toolchain `x86_64-pc-windows-gnu` (comme les modules) : `tools\setup.ps1` écrit
 
 ```powershell
 tools\setup.ps1
-cargo build --release        # target\release\superapp.exe
+cargo build --release        # target\release\eyrie.exe
 cargo test --workspace
-cargo test -p superapp -- --ignored --test-threads=1   # essais avec les sept modules réels (mode essai)
+cargo test -p eyrie -- --ignored --test-threads=1   # essais avec les sept modules réels (mode essai)
 ```
 
-Formater : `cargo fmt -p superapp -p suite-sdk -p suite-carnet …`, **pas `cargo fmt --all`**, qui
+Formater : `cargo fmt -p eyrie -p suite-sdk -p suite-carnet …`, **pas `cargo fmt --all`**, qui
 formaterait aussi les dépôts des modules (dépendances par chemin).
 
 La première compilation prend quelques minutes : toutes les dépendances des six modules (un seul
@@ -60,7 +64,7 @@ egui 0.37 pour tous).
 ## Lancer
 
 ```powershell
-target\release\superapp.exe
+target\release\eyrie.exe
 ```
 
 Au premier lancement, la suite demande où les modules rangent leur état (aucun module ne démarre
@@ -69,21 +73,22 @@ avant ce choix ; elle se relance ensuite) :
 - **les données des exécutables** (par défaut) : mêmes groupes, terminaux, tâches et filtres que
   `fawkes.exe`, `patronus.exe`… La suite prend le même verrou que chaque exe : un module dont l'exe
   tourne déjà n'est pas démarré (sa case propose de fermer l'exe puis de réessayer) ;
-- **un dossier d'essai** (`%APPDATA%\SuperApp\essai\<module>`) : pour essayer sans rien toucher.
+- **un dossier d'essai** (`%APPDATA%\EyrieSuite\Eyrie\essai\<module>`) : pour essayer sans rien toucher.
 
 Variables utiles :
 
 | Variable | Effet |
 |---|---|
-| `SUPERAPP_DATA_DIR` | dossier de la suite (défaut `%APPDATA%\SuperApp`) |
+| `EYRIE_DATA_DIR` | dossier d'Eyrie (défaut `%APPDATA%\EyrieSuite\Eyrie`) ; les comptes y sont alors isolés |
+| `EYRIESUITE_DIR` | dossier commun de la suite (défaut `%APPDATA%\EyrieSuite`) : comptes partagés |
 | `OWLERY_DEMO=1` | Owlery en démonstration (aucun réseau, jamais les vrais jetons) |
-| `SUPERAPP_CAPTURE=<png>` | capture de la fenêtre principale puis fermeture (essais) |
-| `SUPERAPP_CAPTURE_AFTER_MS` | délai avant la capture (4000 par défaut) |
-| `SUPERAPP_CAPTURE_SCENE` | scène : `palette`, `reglages`, `modules`, `raccourcis`, `ensemble`, `journal`, `ressources`, `grille`, `colonnes`, `detacher`, `concentration`, `terminal`, `module:<id>`, `theme:<graphite\|fluent\|nuit>` (séparées par des virgules) |
+| `EYRIE_CAPTURE=<png>` | capture de la fenêtre principale puis fermeture (essais) |
+| `EYRIE_CAPTURE_AFTER_MS` | délai avant la capture (4000 par défaut) |
+| `EYRIE_CAPTURE_SCENE` | scène : `palette`, `reglages`, `modules`, `raccourcis`, `ensemble`, `journal`, `ressources`, `grille`, `colonnes`, `detacher`, `concentration`, `terminal`, `module:<id>`, `theme:<graphite\|fluent\|nuit>` (séparées par des virgules) |
 | `FAWKES_TAILNET_EXE` | compagnon Tailscale (sinon cherché à côté de l'exe ou dans `../Fawkes/target`) |
 | `SUITE_FAWKES_DIR` | autre emplacement des sources de Fawkes |
 
-`superapp.exe` comprend aussi ce que les modules demandent à leur propre exécutable quand ils
+`eyrie.exe` comprend aussi ce que les modules demandent à leur propre exécutable quand ils
 tournent dans la suite (`current_exe()`) : `--relais …` (Menagerie), `lancer <tâche>` et
 `planifie <tâche>` (Patronus, Planificateur de Windows).
 
@@ -107,7 +112,8 @@ c'est AltGr sur un clavier français.
 crates/
   suite-sdk/        interface de module, services de l'hôte, adaptateur eframe, thèmes, polices,
                     langue, raccourcis, état versionné, instance unique
-  superapp/         l'hôte (exe superapp) : cases, fenêtres, bac à sable, palette, réglages…
+  suite-accounts/   comptes de forge communs à toute la suite (liste, coffre, normalisation)
+  eyrie/            l'hôte (exe eyrie) : cases, fenêtres, bac à sable, palette, réglages…
   modules/
     fawkes/         Fawkes : sa bibliothèque, plus l'adaptateur
     dragontree/     adaptateurs des cinq autres modules (leur bibliothèque, telle quelle)

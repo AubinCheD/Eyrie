@@ -243,7 +243,7 @@ pèse trop.
 - **Gabarit de module** : un module d'exemple minimal et une page « écrire un module », pour les
   modules à venir.
 - **Une seule mise à jour** pour la suite (Fawkes §6), et un installeur à cases (Fawkes §3.3).
-- **Nom de la suite** : *SuperApp* est un nom de travail. Dans l'esprit des modules : *Poudlard*
+- **Nom de la suite** (décidé le 23/10/2026 : **Eyrie**, et **EyrieSuite** pour ce qui est commun) : *SuperApp* était un nom de travail. Dans l'esprit des modules : *Poudlard*
   (Hogwarts, le château qui les réunit), *Diagon* (le Chemin de Traverse, une rue de boutiques),
   *Salle sur Demande* (une pièce qui prend la forme qu'on lui demande, comme la disposition). Pour la
   crate des échanges entre modules : *Floo* (le réseau des cheminées).

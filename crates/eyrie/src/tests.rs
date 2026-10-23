@@ -17,11 +17,8 @@ use crate::registry;
 static N: AtomicU32 = AtomicU32::new(0);
 
 fn temp_dir() -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!(
-        "superapp-essai-{}-{}",
-        std::process::id(),
-        N.fetch_add(1, Ordering::Relaxed)
-    ));
+    let d =
+        std::env::temp_dir().join(format!("eyrie-essai-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     d
@@ -366,4 +363,80 @@ fn the_suite_zoom_comes_back_after_a_module_changes_it() {
     }
     h.run_steps(4);
     assert!((ctx.zoom_factor() - 1.0).abs() < 1e-3, "zoom {}", ctx.zoom_factor());
+}
+
+// --- Réglages de la suite -----------------------------------------------------------------------
+
+/// Les textes des réglages restent courts et parlent à l'utilisateur, pas de la mécanique de la suite.
+#[test]
+fn settings_texts_have_no_implementation_jargon() {
+    let keys = crate::i18n::keys_in(include_str!("settings.rs"));
+    for jargon in
+        ["sans changer son code", "Style rétabli", "commandes contenues", "verrou", "bac à sable", "injectable"]
+    {
+        let hits: Vec<&String> = keys.iter().filter(|k| k.contains(jargon)).collect();
+        assert!(hits.is_empty(), "« {jargon} » : {hits:#?}");
+    }
+    let long: Vec<&String> = keys.iter().filter(|k| k.chars().count() > 140).collect();
+    assert!(long.is_empty(), "aides trop longues : {long:#?}");
+}
+
+thread_local! {
+    static RUN: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Un module qui a des réglages propres (commande `reglages`).
+struct Tuned {
+    info: ModuleInfo,
+}
+
+impl Module for Tuned {
+    fn info(&self) -> &ModuleInfo {
+        &self.info
+    }
+
+    fn logic(&mut self, _ctx: &egui::Context, _cx: &mut Cx) {}
+
+    fn ui(&mut self, _ui: &mut egui::Ui, _view: &str, _cx: &mut Cx) {}
+
+    fn commands(&self) -> Vec<suite_sdk::CommandInfo> {
+        vec![suite_sdk::CommandInfo { id: "reglages".into(), title: "Réglages".into(), shortcut: None }]
+    }
+
+    fn run_command(&mut self, id: &str, _cx: &mut Cx) {
+        RUN.with(|r| r.borrow_mut().push(id.to_string()));
+    }
+}
+
+fn tuned_info() -> ModuleInfo {
+    ModuleInfo {
+        id: "regle",
+        name: "Réglé",
+        icon: "⚙",
+        color: egui::Color32::LIGHT_BLUE,
+        summary: "essai",
+        origin: Origin::Native,
+    }
+}
+
+fn build_tuned(_: &suite_sdk::BuildCx) -> Result<Box<dyn Module>, suite_sdk::Unavailable> {
+    Ok(Box::new(Tuned { info: tuned_info() }))
+}
+
+#[test]
+fn module_page_offers_its_settings_command() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = suite();
+    let ctx = h.ctx.clone();
+    {
+        let s = h.state_mut();
+        let mut slot = Slot::new(tuned_info(), build_tuned);
+        let cc = eframe::CreationContext::_new_kittest(ctx);
+        slot.start(&cc, &s.core.host, suite_sdk::DataMode::Shared, &mut s.core.journal);
+        s.core.slots.push(slot);
+    }
+    act(&mut h, Action::OpenSettings(crate::settings::Page::Module("regle".into())));
+    h.get_by_label(&crate::settings::module_settings_label("Réglé")).click();
+    h.run_steps(4);
+    assert_eq!(RUN.with(|r| r.borrow().clone()), ["reglages"]);
 }

@@ -33,7 +33,7 @@ use crate::tailnet::Tailnet;
 use crate::windows::Detached;
 use crate::{capture, registry, settings};
 
-pub const TITLE: &str = "SuperApp";
+pub const TITLE: &str = "Eyrie";
 
 /// Ce que l'interface demande, traité en fin d'image (hors des emprunts des arbres de cases).
 #[derive(Clone, Debug, PartialEq)]
@@ -297,8 +297,22 @@ impl Suite {
             }
         }
 
-        let accounts = Accounts::load(&dir);
-        accounts.publish(&host);
+        // Les comptes communs de la suite ; un Eyrie isolé (essais, tests) garde les siens dans son dossier.
+        let isolated = (dir != crate::persist::default_data_dir()).then_some(dir.as_path());
+        let accounts_dir = suite_accounts::accounts_dir(isolated);
+        // Les modules qui lisent les comptes reçoivent ce dossier de l'hôte (pas de variable d'environnement, que
+        // leurs processus enfants hériteraient).
+        host.set_accounts_dir(accounts_dir.clone());
+        let mut accounts = Accounts::new(suite_accounts::Store::new(
+            &accounts_dir,
+            std::sync::Arc::new(suite_accounts::OsVault::suite()),
+        ));
+        if isolated.is_none() {
+            let legacy = ["SuperApp", "DragonTree", "Owlery"].map(|service| {
+                std::sync::Arc::new(suite_accounts::OsVault::new(service)) as std::sync::Arc<dyn suite_accounts::Vault>
+            });
+            accounts = accounts.with_legacy_vaults(legacy.to_vec());
+        }
         let tailnet = Tailnet::new(&dir);
 
         let core = Core {
@@ -347,7 +361,7 @@ impl Suite {
         suite
     }
 
-    /// Prépare la scène d'une capture d'essai (`SUPERAPP_CAPTURE_SCENE`).
+    /// Prépare la scène d'une capture d'essai (`EYRIE_CAPTURE_SCENE`).
     fn capture_scene(&mut self, scene: &str) {
         let first =
             self.core.slots.iter().find(|s| s.is_running()).map(|s| Pane::module(s.info.id, suite_sdk::ViewInfo::MAIN));
@@ -357,6 +371,11 @@ impl Suite {
                 "reglages" => self.core.act(Action::OpenSettings(settings::Page::General)),
                 "modules" => self.core.act(Action::OpenSettings(settings::Page::Modules)),
                 "raccourcis" => self.core.act(Action::OpenSettings(settings::Page::Shortcuts)),
+                "comptes" => self.core.act(Action::OpenSettings(settings::Page::Accounts)),
+                s if s.starts_with("reglages:") => {
+                    let id = s.trim_start_matches("reglages:").to_string();
+                    self.core.act(Action::OpenSettings(settings::Page::Module(id)));
+                }
                 "ensemble" => self.core.act(Action::Reveal(Pane::Suite { view: SuiteView::Overview })),
                 "ressources" => self.core.act(Action::Reveal(Pane::Suite { view: SuiteView::Resources })),
                 "journal" => self.core.act(Action::Reveal(Pane::Suite { view: SuiteView::Journal })),
@@ -728,6 +747,9 @@ impl Suite {
                 ctx.send_viewport_cmd(ViewportCommand::Focus);
             }
         }
+        if let Some(page) = out.settings {
+            self.core.act(Action::OpenSettings(settings::Page::from_key(&page)));
+        }
         if !out.attention.is_empty() {
             ctx.send_viewport_cmd(ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
         }
@@ -1076,7 +1098,7 @@ impl eframe::App for Suite {
         self.process_outbox(ctx, frame);
         self.run_logic(ctx, frame);
         self.core.tailnet.poll(&self.core.st.tailnet, &self.core.dir, ctx);
-        self.core.accounts.poll(&self.core.host);
+        self.core.accounts.poll();
         self.watch_screens();
         if let Some(c) = &mut self.core.capture
             && c.poll(ctx)

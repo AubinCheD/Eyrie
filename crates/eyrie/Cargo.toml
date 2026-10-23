@@ -1,5 +1,5 @@
 [package]
-name = "superapp"
+name = "eyrie"
 description = "La suite : les modules dans une seule application"
 version.workspace = true
 edition.workspace = true
@@ -26,9 +26,11 @@ keyring.workspace = true
 rfd.workspace = true
 menagerie.workspace = true
 dragontree-forges.workspace = true
+suite-accounts.workspace = true
 
 [dev-dependencies]
 egui_kittest = { version = "0.37", features = ["eframe"] }
+tempfile = "3"
 dragontree-app.workspace = true
 
 [target.'cfg(windows)'.dependencies]

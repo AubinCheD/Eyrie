@@ -1,6 +1,6 @@
-//! SuperApp — les modules dans une seule application.
+//! Eyrie — les modules de la suite EyrieSuite dans une seule application.
 //!
-//! `superapp.exe` ouvre la suite. Les arguments que les modules embarqués donnent à leur propre
+//! `eyrie.exe` ouvre la suite. Les arguments que les modules embarqués donnent à leur propre
 //! exécutable quand ils se relancent eux-mêmes (`current_exe()`) sont pris en charge ici :
 //! `--relais …` (Menagerie), `lancer <tâche>` et `planifie <tâche>` (Patronus, Planificateur de
 //! Windows).
@@ -13,6 +13,7 @@ mod core;
 mod i18n;
 mod icon;
 mod layout;
+mod migrate;
 mod palette;
 mod persist;
 mod registry;
@@ -102,11 +103,21 @@ fn main() -> eframe::Result {
     wait_for_previous(&args);
 
     let dir = persist::data_dir();
-    let lock_name = format!("Local\\SuperApp-instance:{}", suite_sdk::instance::dir_key(&dir));
+    let lock_name = format!("Local\\Eyrie-instance:{}", suite_sdk::instance::dir_key(&dir));
     let Some(_instance) = suite_sdk::instance::NamedMutex::try_acquire(&lock_name) else {
-        message_box("La suite est déjà ouverte.");
+        message_box("Eyrie est déjà ouvert.");
         return Ok(());
     };
+    // Reprise des données de SuperApp, pour le dossier de tous les jours seulement (pas pour un Eyrie isolé par
+    // `EYRIE_DATA_DIR` ou `EYRIESUITE_DIR`).
+    let mut problems = Vec::new();
+    if dir == persist::default_data_dir() && std::env::var_os(suite_accounts::DIR_ENV).is_none() {
+        let old = dirs::config_dir().unwrap_or_else(std::env::temp_dir).join("SuperApp");
+        let old_vault = suite_accounts::OsVault::new("SuperApp");
+        if let Err(e) = migrate::from_superapp(&old, &dir, &old_vault, &suite_accounts::Store::open()) {
+            problems.push(format!("Reprise des données de SuperApp impossible : {e}"));
+        }
+    }
     let _ = std::fs::create_dir_all(&dir);
     if std::env::var_os("FAWKES_TAILNET_EXE").is_none()
         && let Some(companion) = tailnet::find_companion()
@@ -116,14 +127,15 @@ fn main() -> eframe::Result {
     }
     sandbox::install_panic_hook();
 
-    let loaded = persist::load(&dir);
+    let mut loaded = persist::load(&dir);
+    loaded.problems.extend(problems);
     if loaded.value.module_data == persist::ModuleData::Trial {
         trial_dirs(&dir);
     }
     let geom = loaded.value.window;
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(app::TITLE)
-        .with_app_id("superapp")
+        .with_app_id("eyrie")
         .with_inner_size(geom.size)
         .with_min_inner_size([900.0, 560.0])
         .with_maximized(geom.maximized)
