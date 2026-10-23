@@ -23,6 +23,8 @@ mod shell;
 mod tailnet;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_deep;
 mod tiles;
 mod views;
 mod windows;

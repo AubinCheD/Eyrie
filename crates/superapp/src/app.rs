@@ -103,6 +103,13 @@ pub struct CloseSequence {
     held_by: Option<(String, Instant)>,
 }
 
+impl CloseSequence {
+    /// Tous les modules ont vu la fermeture et aucun ne la retient.
+    pub fn is_done(&self) -> bool {
+        self.next >= self.order.len() && self.held_by.is_none()
+    }
+}
+
 /// Au-delà, une question laissée sans réponse (« Revenir ») abandonne la fermeture.
 const HOLD_EXPIRES: Duration = Duration::from_secs(300);
 
@@ -492,6 +499,17 @@ impl Suite {
     }
 
     fn process_actions(&mut self, ctx: &egui::Context) {
+        self.apply_actions(ctx);
+        // La case agrandie a pu être fermée (croix de son onglet, action, module arrêté) ou partir
+        // dans une autre fenêtre : la concentration s'arrête avec elle.
+        if let Some(c) = &self.core.concentrate
+            && self.locate(c).map(|(w, _)| w) != Some(0)
+        {
+            self.core.concentrate = None;
+        }
+    }
+
+    fn apply_actions(&mut self, ctx: &egui::Context) {
         let actions = std::mem::take(&mut self.core.actions);
         for a in actions {
             match a {
