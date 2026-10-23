@@ -721,3 +721,32 @@ fn a_successful_add_clears_the_form() {
     h.run_steps(3);
     assert!(h.get_by_label(add).accesskit_node().is_disabled(), "ajouté : le jeton a quitté le formulaire");
 }
+
+/// Fermés dans une fenêtre détachée, les réglages oublient aussi une demande de retrait en attente.
+#[test]
+fn a_pending_removal_is_forgotten_when_a_detached_window_closes_its_settings() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = suite();
+    let window = carnet_only_in_a_detached_window(&mut h);
+    let dir = tempfile::tempdir().unwrap();
+    let store = suite_accounts::Store::new(dir.path(), std::sync::Arc::new(suite_accounts::MemoryVault::default()));
+    let ada = suite_accounts::Account {
+        id: "aaaaaaaaaaaaaaaa".into(),
+        forge: "github".into(),
+        host: "github.com".into(),
+        username: "ada".into(),
+        ..Default::default()
+    };
+    store.add(ada, "t").unwrap();
+    h.state_mut().core.accounts = crate::accounts::Accounts::new(store);
+    let confirm = crate::i18n::tr("Oui, retirer");
+    act(&mut h, Action::OpenSettingsIn(crate::settings::Page::Accounts, Some(window)));
+    h.get_by_label(crate::i18n::tr("Retirer")).click();
+    h.run_steps(3);
+    assert!(h.query_by_label(confirm).is_some(), "confirmation demandée");
+    // La croix de la fenêtre de réglages, dans la fenêtre détachée.
+    h.state_mut().shell.settings.open = false;
+    h.run_steps(3);
+    act(&mut h, Action::OpenSettings(crate::settings::Page::Accounts));
+    assert!(h.query_by_label(confirm).is_none(), "fenêtre fermée : la demande est oubliée");
+}

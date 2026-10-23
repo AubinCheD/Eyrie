@@ -387,6 +387,9 @@ impl Suite {
     }
 
     fn open_settings(&mut self, page: settings::Page, window: Option<u64>) {
+        if !self.shell.settings.open {
+            self.shell.settings.forget_pending_removal();
+        }
         self.shell.settings.open = true;
         self.shell.settings.page = page;
         self.shell.settings.window = window.filter(|id| self.windows.iter().any(|w| w.id == *id));

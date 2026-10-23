@@ -38,6 +38,12 @@ impl SettingsState {
         before.filter(|b| self.shown.as_deref() != Some(b.as_str()))
     }
 
+    /// Les réglages s'ouvrent (dans la principale ou une fenêtre détachée) : une demande de retrait laissée par une
+    /// ouverture précédente ne revient pas.
+    pub fn forget_pending_removal(&mut self) {
+        self.confirm_remove = None;
+    }
+
     /// Le compte saisi a été ajouté : le formulaire oublie le jeton (et le reste).
     pub fn clear_new_account(&mut self) {
         self.new_token.clear();
