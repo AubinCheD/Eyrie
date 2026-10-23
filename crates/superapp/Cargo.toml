@@ -29,6 +29,7 @@ dragontree-forges.workspace = true
 
 [dev-dependencies]
 egui_kittest = { version = "0.37", features = ["eframe"] }
+dragontree-app.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [

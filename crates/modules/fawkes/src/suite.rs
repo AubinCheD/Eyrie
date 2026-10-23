@@ -157,6 +157,16 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
         .key_commands(commands())
         .status(status)
         .on_request(on_request)
+        // Contexte partagé : le groupe lié à ce dépôt devient le groupe affiché.
+        .on_event(|app, event, cx| {
+            if event.kind != "contexte" || !cx.host.follows_context() || event.source == ID {
+                return;
+            }
+            let dir = event.data.get("dir").and_then(|d| d.as_str());
+            if let Some(g) = dir.and_then(|d| app.st.group_for_dir(d)) {
+                app.select_group(g);
+            }
+        })
         .before_ui(move |app, cx| {
             let suite = suite_theme_of(cx.host);
             *before.borrow_mut() = Some((app.st.settings.theme, suite, app.st.window.clone()));

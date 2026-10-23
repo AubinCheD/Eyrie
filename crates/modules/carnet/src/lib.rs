@@ -40,7 +40,7 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
 }
 
 /// Ce qui est enregistré (`<suite>\modules\carnet\notes.json`).
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(default)]
 struct Saved {
     /// Dossier du dépôt (ou « » hors contexte) → texte.
@@ -48,6 +48,13 @@ struct Saved {
     follow_context: bool,
     #[serde(flatten)]
     extra: BTreeMap<String, serde_json::Value>,
+}
+
+impl Default for Saved {
+    fn default() -> Self {
+        // Suit le contexte partagé par défaut : les notes du dépôt ouvert dans DragonTree.
+        Saved { notes: BTreeMap::new(), follow_context: true, extra: BTreeMap::new() }
+    }
 }
 
 const VERSION: u32 = 1;

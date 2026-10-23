@@ -113,6 +113,8 @@ pub struct Outbox {
 }
 
 struct Shared {
+    /// Les cases suivent le contexte partagé (réglage de la suite).
+    follow_context: bool,
     /// Modules construits (pour un module qui veut savoir si un autre est là).
     running: Vec<String>,
     theme: ThemeChoice,
@@ -143,6 +145,7 @@ impl Host {
                 ctx,
                 suite_dir,
                 shared: Mutex::new(Shared {
+                    follow_context: true,
                     running: Vec::new(),
                     theme: theme_choice,
                     palette,
@@ -252,6 +255,16 @@ impl Host {
     }
 
     // --- Contexte partagé ---
+
+    /// Les modules doivent-ils suivre le contexte partagé (réglage de la suite) ?
+    pub fn follows_context(&self) -> bool {
+        self.shared(|s| s.follow_context)
+    }
+
+    /// Réservé à l'hôte.
+    pub fn set_follows_context(&self, yes: bool) {
+        self.shared(|s| s.follow_context = yes);
+    }
 
     pub fn context(&self) -> Option<SharedContext> {
         self.shared(|s| s.context.clone())

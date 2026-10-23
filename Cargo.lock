@@ -3983,6 +3983,7 @@ name = "superapp"
 version = "0.1.0"
 dependencies = [
  "dirs",
+ "dragontree-app",
  "dragontree-forges",
  "eframe",
  "egui",

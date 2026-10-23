@@ -1071,6 +1071,7 @@ impl eframe::App for Suite {
             ctx.set_zoom_factor(self.core.st.zoom);
         }
         self.watch_theme(ctx);
+        self.core.host.set_follows_context(self.core.st.follow_context);
         self.handle_close(ctx);
         self.process_outbox(ctx, frame);
         self.run_logic(ctx, frame);

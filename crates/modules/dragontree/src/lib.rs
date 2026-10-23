@@ -90,7 +90,26 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
     if let Some(i) = instance {
         app.set_instance(i);
     }
-    let module = Embedded::new(info(), bcx.host.clone(), app).key_commands(commands()).before_logic(|app, cx| {
+    // Le dépôt de l'onglet actif devient le contexte partagé de la suite (Carnet, Fawkes le suivent).
+    let mut published: Option<std::path::PathBuf> = None;
+    let module = Embedded::new(info(), bcx.host.clone(), app).key_commands(commands()).after_logic(move |app, cx| {
+        let now = app.active_repo_dir().map(|p| p.to_path_buf());
+        if now != published {
+            if let Some(dir) = &now {
+                let label = dir
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| dir.display().to_string());
+                cx.host.set_context(Some(suite_sdk::host::SharedContext {
+                    dir: dir.clone(),
+                    label,
+                    source: ID.into(),
+                }));
+            }
+            published = now;
+        }
+    });
+    let module = module.before_logic(|app, cx| {
         let theme = if cx.host.palette().dark { ThemeChoice::Dark } else { ThemeChoice::Light };
         let lang = match cx.host.lang() {
             suite_sdk::i18n::Lang::Fr => Lang::Fr,

@@ -39,6 +39,7 @@ type StatusHook<A> = Box<dyn Fn(&A, &ModuleStatus) -> ModuleStatus>;
 type CloseHook<A> = Box<dyn FnMut(&mut A) -> CloseCheck>;
 type RequestHook<A> = Box<dyn FnMut(&mut A, &Request, &mut Cx) -> Result<serde_json::Value, String>>;
 type TitleParser = fn(&str) -> Option<Badge>;
+type EventHook<A> = Box<dyn FnMut(&mut A, &crate::host::Event, &mut Cx)>;
 
 /// Une application eframe vue comme un module.
 pub struct Embedded<A: eframe::App> {
@@ -57,6 +58,7 @@ pub struct Embedded<A: eframe::App> {
     after_ui: Option<UiHook<A>>,
     after_logic: Option<UiHook<A>>,
     before_logic: Option<UiHook<A>>,
+    event_hook: Option<EventHook<A>>,
     status_hook: Option<StatusHook<A>>,
     close_hook: Option<CloseHook<A>>,
     request_hook: Option<RequestHook<A>>,
@@ -79,6 +81,7 @@ impl<A: eframe::App> Embedded<A> {
             after_ui: None,
             after_logic: None,
             before_logic: None,
+            event_hook: None,
             status_hook: None,
             close_hook: None,
             request_hook: None,
@@ -124,6 +127,13 @@ impl<A: eframe::App> Embedded<A> {
     /// (Fawkes : les sessions Claude qui se mettent à attendre).
     pub fn after_logic(mut self, f: impl FnMut(&mut A, &mut Cx) + 'static) -> Self {
         self.after_logic = Some(Box::new(f));
+        self
+    }
+
+    /// Les événements du bus de la suite (le contexte partagé, `contexte`…), traduits en appels de
+    /// ce que l'application expose publiquement.
+    pub fn on_event(mut self, f: impl FnMut(&mut A, &crate::host::Event, &mut Cx) + 'static) -> Self {
+        self.event_hook = Some(Box::new(f));
         self
     }
 
@@ -216,6 +226,12 @@ impl<A: eframe::App> Module for Embedded<A> {
         if let Some(k) = self.keys.iter().find(|k| k.id == id) {
             self.pending.extend(k.shortcut.to_events());
             self.host.repaint();
+        }
+    }
+
+    fn on_event(&mut self, event: &crate::host::Event, cx: &mut Cx) {
+        if let Some(h) = &mut self.event_hook {
+            h(&mut self.app, event, cx);
         }
     }
 

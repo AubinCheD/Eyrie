@@ -309,3 +309,31 @@ fn real_modules_let_the_suite_close() {
     let seq = h.state().core.quit.sequence.as_ref().expect("séquence en cours");
     assert!(seq.is_done(), "personne n'a retenu la fermeture");
 }
+
+#[test]
+#[ignore = "lent : les sept modules réels ; à lancer seul"]
+fn real_dragontree_shares_its_active_repository() {
+    let (mut h, dir) = real_suite("contexte");
+    h.run_steps(6);
+    // Comme `dragontree.exe <dépôt>` lancé à côté : la demande passe par le canal de l'instance
+    // unique, que la suite tient pour DragonTree.
+    let repo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
+    let key = dragontree_app::single_instance::profile_key(&dir.join("essai").join("dragontree"));
+    let forwarded = dragontree_app::single_instance::Forwarded { open: vec![repo.clone()] };
+    std::thread::spawn(move || {
+        let _ = dragontree_app::single_instance::start(&key, &forwarded, std::time::Duration::from_secs(10));
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let same = |c: &suite_sdk::host::SharedContext| c.dir.canonicalize().ok().as_deref() == Some(repo.as_path());
+    while !h.state().core.host.context().is_some_and(|c| same(&c)) {
+        assert!(std::time::Instant::now() < deadline, "contexte jamais publié : {:?}", h.state().core.host.context());
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let ctx = h.state().core.host.context().unwrap();
+    assert_eq!(ctx.source, "dragontree");
+    h.run_steps(3);
+    let carnet =
+        h.state().core.slot("carnet").and_then(|s| s.module()).map(|m| m.status().title).flatten().unwrap_or_default();
+    assert!(carnet.ends_with(&ctx.label), "le Carnet suit le dépôt : {carnet}");
+}
