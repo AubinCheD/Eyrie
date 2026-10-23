@@ -7,6 +7,7 @@
 //!   rétablit en gardant les siennes ;
 //! - **thème et langue de la suite** : passés comme `--theme` et `--lang` (`set_host_overrides`),
 //!   ils remplacent ses réglages pour la session sans y être écrits ;
+//! - **réglages** : les siens sont dans ceux d'Eyrie (page DragonTree), et « Réglages… » y mène ;
 //! - **comptes** : ceux de toute la suite, que DragonTree lit lui-même ; « Comptes… » ouvre la page Comptes d'Eyrie,
 //!   et Thème et Langue disparaissent de ses réglages et de ses menus (`set_hosted`) ;
 //! - le titre « <dépôt> — DragonTree » devient le titre du module.
@@ -97,25 +98,31 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
     app.set_hosted(true);
     let link = bcx.host.clone();
     app.set_accounts_link(Box::new(move || link.open_settings("comptes")));
+    // Ses réglages sont dans ceux d'Eyrie : « Réglages… » y mène, sur sa page.
+    let settings = bcx.host.clone();
+    app.set_settings_link(Box::new(move || settings.open_settings(&format!("module:{ID}"))));
     // Le dépôt de l'onglet actif devient le contexte partagé de la suite (Carnet, Fawkes le suivent).
     let mut published: Option<std::path::PathBuf> = None;
-    let module = Embedded::new(info(), bcx.host.clone(), app).key_commands(commands()).after_logic(move |app, cx| {
-        let now = app.active_repo_dir().map(|p| p.to_path_buf());
-        if now != published {
-            if let Some(dir) = &now {
-                let label = dir
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| dir.display().to_string());
-                cx.host.set_context(Some(suite_sdk::host::SharedContext {
-                    dir: dir.clone(),
-                    label,
-                    source: ID.into(),
-                }));
+    let module = Embedded::new(info(), bcx.host.clone(), app)
+        .key_commands(commands())
+        .settings_panel(|app, ui| app.settings_ui(ui))
+        .after_logic(move |app, cx| {
+            let now = app.active_repo_dir().map(|p| p.to_path_buf());
+            if now != published {
+                if let Some(dir) = &now {
+                    let label = dir
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| dir.display().to_string());
+                    cx.host.set_context(Some(suite_sdk::host::SharedContext {
+                        dir: dir.clone(),
+                        label,
+                        source: ID.into(),
+                    }));
+                }
+                published = now;
             }
-            published = now;
-        }
-    });
+        });
     let module = module.before_logic(|app, cx| {
         let theme = if cx.host.palette().dark { ThemeChoice::Dark } else { ThemeChoice::Light };
         let lang = match cx.host.lang() {
