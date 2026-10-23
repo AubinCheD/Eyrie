@@ -130,7 +130,11 @@ pub fn show_all(suite: &mut Suite, ctx: &egui::Context, frame: &mut eframe::Fram
                 });
             if shell.settings.open && shell.settings.window == Some(w.id) {
                 let modules = Some(settings::window_modules(&w.tree));
-                settings::show(&mut settings::SettingsCx { core: &mut *core, shell: &mut *shell, modules }, &vctx);
+                let wish = WindowWish { title: title.clone(), decorations: true };
+                settings::show(
+                    &mut settings::SettingsCx { core: &mut *core, shell: &mut *shell, modules, wish },
+                    &vctx,
+                );
             }
         });
         // Dernier onglet fermé : la fenêtre n'a plus lieu d'être.

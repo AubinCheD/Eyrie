@@ -513,8 +513,9 @@ pub fn overlays(suite: &mut Suite, ctx: &egui::Context, _frame: &mut eframe::Fra
         suite.shell.settings.window = None;
     }
     if suite.shell.settings.window.is_none() {
+        let wish = suite.core.wish.clone();
         settings::show(
-            &mut settings::SettingsCx { core: &mut suite.core, shell: &mut suite.shell, modules: None },
+            &mut settings::SettingsCx { core: &mut suite.core, shell: &mut suite.shell, modules: None, wish },
             ctx,
         );
     }

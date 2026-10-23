@@ -111,6 +111,8 @@ pub struct SettingsCx<'a> {
     pub shell: &'a mut ShellState,
     /// Modules montrés : `None` : tous.
     pub modules: Option<Vec<String>>,
+    /// Ce que veut la fenêtre qui montre les réglages : ses panneaux de modules sont dessinés pour elle.
+    pub wish: crate::sandbox::WindowWish,
 }
 
 impl SettingsCx<'_> {
@@ -144,20 +146,27 @@ fn hint(ui: &mut egui::Ui, p: &theme::Palette, text: &str) {
 
 pub fn show(suite: &mut SettingsCx<'_>, ctx: &egui::Context) {
     if !suite.shell.settings.open {
+        // Fenêtre fermée : une demande de retrait en attente ne revient pas à la réouverture.
+        suite.shell.settings.confirm_remove = None;
         return;
     }
+    // Bornée à la fenêtre qui la montre : une fenêtre détachée peut être petite.
+    let room = (ctx.content_rect().size() - egui::vec2(16.0, 16.0)).max(egui::vec2(240.0, 160.0));
+    let size = egui::vec2(820.0, 560.0).min(room);
     let mut open = true;
     let resp = egui::Window::new(tr("Réglages d'Eyrie"))
         .id(egui::Id::unique("suite-reglages"))
         .open(&mut open)
-        .default_size([820.0, 560.0])
-        .default_pos(ctx.content_rect().center() - egui::vec2(410.0, 290.0))
-        .min_size([620.0, 400.0])
+        .default_size(size)
+        .default_pos(ctx.content_rect().center() - size / 2.0)
+        .min_size(egui::vec2(620.0, 400.0).min(room))
+        .max_size(room)
         .collapsible(false)
         .show(ctx, |ui| {
             egui::Panel::left("reglages-pages").exact_size(190.0).resizable(false).show(ui, |ui| nav(suite, ui));
             egui::CentralPanel::default().show(ui, |ui| {
-                egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| page(suite, ui));
+                // Une fenêtre étroite défile plutôt que déborder.
+                egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| page(suite, ui));
             });
         });
     if let Some(r) = resp
@@ -202,6 +211,10 @@ fn nav(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui) {
 }
 
 fn page(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui) {
+    // Page Comptes quittée : une demande de retrait en attente est oubliée.
+    if suite.shell.settings.page != Page::Accounts {
+        suite.shell.settings.confirm_remove = None;
+    }
     // Dans une fenêtre détachée, la page d'un module qui n'y est pas cède la place à Général.
     if let Page::Module(id) = &suite.shell.settings.page
         && !suite.shows(id)
@@ -680,7 +693,7 @@ fn module_page(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui, id: &str) {
     if s.is_running() {
         section(ui, tr("Réglages"));
         let host = suite.core.host.clone();
-        let shown = crate::core::settings(s, &host, ui, &suite.core.wish, &mut suite.core.journal);
+        let shown = crate::core::settings(s, &host, ui, &suite.wish, &mut suite.core.journal);
         suite.shell.settings.drawn = Some(id.to_string());
         let has_command = s.module().is_some_and(|m| m.commands().iter().any(|c| c.id == "reglages"));
         if !shown && has_command {

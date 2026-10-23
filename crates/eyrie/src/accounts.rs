@@ -196,7 +196,13 @@ impl Accounts {
         }
     }
 
-    fn finish(&mut self, kind: ForgeKind, host: &str, result: Result<VerifiedUser, ForgeError>, token: &str) {
+    pub(crate) fn finish(
+        &mut self,
+        kind: ForgeKind,
+        host: &str,
+        result: Result<VerifiedUser, ForgeError>,
+        token: &str,
+    ) {
         let user = match result {
             Ok(user) => user,
             Err(e) => {

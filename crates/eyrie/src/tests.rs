@@ -26,12 +26,17 @@ fn temp_dir() -> std::path::PathBuf {
 
 /// La suite avec seulement Carnet activé.
 fn suite() -> Harness<'static, Suite> {
+    suite_of_size([1400.0, 900.0])
+}
+
+/// La même, dans une fenêtre de cette taille.
+fn suite_of_size(size: [f32; 2]) -> Harness<'static, Suite> {
     let mut st = SuiteState { welcomed: true, ..Default::default() };
     for f in registry::factories() {
         st.modules.insert(f.info.id.to_string(), ModuleSettings { enabled: f.info.id == "carnet" });
     }
     let dir = temp_dir();
-    let mut h = Harness::builder().with_size([1400.0, 900.0]).build_eframe(move |cc| {
+    let mut h = Harness::builder().with_size(size).build_eframe(move |cc| {
         Suite::new(cc, dir, suite_sdk::state::Loaded { value: st, problems: Vec::new(), writable: true })
     });
     h.run_steps(3);
@@ -621,4 +626,98 @@ fn interface_texts_name_eyrie() {
         }
     }
     assert!(wrong.is_empty(), "textes qui nomment encore « la suite » ou SuperApp : {wrong:#?}");
+}
+
+#[test]
+fn a_pending_removal_is_forgotten_when_the_page_is_left() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = suite();
+    let dir = tempfile::tempdir().unwrap();
+    let store = suite_accounts::Store::new(dir.path(), std::sync::Arc::new(suite_accounts::MemoryVault::default()));
+    let ada = suite_accounts::Account {
+        id: "aaaaaaaaaaaaaaaa".into(),
+        forge: "github".into(),
+        host: "github.com".into(),
+        username: "ada".into(),
+        ..Default::default()
+    };
+    store.add(ada, "t").unwrap();
+    h.state_mut().core.accounts = crate::accounts::Accounts::new(store);
+    let confirm = crate::i18n::tr("Oui, retirer");
+    // Autre page, puis fenêtre fermée.
+    for close in [false, true] {
+        act(&mut h, Action::OpenSettings(crate::settings::Page::Accounts));
+        h.get_by_label(crate::i18n::tr("Retirer")).click();
+        h.run_steps(3);
+        assert!(h.query_by_label(confirm).is_some(), "confirmation demandée");
+        if close {
+            h.state_mut().shell.settings.open = false;
+            h.run_steps(3);
+        } else {
+            act(&mut h, Action::OpenSettings(crate::settings::Page::General));
+        }
+        act(&mut h, Action::OpenSettings(crate::settings::Page::Accounts));
+        assert!(h.query_by_label(confirm).is_none(), "page quittée : la demande est oubliée");
+    }
+}
+
+#[test]
+fn the_settings_window_fits_a_small_window() {
+    let mut h = suite_of_size([520.0, 340.0]);
+    act(&mut h, Action::OpenSettings(crate::settings::Page::General));
+    h.run_steps(3);
+    let window = h.ctx.memory(|m| m.area_rect(egui::Id::unique("suite-reglages"))).expect("fenêtre de réglages");
+    let screen = h.ctx.content_rect().expand(1.0);
+    assert!(screen.contains_rect(window), "{window:?} hors de {screen:?}");
+}
+
+#[test]
+fn settings_of_a_detached_window_with_two_modules_list_both_only() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = suite();
+    add_slot(&mut h, tuned_info(), build_tuned);
+    add_slot(&mut h, fragile_info(), build_fragile);
+    let window = carnet_only_in_a_detached_window(&mut h);
+    // Réglé rejoint Carnet dans la fenêtre détachée ; Fragile tourne, sans case.
+    let w = h.state_mut().windows.iter_mut().find(|w| w.id == window).unwrap();
+    let pane = w.tree.tiles.insert_pane(Pane::module("regle", suite_sdk::ViewInfo::MAIN));
+    let root = w.tree.root.unwrap();
+    if let Some(egui_tiles::Tile::Container(c)) = w.tree.tiles.get_mut(root) {
+        c.add_child(pane);
+    }
+    act(&mut h, Action::OpenSettingsIn(crate::settings::Page::General, Some(window)));
+    let entry = |s: &crate::core::Slot| format!("{}  {}", s.info.icon, s.info.name);
+    let carnet = entry(h.state().core.slot("carnet").unwrap());
+    assert!(h.query_by_label(&carnet).is_some(), "Carnet, dans la fenêtre");
+    assert!(h.query_by_label("⚙  Réglé").is_some(), "Réglé, dans la fenêtre");
+    assert!(h.query_by_label("⚙  Fragile").is_none(), "Fragile n'est pas dans cette fenêtre");
+}
+
+#[test]
+fn a_successful_add_clears_the_form() {
+    use egui_kittest::kittest::{NodeT, Queryable};
+    let mut h = suite();
+    act(&mut h, Action::OpenSettings(crate::settings::Page::Accounts));
+    let token = h
+        .query_all_by(|n| matches!(n.role(), egui::accesskit::Role::PasswordInput | egui::accesskit::Role::TextInput))
+        .next()
+        .expect("champ du jeton");
+    token.focus();
+    h.run_steps(2);
+    h.query_all_by(|n| matches!(n.role(), egui::accesskit::Role::PasswordInput | egui::accesskit::Role::TextInput))
+        .next()
+        .unwrap()
+        .type_text("secret-123");
+    h.run_steps(2);
+    let add = crate::i18n::tr("Vérifier et ajouter");
+    assert!(!h.get_by_label(add).accesskit_node().is_disabled(), "jeton saisi : on peut l'ajouter");
+    let user = dragontree_forges::VerifiedUser {
+        username: "ada".into(),
+        display_name: String::new(),
+        avatar_url: None,
+        orgs: Vec::new(),
+    };
+    h.state_mut().core.accounts.finish(dragontree_forges::ForgeKind::GitHub, "github.com", Ok(user), "secret-123");
+    h.run_steps(3);
+    assert!(h.get_by_label(add).accesskit_node().is_disabled(), "ajouté : le jeton a quitté le formulaire");
 }

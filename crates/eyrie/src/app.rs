@@ -306,11 +306,14 @@ impl Suite {
         // Les modules qui lisent les comptes reçoivent ce dossier de l'hôte (pas de variable d'environnement, que
         // leurs processus enfants hériteraient).
         host.set_accounts_dir(accounts_dir.clone());
-        let mut accounts = Accounts::new(suite_accounts::Store::new(
-            &accounts_dir,
-            std::sync::Arc::new(suite_accounts::OsVault::suite()),
-        ));
-        if isolated.is_none() {
+        // Les essais de l'hôte n'approchent jamais le vrai coffre de Windows.
+        let vault: std::sync::Arc<dyn suite_accounts::Vault> = if cfg!(test) {
+            std::sync::Arc::new(suite_accounts::MemoryVault::default())
+        } else {
+            std::sync::Arc::new(suite_accounts::OsVault::suite())
+        };
+        let mut accounts = Accounts::new(suite_accounts::Store::new(&accounts_dir, vault));
+        if isolated.is_none() && !cfg!(test) {
             let legacy = ["SuperApp", "DragonTree", "Owlery"].map(|service| {
                 std::sync::Arc::new(suite_accounts::OsVault::new(service)) as std::sync::Arc<dyn suite_accounts::Vault>
             });
