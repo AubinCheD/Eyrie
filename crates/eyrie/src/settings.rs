@@ -28,6 +28,15 @@ pub enum Page {
     Module(String),
 }
 
+impl SettingsState {
+    /// Le compte saisi a été ajouté : le formulaire oublie le jeton (et le reste).
+    pub fn clear_new_account(&mut self) {
+        self.new_token.clear();
+        self.new_host.clear();
+        self.new_orgs.clear();
+    }
+}
+
 impl Page {
     /// Page demandée par un module (`Host::open_settings`) ; inconnue : Général.
     pub fn from_key(key: &str) -> Page {
@@ -53,6 +62,8 @@ pub struct SettingsState {
     /// Nom du nœud Tailscale en cours de saisie (appliqué à la validation : chaque changement
     /// relance le compagnon).
     tailnet_host: Option<String>,
+    /// Compte dont le retrait attend confirmation (il vaut pour toute la suite).
+    confirm_remove: Option<String>,
 }
 
 impl Default for SettingsState {
@@ -66,6 +77,7 @@ impl Default for SettingsState {
             new_orgs: String::new(),
             shortcut_edit: Default::default(),
             tailnet_host: None,
+            confirm_remove: None,
         }
     }
 }
@@ -89,7 +101,7 @@ pub fn show(suite: &mut Suite, ctx: &egui::Context) {
         return;
     }
     let mut open = true;
-    let resp = egui::Window::new(tr("Réglages de la suite"))
+    let resp = egui::Window::new(tr("Réglages d'Eyrie"))
         .id(egui::Id::unique("suite-reglages"))
         .open(&mut open)
         .default_size([820.0, 560.0])
@@ -226,7 +238,7 @@ fn restart_hint(suite: &mut Suite, ui: &mut egui::Ui) {
         ui.add_space(10.0);
         ui.horizontal(|ui| {
             ui.label(RichText::new(tr("Prendra effet au prochain lancement.")).color(suite.core.palette().warn));
-            if ui.button(tr("Relancer la suite")).clicked() {
+            if ui.button(tr("Relancer Eyrie")).clicked() {
                 suite.core.act(Action::Restart);
             }
         });
@@ -310,6 +322,7 @@ fn accounts(suite: &mut Suite, ui: &mut egui::Ui) {
         ui.label(RichText::new(tr("Aucun compte.")).color(p.text_dim));
     }
     let (mut remove, mut recheck) = (None, None);
+    let mut confirm = suite.shell.settings.confirm_remove.clone();
     for a in &list {
         egui::Frame::new()
             .fill(p.surface)
@@ -323,8 +336,19 @@ fn accounts(suite: &mut Suite, ui: &mut egui::Ui) {
                         ui.label(RichText::new(a.orgs.join(", ")).color(p.text_dim));
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if confirm.as_deref() == Some(a.id.as_str()) {
+                            if ui.small_button(tr("Annuler")).clicked() {
+                                confirm = None;
+                            }
+                            if ui.small_button(RichText::new(tr("Oui, retirer")).color(p.danger)).clicked() {
+                                remove = Some(a.id.clone());
+                                confirm = None;
+                            }
+                            ui.label(RichText::new(tr("Retirer de toute la suite ?")).color(p.warn));
+                            return;
+                        }
                         if ui.small_button(tr("Retirer")).clicked() {
-                            remove = Some(a.id.clone());
+                            confirm = Some(a.id.clone());
                         }
                         if ForgeKind::from_suite_key(&a.forge).is_some() && ui.small_button(tr("Vérifier")).clicked() {
                             recheck = Some(a.id.clone());
@@ -348,6 +372,7 @@ fn accounts(suite: &mut Suite, ui: &mut egui::Ui) {
             });
         ui.add_space(4.0);
     }
+    suite.shell.settings.confirm_remove = confirm;
     if let Some(id) = remove {
         suite.core.accounts.remove(&id);
     }
@@ -400,8 +425,8 @@ fn accounts(suite: &mut Suite, ui: &mut egui::Ui) {
         if ui.add_enabled(can, egui::Button::new(tr("Vérifier et ajouter"))).clicked() {
             let st = &mut suite.shell.settings;
             let orgs = st.new_orgs.split(',').map(|o| o.trim().to_string()).filter(|o| !o.is_empty()).collect();
+            // Le jeton reste dans le champ tant qu'il n'est pas accepté (voir `clear_new_account`).
             suite.core.accounts.add(st.new_kind, &st.new_host, &st.new_token, orgs);
-            st.new_token.clear();
         }
         if busy {
             ui.spinner();
@@ -458,7 +483,7 @@ fn shortcuts(suite: &mut Suite, ui: &mut egui::Ui) {
     let p = suite.core.palette();
     ui.heading(tr("Raccourcis"));
     hint(ui, p, tr("Ceux d'Eyrie passent avant ceux des modules ; ceux d'un module valent dans sa case."));
-    section(ui, tr("La suite"));
+    section(ui, tr("Eyrie"));
     let current = suite_shortcuts(&suite.core.st);
     let mut changed = Vec::new();
     egui::Grid::new("raccourcis-suite").num_columns(3).striped(true).spacing([12.0, 4.0]).show(ui, |ui| {
@@ -511,7 +536,7 @@ fn shortcuts(suite: &mut Suite, ui: &mut egui::Ui) {
             .owners
             .iter()
             .map(|(o, t)| match o {
-                Owner::Suite => format!("{} ({t})", tr("la suite")),
+                Owner::Suite => format!("{} ({t})", tr("Eyrie")),
                 Owner::Module(m) => format!("{} ({t})", suite.core.slot(m).map(|s| s.info.name).unwrap_or(m)),
             })
             .collect();

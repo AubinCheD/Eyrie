@@ -39,7 +39,11 @@ pub fn from_superapp(old: &Path, new: &Path, old_vault: &dyn Vault, store: &Stor
         for raw in value.get("accounts").and_then(|a| a.as_array()).cloned().unwrap_or_default() {
             let Ok(account) = serde_json::from_value::<Account>(raw) else { continue };
             let token = old_vault.get(&account.id)?;
-            store.adopt(account, token)?;
+            let id = store.adopt(account.clone(), token.clone())?;
+            // Repris sous le nouveau nom : plus de copie sous l'ancien.
+            if token.is_some() && store.token(&id)?.is_some() {
+                old_vault.delete(&account.id)?;
+            }
         }
         let kept = legacy.with_file_name("accounts.json.migre");
         std::fs::rename(&legacy, &kept).map_err(|e| format!("{} : {e}", kept.display()))?;
@@ -131,6 +135,21 @@ mod tests {
         assert!(new.join("egui.ron").exists());
         assert_eq!(store.token("e7d3af9721b2eb45").unwrap().as_deref(), Some("jeton"));
         assert!(old.join("accounts.json.migre").exists());
+    }
+
+    #[test]
+    fn superapp_tokens_leave_the_old_vault() {
+        let root = tempfile::tempdir().unwrap();
+        let old = root.path().join("SuperApp");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("accounts.json"), LEGACY).unwrap();
+        let old_vault = MemoryVault::default();
+        old_vault.set("e7d3af9721b2eb45", "jeton").unwrap();
+        let suite = root.path().join("EyrieSuite");
+        let store = Store::new(&suite, Arc::new(MemoryVault::default()));
+        assert_eq!(from_superapp(&old, &suite.join("Eyrie"), &old_vault, &store), Ok(true));
+        assert_eq!(store.token("e7d3af9721b2eb45").unwrap().as_deref(), Some("jeton"));
+        assert_eq!(old_vault.get("e7d3af9721b2eb45").unwrap(), None, "plus de copie sous l'ancien nom");
     }
 
     #[test]

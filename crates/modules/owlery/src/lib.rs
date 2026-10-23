@@ -93,7 +93,7 @@ impl FawkesLink for SuiteFawkes {
     }
 
     fn start(&self, _exe: &std::path::Path) -> Result<(), String> {
-        Err("Fawkes est un module de la suite : activez-le dans les réglages de la suite.".into())
+        Err("Fawkes est un module d'Eyrie : activez-le dans les réglages d'Eyrie.".into())
     }
 }
 

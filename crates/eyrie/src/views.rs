@@ -183,7 +183,7 @@ fn notifications(core: &mut Core, ui: &mut egui::Ui) {
         });
     });
     ui.label(
-        RichText::new(tr("Un seul centre pour tous les modules (Owlery, Patronus et la suite y écrivent)."))
+        RichText::new(tr("Un seul centre pour tous les modules (Owlery, Patronus et Eyrie y écrivent)."))
             .color(p.text_dim),
     );
     ui.separator();
@@ -254,7 +254,7 @@ fn resources(core: &mut Core, ui: &mut egui::Ui) {
 fn journal(core: &mut Core, ui: &mut egui::Ui) {
     let p = core.palette();
     ui.horizontal(|ui| {
-        heading(ui, tr("Journal de la suite"));
+        heading(ui, tr("Journal d'Eyrie"));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.button(tr("Effacer")).clicked() {
                 core.journal.lines.clear();

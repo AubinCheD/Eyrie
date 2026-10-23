@@ -26,7 +26,7 @@ pub fn info() -> ModuleInfo {
         name: "Carnet",
         icon: "✎",
         color: Color32::from_rgb(0xd9, 0xb4, 0x3c),
-        summary: "Notes par dépôt et journal du bus de la suite (module natif, gabarit)",
+        summary: "Notes par dépôt et journal du bus d'Eyrie (module natif, gabarit)",
         origin: Origin::Native,
     }
 }
@@ -143,8 +143,8 @@ impl Carnet {
         let p = self.host.palette();
         self.unseen = 0;
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Bus de la suite").strong());
-            ui.label(RichText::new("événements publiés par les modules et par la suite").color(p.text_dim).small());
+            ui.label(RichText::new("Bus d'Eyrie").strong());
+            ui.label(RichText::new("événements publiés par les modules et par Eyrie").color(p.text_dim).small());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button("Effacer").clicked() {
                     self.events.clear();

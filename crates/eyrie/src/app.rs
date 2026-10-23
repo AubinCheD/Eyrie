@@ -850,7 +850,7 @@ impl Suite {
                     self.core.journal.push(
                         "suite",
                         Tone::Info,
-                        format!("{who} : {}", tr("a demandé à fermer la fenêtre ; la suite reste ouverte.")),
+                        format!("{who} : {}", tr("a demandé à fermer la fenêtre ; Eyrie reste ouvert.")),
                     );
                     return;
                 }
@@ -1099,6 +1099,9 @@ impl eframe::App for Suite {
         self.run_logic(ctx, frame);
         self.core.tailnet.poll(&self.core.st.tailnet, &self.core.dir, ctx);
         self.core.accounts.poll();
+        if self.core.accounts.take_added() {
+            self.shell.settings.clear_new_account();
+        }
         self.watch_screens();
         if let Some(c) = &mut self.core.capture
             && c.poll(ctx)

@@ -238,7 +238,7 @@ impl<A: eframe::App> Module for Embedded<A> {
     fn on_request(&mut self, request: &Request, cx: &mut Cx) -> Result<serde_json::Value, String> {
         match &mut self.request_hook {
             Some(h) => h(&mut self.app, request, cx),
-            None => Err(format!("{} ne reçoit pas encore de demande dans la suite", self.info.name)),
+            None => Err(format!("{} ne reçoit pas encore de demande dans Eyrie", self.info.name)),
         }
     }
 

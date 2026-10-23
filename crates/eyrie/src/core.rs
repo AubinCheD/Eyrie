@@ -217,7 +217,7 @@ pub fn call(
             let what: Option<(&'static str, &'static str)> = match c {
                 egui::ViewportCommand::Title(_) => Some((
                     "titre",
-                    mark("a voulu renommer la fenêtre : la suite garde son titre, celui du module va dans sa case."),
+                    mark("a voulu renommer la fenêtre : Eyrie garde son titre, celui du module va dans sa case."),
                 )),
                 egui::ViewportCommand::Minimized(true) => {
                     Some(("reduire", mark("a voulu réduire la fenêtre : ignoré.")))

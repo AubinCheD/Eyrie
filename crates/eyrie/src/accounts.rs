@@ -80,6 +80,8 @@ pub struct Accounts {
     legacy: Vec<Arc<dyn Vault>>,
     /// Résultat de la dernière vérification de chaque compte (`Err` : l'explication).
     pub status: BTreeMap<String, Result<(), String>>,
+    /// Un ajout vient de réussir (voir `take_added`).
+    added: bool,
     pub message: Option<(bool, String)>,
 }
 
@@ -97,6 +99,7 @@ impl Accounts {
             checking: BTreeSet::new(),
             legacy: Vec::new(),
             status: BTreeMap::new(),
+            added: false,
             message: None,
         };
         a.reload();
@@ -133,6 +136,12 @@ impl Accounts {
             }
         }
         &self.list
+    }
+
+    /// Vrai une fois après un ajout réussi : le formulaire peut alors oublier le jeton saisi (gardé tant qu'il
+    /// faut le corriger).
+    pub fn take_added(&mut self) -> bool {
+        std::mem::take(&mut self.added)
     }
 
     /// Un ajout est en cours de vérification.
@@ -207,14 +216,20 @@ impl Accounts {
         };
         // Une connexion déjà connue garde son identifiant : le jeton est alors remplacé pour toute la suite.
         let new_id = account.id.clone();
-        self.message = Some(match self.store.add(account, token) {
+        let stored = self.store.add(account, token);
+        self.message = Some(match &stored {
             Ok(a) if a.id != new_id => (
                 true,
-                format!("{} {} — {}", tr("Compte mis à jour :"), title(&a), tr("jeton remplacé pour toute la suite")),
+                format!("{} {} — {}", tr("Compte mis à jour :"), title(a), tr("jeton remplacé pour toute la suite")),
             ),
-            Ok(a) => (true, format!("{} {}", tr("Compte ajouté :"), title(&a))),
+            Ok(a) => (true, format!("{} {}", tr("Compte ajouté :"), title(a))),
             Err(e) => (false, format!("{} {e}", tr("Enregistrement impossible :"))),
         });
+        if let Ok(a) = stored {
+            self.added = true;
+            // Le nouveau jeton n'a pas le statut de l'ancien.
+            self.status.remove(&a.id);
+        }
         self.reload();
     }
 
@@ -381,5 +396,25 @@ mod tests {
         assert_eq!(title(&acc), "GitLab · ada (gitlab.contoso.test)");
         acc.host = "gitlab.com".into();
         assert_eq!(title(&acc), "GitLab · ada");
+    }
+
+    #[test]
+    fn a_successful_add_is_reported_once() {
+        let (mut a, _dir) = accounts();
+        a.finish(ForgeKind::GitHub, "github.com", Err(ForgeError::Unauthorized), "t");
+        assert!(!a.take_added(), "refusé : le jeton saisi reste à corriger");
+        a.finish(ForgeKind::GitHub, "github.com", Ok(ada()), "t");
+        assert!(a.take_added());
+        assert!(!a.take_added(), "une seule fois");
+    }
+
+    #[test]
+    fn re_adding_clears_the_old_status() {
+        let (mut a, _dir) = accounts();
+        a.finish(ForgeKind::GitHub, "github.com", Ok(ada()), "t1");
+        let id = a.list()[0].id.clone();
+        a.status.insert(id.clone(), Err("refusé".into()));
+        a.finish(ForgeKind::GitHub, "github.com", Ok(ada()), "t2");
+        assert_eq!(a.status.get(&id), None, "le nouveau jeton n'a pas l'ancien statut");
     }
 }

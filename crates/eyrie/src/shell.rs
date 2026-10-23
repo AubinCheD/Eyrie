@@ -85,7 +85,7 @@ fn menu_bar(suite: &mut Suite, ui: &mut egui::Ui) {
     let p = suite.core.palette();
     egui::MenuBar::new().ui(ui, |ui| {
         ui.label(RichText::new("▦").color(p.accent).size(15.0));
-        ui.menu_button(tr("Suite"), |ui| {
+        ui.menu_button(tr("Eyrie"), |ui| {
             if ui.button(tr("Réglages…")).clicked() {
                 suite.core.act(Action::OpenSettings(settings::Page::General));
                 ui.close();
@@ -95,7 +95,7 @@ fn menu_bar(suite: &mut Suite, ui: &mut egui::Ui) {
                 ui.close();
             }
             ui.separator();
-            if ui.button(tr("Relancer la suite")).clicked() {
+            if ui.button(tr("Relancer Eyrie")).clicked() {
                 suite.core.act(Action::Restart);
                 ui.close();
             }
@@ -242,7 +242,7 @@ fn view_menu(suite: &mut Suite, ui: &mut egui::Ui) {
         ui.close();
     }
     ui.separator();
-    ui.menu_button(tr("Vues de la suite"), |ui| {
+    ui.menu_button(tr("Vues d'Eyrie"), |ui| {
         for v in SuiteView::ALL {
             if ui.button(format!("{}  {}", v.icon(), tr(v.title()))).clicked() {
                 suite.core.act(Action::Reveal(Pane::Suite { view: v }));
@@ -418,7 +418,7 @@ fn activity_bar(suite: &mut Suite, ui: &mut egui::Ui) {
         }
         ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
             if activity_button(ui, "⚙", p.text_muted, None, false, false, p)
-                .on_hover_text(tr("Réglages de la suite"))
+                .on_hover_text(tr("Réglages d'Eyrie"))
                 .clicked()
             {
                 actions.push(Action::OpenSettings(settings::Page::General));
@@ -452,7 +452,7 @@ fn status_bar(suite: &mut Suite, ui: &mut egui::Ui) {
     ui.horizontal_centered(|ui| {
         let keyboard = match &suite.core.focus.module {
             Some(m) => suite.core.slot(m).map(|s| s.info.name.to_string()).unwrap_or_else(|| m.clone()),
-            None => tr("la suite").to_string(),
+            None => tr("Eyrie").to_string(),
         };
         ui.label(small(format!("⌨ {keyboard}"), p.text_muted)).on_hover_text(tr(
             "Le module qui a le clavier : celui de la case cliquée en dernier. Les autres ne voient aucune frappe.",
@@ -481,7 +481,7 @@ fn status_bar(suite: &mut Suite, ui: &mut egui::Ui) {
             let (text, color) = suite.core.tailnet.status_line(p);
             if ui
                 .add(egui::Button::new(small(text, color)).frame(false))
-                .on_hover_text(tr("Tailscale de la suite (synchro mobile)"))
+                .on_hover_text(tr("Tailscale d'Eyrie (synchro mobile)"))
                 .clicked()
             {
                 suite.core.act(Action::OpenSettings(settings::Page::Tailscale));
@@ -560,7 +560,7 @@ fn close_dialog(suite: &mut Suite, ctx: &egui::Context) {
     let mut close = None;
     egui::Modal::new(egui::Id::unique("suite-fermeture")).show(ctx, |ui| {
         ui.set_max_width(440.0);
-        ui.heading(tr("Fermer la suite ?"));
+        ui.heading(tr("Fermer Eyrie ?"));
         ui.label(tr("Du travail est en cours :"));
         for (m, why) in &suite.core.quit.busy {
             ui.label(RichText::new(format!("• {m} : {why}")).color(p.warn));
@@ -629,9 +629,9 @@ fn welcome(suite: &mut Suite, ctx: &egui::Context) {
         ui.label(RichText::new(tr("Données des modules")).strong());
         let mut data = suite.core.st.module_data;
         ui.radio_value(&mut data, ModuleData::Shared, tr("Celles des exécutables (mêmes groupes, tâches et filtres des deux côtés)"));
-        ui.radio_value(&mut data, ModuleData::Trial, tr("Un dossier d'essai propre à la suite (pour essayer sans rien toucher)"));
+        ui.radio_value(&mut data, ModuleData::Trial, tr("Un dossier d'essai propre à Eyrie (pour essayer sans rien toucher)"));
         suite.core.st.module_data = data;
-        ui.label(RichText::new(tr("Aucun module n'a encore démarré : la suite se relance pour les démarrer sur les données choisies.")).color(p.text_dim));
+        ui.label(RichText::new(tr("Aucun module n'a encore démarré : Eyrie se relance pour les démarrer sur les données choisies.")).color(p.text_dim));
         ui.add_space(8.0);
         ui.label(RichText::new(tr("Comptes")).strong());
         ui.label(RichText::new(tr("Communs à toute la suite : ceux de DragonTree et d'Owlery sont repris d'eux-mêmes (Réglages › Comptes).")).color(p.text_dim));

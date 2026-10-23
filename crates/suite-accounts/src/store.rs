@@ -1,12 +1,13 @@
 //! Le fichier des comptes et le coffre des jetons.
 //!
 //! Plusieurs applications (Eyrie, DragonTree et Owlery seuls) peuvent écrire en même temps : chaque
-//! écriture relit le fichier juste avant, et le remplace d'un coup (fichier temporaire puis renommage).
+//! écriture prend le verrou `accounts.lock`, relit le fichier, et le remplace d'un coup (fichier
+//! temporaire puis renommage). La lecture seule n'attend personne.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use serde_json::{Map, Value};
 
@@ -14,6 +15,20 @@ use crate::Account;
 
 const FILE: &str = "accounts.json";
 const VERSION: u64 = 1;
+const LOCK: &str = "accounts.lock";
+/// Attente du verrou d'une autre application, au plus.
+const LOCK_WAIT: Duration = Duration::from_secs(5);
+/// Un verrou plus vieux que ça a été abandonné (application tuée pendant une écriture).
+const LOCK_STALE: Duration = Duration::from_secs(10);
+
+/// Le verrou des écritures, rendu à la fin de la portée.
+struct Lock(PathBuf);
+
+impl Drop for Lock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
 
 /// Un coffre de jetons, indexé par identifiant de compte : celui de Windows, ou en mémoire pour les tests.
 pub trait Vault: Send + Sync {
@@ -150,6 +165,7 @@ impl Store {
         if token.is_empty() {
             return Err("le jeton est vide".into());
         }
+        let _lock = self.lock()?;
         let mut file = self.read()?;
         let mut account = account.normalized();
         match file.accounts.iter_mut().find(|a| a.same_login(&account)) {
@@ -179,16 +195,23 @@ impl Store {
 
     /// Met à jour les informations d'un compte (nom affiché, organisations…), sans toucher au jeton.
     pub fn update(&self, account: &Account) -> Result<(), String> {
+        let _lock = self.lock()?;
         let mut file = self.read()?;
         let Some(existing) = file.accounts.iter_mut().find(|a| a.id == account.id) else {
             return Err(format!("compte inconnu : {}", account.id));
         };
-        *existing = account.clone().normalized();
+        // Les champs écrits par une autre version restent.
+        let mut updated = account.clone().normalized();
+        let mut extra = std::mem::take(&mut existing.extra);
+        extra.append(&mut updated.extra);
+        updated.extra = extra;
+        *existing = updated;
         self.write(&file)
     }
 
     /// Retire un compte et son jeton.
     pub fn remove(&self, id: &str) -> Result<(), String> {
+        let _lock = self.lock()?;
         let mut file = self.read()?;
         file.accounts.retain(|a| a.id != id);
         self.write(&file)?;
@@ -200,6 +223,7 @@ impl Store {
     /// sinon le compte est ajouté sous son identifiant. Renvoie l'identifiant à utiliser désormais.
     pub fn adopt(&self, account: Account, token: Option<String>) -> Result<String, String> {
         let account = account.normalized();
+        let _lock = self.lock()?;
         let mut file = self.read()?;
         let existing = file
             .accounts
@@ -218,6 +242,34 @@ impl Store {
             self.write(&file)?;
         }
         Ok(id)
+    }
+
+    /// Le verrou des écritures : créé en exclusif ; une autre application le tient : on attend un peu ; trop
+    /// vieux : abandonné, on le reprend.
+    fn lock(&self) -> Result<Lock, String> {
+        std::fs::create_dir_all(&self.dir).map_err(|e| format!("{} : {e}", self.dir.display()))?;
+        let path = self.dir.join(LOCK);
+        let started = Instant::now();
+        loop {
+            match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(_) => return Ok(Lock(path)),
+                // Windows : `PermissionDenied` pendant qu'un autre l'efface.
+                Err(e)
+                    if matches!(e.kind(), std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::PermissionDenied) =>
+                {
+                    let age = std::fs::metadata(&path).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok());
+                    if age.is_some_and(|a| a > LOCK_STALE) {
+                        let _ = std::fs::remove_file(&path);
+                        continue;
+                    }
+                    if started.elapsed() > LOCK_WAIT {
+                        return Err(format!("{} : comptes occupés par une autre application", self.path().display()));
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(e) => return Err(format!("{} : {e}", path.display())),
+            }
+        }
     }
 
     fn read(&self) -> Result<Parsed, String> {
@@ -317,6 +369,55 @@ mod tests {
         s.set_token(&a.id, " ecriture ").unwrap();
         assert_eq!(s.token(&a.id).unwrap().as_deref(), Some("ecriture"));
         assert!(s.set_token(&a.id, "  ").is_err(), "un jeton vide est refusé");
+    }
+
+    #[test]
+    fn concurrent_writers_lose_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault: Arc<MemoryVault> = Arc::new(MemoryVault::default());
+        let writers: Vec<_> = (0..2)
+            .map(|w| {
+                let s = Store::new(dir.path(), vault.clone());
+                std::thread::spawn(move || {
+                    for i in 0..25 {
+                        let id = format!("{w:x}{i:015x}");
+                        s.add(github(&id, "github.com", &format!("u{w}-{i}")), "t").unwrap();
+                    }
+                })
+            })
+            .collect();
+        for w in writers {
+            w.join().unwrap();
+        }
+        assert_eq!(Store::new(dir.path(), vault).list().len(), 50, "aucune écriture perdue");
+        assert!(!dir.path().join("accounts.lock").exists(), "le verrou est rendu");
+    }
+
+    #[test]
+    fn an_abandoned_lock_does_not_block_forever() {
+        let dir = tempfile::tempdir().unwrap();
+        let (s, _) = store(dir.path());
+        let lock = dir.path().join("accounts.lock");
+        std::fs::write(&lock, "").unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        std::fs::File::options().write(true).open(&lock).unwrap().set_modified(old).unwrap();
+        s.add(github("aaaaaaaaaaaaaaaa", "github.com", "ada"), "t").unwrap();
+        assert_eq!(s.list().len(), 1);
+    }
+
+    #[test]
+    fn update_keeps_unknown_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("accounts.json"),
+            r#"{"accounts":[{"id":"aaaaaaaaaaaaaaaa","forge":"github","host":"github.com","username":"ada","scopes":["repo"]}]}"#,
+        )
+        .unwrap();
+        let (s, _) = store(dir.path());
+        s.update(&Account { display_name: "Ada".into(), ..github("aaaaaaaaaaaaaaaa", "github.com", "ada") }).unwrap();
+        let a = &s.list()[0];
+        assert_eq!(a.display_name, "Ada");
+        assert_eq!(a.extra["scopes"][0], "repo", "écrit par une autre version : gardé");
     }
 
     #[test]

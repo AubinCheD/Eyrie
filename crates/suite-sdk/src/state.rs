@@ -70,7 +70,7 @@ pub fn load_json<T: DeserializeOwned + Default>(path: &Path, version: u32) -> Lo
             let mut writable = true;
             if saved > version {
                 problems.push(format!(
-                    "{} vient d'une version plus récente de la suite (v{saved}) : il ne sera pas modifié.",
+                    "{} vient d'une version plus récente d'Eyrie (v{saved}) : il ne sera pas modifié.",
                     path.display()
                 ));
                 writable = false;

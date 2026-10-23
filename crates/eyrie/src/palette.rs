@@ -123,7 +123,7 @@ pub fn items(suite: &Suite) -> Vec<Item> {
             icon: view.icon().into(),
             color: p.accent,
             title: tr(view.title()).into(),
-            detail: tr("vue de la suite").into(),
+            detail: tr("vue d'Eyrie").into(),
             action: Action::Reveal(Pane::Suite { view }),
         });
     }
@@ -195,7 +195,7 @@ pub fn items(suite: &Suite) -> Vec<Item> {
         });
     }
     for (page, title) in [
-        (Page::General, mark("Réglages de la suite")),
+        (Page::General, mark("Réglages d'Eyrie")),
         (Page::Modules, mark("Réglages : modules")),
         (Page::Accounts, mark("Réglages : comptes")),
         (Page::Tailscale, mark("Réglages : Tailscale")),
@@ -213,7 +213,7 @@ pub fn items(suite: &Suite) -> Vec<Item> {
     v.push(Item {
         icon: "⟳".into(),
         color: p.text_muted,
-        title: tr("Relancer la suite").into(),
+        title: tr("Relancer Eyrie").into(),
         detail: String::new(),
         action: Action::Restart,
     });
@@ -322,7 +322,7 @@ mod tests {
     #[test]
     fn fuzzy_matching() {
         assert!(score("faw", "Aller à Fawkes").is_some());
-        assert!(score("reg", "Réglages de la suite").is_some(), "sans accents");
+        assert!(score("reg", "Réglages d'Eyrie").is_some(), "sans accents");
         assert!(score("zzz", "Fawkes").is_none());
         assert!(
             score("dra", "DragonTree").unwrap() > score("dra", "Disposition : grille avec Dragon").unwrap_or(0) - 1000

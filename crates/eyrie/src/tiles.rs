@@ -132,7 +132,7 @@ impl SuiteTiles<'_> {
                             self.core.act(Action::StartModule(info.id.to_string()));
                         }
                     });
-                    ui.label(RichText::new(tr("Lancé seul, un module garde ses propres réglages ; dans la suite, il suit ceux de la suite. Un module ne tourne jamais deux fois sur le même dossier d'état.")).small().color(palette.text_dim));
+                    ui.label(RichText::new(tr("Lancé seul, un module garde ses propres réglages ; dans Eyrie, il suit ceux d'Eyrie. Un module ne tourne jamais deux fois sur le même dossier d'état.")).small().color(palette.text_dim));
                 });
             }
             SlotState::Crashed(msg) => {

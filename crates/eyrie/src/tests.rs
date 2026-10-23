@@ -324,7 +324,7 @@ fn a_close_from_inside_a_pane_does_not_close_the_suite() {
     close_frame(&mut h, true);
     let s = h.state();
     assert!(s.core.quit.sequence.is_none());
-    assert!(s.core.journal.lines.iter().any(|l| l.text.contains("la suite reste ouverte")));
+    assert!(s.core.journal.lines.iter().any(|l| l.text.contains("Eyrie reste ouvert")));
 }
 
 /// Demande un autre zoom à sa première image (comme DragonTree et Patronus à leur construction).
@@ -439,4 +439,50 @@ fn module_page_offers_its_settings_command() {
     h.get_by_label(&crate::settings::module_settings_label("Réglé")).click();
     h.run_steps(4);
     assert_eq!(RUN.with(|r| r.borrow().clone()), ["reglages"]);
+}
+
+#[test]
+fn removing_an_account_asks_for_confirmation() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = suite();
+    let dir = tempfile::tempdir().unwrap();
+    let store = suite_accounts::Store::new(dir.path(), std::sync::Arc::new(suite_accounts::MemoryVault::default()));
+    let ada = suite_accounts::Account {
+        id: "aaaaaaaaaaaaaaaa".into(),
+        forge: "github".into(),
+        host: "github.com".into(),
+        username: "ada".into(),
+        ..Default::default()
+    };
+    store.add(ada, "t").unwrap();
+    h.state_mut().core.accounts = crate::accounts::Accounts::new(store.clone());
+    act(&mut h, Action::OpenSettings(crate::settings::Page::Accounts));
+    h.get_by_label(crate::i18n::tr("Retirer")).click();
+    h.run_steps(3);
+    assert_eq!(store.list().len(), 1, "rien n'est retiré sans confirmation");
+    h.get_by_label(crate::i18n::tr("Oui, retirer")).click();
+    h.run_steps(3);
+    assert!(store.list().is_empty());
+}
+
+/// L'application s'appelle Eyrie : « la suite » ne la désigne plus ; « toute la suite » (comptes, Tailscale) désigne
+/// bien l'ensemble des applications.
+#[test]
+fn interface_texts_name_eyrie() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut wrong = Vec::new();
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.file_name().is_some_and(|n| n == "i18n.rs" || n == "tests.rs") {
+            continue;
+        }
+        for key in crate::i18n::keys_in(&std::fs::read_to_string(&path).unwrap()) {
+            let lower = key.to_lowercase();
+            let about_the_app = lower.replace("toute la suite", "").contains("la suite") || key == "Suite";
+            if about_the_app || lower.contains("superapp") {
+                wrong.push(key);
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "textes qui nomment encore « la suite » ou SuperApp : {wrong:#?}");
 }
