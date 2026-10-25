@@ -2,7 +2,7 @@
 
 On se connecte **une fois**, dans Eyrie, DragonTree ou Owlery : le compte vaut pour toute la suite, que
 l'application tourne seule ou dans Eyrie, y compris pour une application installée plus tard. Le code commun est
-la crate `crates/suite-accounts` ; DragonTree et Owlery en dépendent par chemin (`../SuperApp/crates/suite-accounts`).
+la crate `crates/suite-accounts` ; DragonTree et Owlery en dépendent par chemin (`../Eyrie/crates/suite-accounts`).
 
 ## Où
 

@@ -61,7 +61,7 @@ Formater : `cargo fmt -p eyrie -p suite-sdk -p suite-carnet …`, **pas `cargo f
 formaterait aussi les dépôts des modules (dépendances par chemin).
 
 Un module seul, depuis son dépôt, avec la même configuration :
-`cargo test --config ..\SuperApp\.cargo\config.toml`.
+`cargo test --config ..\Eyrie\.cargo\config.toml`.
 
 La première compilation prend quelques minutes : toutes les dépendances des six modules (un seul
 egui 0.37 pour tous).

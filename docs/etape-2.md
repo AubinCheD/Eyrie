@@ -5,12 +5,12 @@ Suite du premier jet (`premier-jet.md`). Faite sur des branches à part, fusionn
 
 | Dépôt | Branche | Contenu |
 |---|---|---|
-| SuperApp | `premier-jet` | le premier jet, sans toucher aux modules |
-| SuperApp | `suite/etape-2` | cette étape (part de `premier-jet`) |
+| Eyrie (ex-SuperApp) | `premier-jet` | le premier jet, sans toucher aux modules |
+| Eyrie | `suite/etape-2` | cette étape (part de `premier-jet`) |
 | Fawkes, DragonTree, Owlery, Patronus, Menagerie, Grimoire | `suite/module` | les retouches ci-dessous (part de leur `main`) |
 
 Les dépôts voisins sont lus par chemin, tels qu'ils sont extraits : `main` partout. Pour revenir au
-premier jet : `premier-jet` dans SuperApp et, dans les modules, leur `main` d'avant la fusion
+premier jet : `premier-jet` dans Eyrie et, dans les modules, leur `main` d'avant la fusion
 (parent du premier commit de `suite/module`).
 
 ## Retouches dans les modules (`premier-jet.md` §6)
