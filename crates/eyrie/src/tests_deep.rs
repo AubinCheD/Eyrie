@@ -3,8 +3,8 @@
 //! - `random_actions_keep_the_layout_sound` : des centaines d'actions tirées au hasard (graine
 //!   fixe), avec des clics à des endroits quelconques, et des invariants vérifiés après chacune ;
 //! - `real_modules_*` (ignorés par défaut, lents, lancent de vrais terminaux) : les huit modules
-//!   réels, en mode essai, dans un dossier temporaire. À lancer seuls :
-//!   `cargo test -p eyrie -- --ignored --test-threads=1`.
+//!   réels, en mode essai, dans un dossier temporaire. Ils passent un par un, même lancés ensemble :
+//!   `cargo test -p eyrie -- --ignored`.
 
 use std::collections::BTreeSet;
 
@@ -178,9 +178,17 @@ fn random_actions(seed: u64, steps: usize) {
 
 // --- Les huit modules réels -------------------------------------------------------------------
 
+/// Tour de passage des essais sur les modules réels. Leurs dossiers d'essai sont donnés par des
+/// variables d'environnement, communes à tout le processus : deux suites à la fois se les
+/// écraseraient, et leurs deux Fawkes démarreraient sur le même dossier (le second refusé).
+static REAL_MODULES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// La suite avec tous les modules, en mode essai dans un dossier temporaire (variables posées
-/// avant toute construction, comme `eyrie.exe`), Owlery en démonstration.
-fn real_suite(name: &str) -> (Harness<'static, Suite>, std::path::PathBuf) {
+/// avant toute construction, comme `eyrie.exe`), Owlery en démonstration. Le tour de passage vient
+/// en premier : gardé jusqu'à la fin du test, il est rendu en dernier, la suite arrêtée.
+fn real_suite(name: &str) -> (std::sync::MutexGuard<'static, ()>, Harness<'static, Suite>, std::path::PathBuf) {
+    // Un essai qui a échoué n'empêche pas les suivants.
+    let turn = REAL_MODULES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let dir = temp_dir(name);
     for (module, var) in [
         ("fawkes", "FAWKES_DATA_DIR"),
@@ -196,7 +204,7 @@ fn real_suite(name: &str) -> (Harness<'static, Suite>, std::path::PathBuf) {
     unsafe { std::env::set_var("OWLERY_DEMO", "1") };
     let st = SuiteState { welcomed: true, module_data: ModuleData::Trial, ..Default::default() };
     let h = harness(st, dir.clone());
-    (h, dir)
+    (turn, h, dir)
 }
 
 fn running(s: &Suite) -> Vec<&'static str> {
@@ -206,7 +214,7 @@ fn running(s: &Suite) -> Vec<&'static str> {
 #[test]
 #[ignore = "lent : les huit modules réels (terminaux, relevés) ; à lancer seul"]
 fn real_modules_survive_every_layout_operation() {
-    let (mut h, _dir) = real_suite("reels");
+    let (_turn, mut h, _dir) = real_suite("reels");
     h.run_steps(10);
     let started = running(h.state());
     assert_eq!(
@@ -266,7 +274,7 @@ fn real_modules_survive_every_layout_operation() {
 #[test]
 #[ignore = "lent : les huit modules réels ; à lancer seul"]
 fn real_modules_can_be_stopped_and_restarted() {
-    let (mut h, _dir) = real_suite("relance");
+    let (_turn, mut h, _dir) = real_suite("relance");
     h.run_steps(6);
     for id in running(h.state()) {
         h.state_mut().core.act(Action::StopModule(id.to_string()));
@@ -291,7 +299,7 @@ fn real_modules_can_be_stopped_and_restarted() {
 #[test]
 #[ignore = "lent : les huit modules réels ; à lancer seul"]
 fn real_modules_let_the_suite_close() {
-    let (mut h, _dir) = real_suite("fermeture");
+    let (_turn, mut h, _dir) = real_suite("fermeture");
     h.run_steps(6);
     let n = running(h.state()).len();
     // La croix : chaque module voit la fermeture à son tour ; en mode essai, aucun n'a de travail
@@ -313,7 +321,7 @@ fn real_modules_let_the_suite_close() {
 #[test]
 #[ignore = "lent : les huit modules réels ; à lancer seul"]
 fn real_dragontree_shares_its_active_repository() {
-    let (mut h, dir) = real_suite("contexte");
+    let (_turn, mut h, dir) = real_suite("contexte");
     h.run_steps(6);
     // Comme `dragontree.exe <dépôt>` lancé à côté : la demande passe par le canal de l'instance
     // unique, que la suite tient pour DragonTree.
@@ -334,7 +342,7 @@ fn real_dragontree_shares_its_active_repository() {
     assert_eq!(ctx.source, "dragontree");
     h.run_steps(3);
     let carnet =
-        h.state().core.slot("carnet").and_then(|s| s.module()).map(|m| m.status().title).flatten().unwrap_or_default();
+        h.state().core.slot("carnet").and_then(|s| s.module()).and_then(|m| m.status().title).unwrap_or_default();
     assert!(carnet.ends_with(&ctx.label), "le Carnet suit le dépôt : {carnet}");
 }
 
@@ -344,7 +352,7 @@ fn real_dragontree_shares_its_active_repository() {
 #[ignore = "lent : les huit modules réels ; à lancer seul"]
 fn real_modules_show_their_settings_in_eyrie() {
     use egui_kittest::kittest::Queryable;
-    let (mut h, _dir) = real_suite("reglages");
+    let (_turn, mut h, _dir) = real_suite("reglages");
     h.run_steps(10);
     for (id, marker, command) in [
         ("dragontree", "Enregistrer", "reglages"),
@@ -375,7 +383,7 @@ fn real_modules_show_their_settings_in_eyrie() {
 #[ignore = "lent : les huit modules réels ; à lancer seul"]
 fn real_modules_forget_an_unfinished_shortcut_when_their_page_is_left() {
     use egui_kittest::kittest::Queryable;
-    let (mut h, _dir) = real_suite("saisie");
+    let (_turn, mut h, _dir) = real_suite("saisie");
     h.run_steps(10);
     // Owlery range ses raccourcis dans une section repliée : la déplier d'abord (le dernier « Raccourcis » : celui de
     // la page, après celui de la navigation d'Eyrie).
@@ -412,7 +420,7 @@ fn real_modules_forget_an_unfinished_shortcut_when_their_page_is_left() {
 #[ignore = "lent : les huit modules réels ; à lancer seul"]
 fn menagerie_in_eyrie_cancels_instead_of_closing() {
     use egui_kittest::kittest::Queryable;
-    let (mut h, _dir) = real_suite("menagerie");
+    let (_turn, mut h, _dir) = real_suite("menagerie");
     h.run_steps(10);
     // D'autres « Fermer » et « Annuler » peuvent être à l'écran : on compte ceux qu'ajoute la page.
     let count = |h: &egui_kittest::Harness<'static, Suite>, label: &str| h.query_all_by_label(label).count();

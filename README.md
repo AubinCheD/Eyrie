@@ -54,7 +54,7 @@ Toolchain `x86_64-pc-windows-gnu` (comme les modules) : `tools\setup.ps1` écrit
 tools\setup.ps1
 cargo build --release        # target\release\eyrie.exe
 cargo test --workspace
-cargo test -p eyrie -- --ignored --test-threads=1   # essais avec les sept modules réels (mode essai)
+cargo test -p eyrie -- --ignored   # essais avec les huit modules réels (mode essai), un par un
 ```
 
 Formater : `cargo fmt -p eyrie -p suite-sdk -p suite-carnet …`, **pas `cargo fmt --all`**, qui
