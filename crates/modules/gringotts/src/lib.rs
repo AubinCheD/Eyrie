@@ -205,7 +205,8 @@ impl Gringotts {
 
     fn install(&mut self, profile: &Profile) {
         let result = std::env::current_exe().map_err(|e| e.to_string()).and_then(|exe| {
-            relay::install(&profile.paths(), &relay::command(&exe), &self.dir, &grimoire::state::data_dir())
+            // Le relais de Grimoire garde ce qu'il rejoue dans son dossier local (`grimoire-statusline.exe`).
+            relay::install(&profile.paths(), &relay::command(&exe), &self.dir, &grimoire::state::local_data_dir())
         });
         self.message = Some(match result {
             Ok(backup) => (
