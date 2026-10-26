@@ -51,6 +51,20 @@ pub fn window_icon() -> egui::IconData {
     egui::IconData { rgba: render(size), width: size as u32, height: size as u32 }
 }
 
+/// L'icône de la suite, pour sa barre de titre.
+pub fn suite_texture(ctx: &egui::Context) -> egui::TextureHandle {
+    let id = egui::Id::unique("suite-icone");
+    if let Some(t) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
+        return t;
+    }
+    const SIZE: usize = 64;
+    let image = egui::ColorImage::from_rgba_unmultiplied([SIZE, SIZE], &render(SIZE));
+    let options = egui::TextureOptions::LINEAR.with_mipmap_mode(Some(egui::TextureFilter::Linear));
+    let t = ctx.load_texture("suite-icone", image, options);
+    ctx.data_mut(|d| d.insert_temp(id, t.clone()));
+    t
+}
+
 /// L'image d'un module qui en a une (`ModuleInfo::logo`), chargée une fois pour toutes les fenêtres.
 pub fn logo(ctx: &egui::Context, info: &ModuleInfo) -> Option<egui::TextureHandle> {
     let render = info.logo?;

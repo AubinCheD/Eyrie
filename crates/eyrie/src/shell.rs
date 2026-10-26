@@ -12,7 +12,6 @@ use crate::core::SlotState;
 use crate::i18n::tr;
 use crate::layout::{Pane, Preset, SuiteView};
 use crate::persist::ModuleData;
-use crate::sandbox::WindowWish;
 use crate::tiles::{self, SuiteTiles};
 use crate::{palette, settings};
 
@@ -29,14 +28,15 @@ pub struct ShellState {
     pub pending_commands: Vec<(String, String)>,
     /// Les fenêtres flottantes de la fenêtre principale suivent sa taille.
     pub follow: crate::popups::Follow,
+    /// Barre de titre de Windows demandée à la fenêtre (`None` : rien demandé encore).
+    pub decorations: Option<bool>,
+    /// La barre d'Eyrie est confiée à Windows (`suite_titlebar::install`).
+    pub title_bar_hooked: bool,
 }
 
 pub fn show(suite: &mut Suite, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
     let p = suite.core.palette();
-    egui::Panel::top("suite-menus")
-        .exact_size(30.0)
-        .frame(egui::Frame::new().fill(p.chrome).inner_margin(egui::Margin::symmetric(6, 3)))
-        .show(ui, |ui| menu_bar(suite, ui));
+    title_bar(suite, ui, frame);
     egui::Panel::bottom("suite-etat")
         .exact_size(24.0)
         .frame(egui::Frame::new().fill(p.chrome).inner_margin(egui::Margin::symmetric(8, 2)))
@@ -49,7 +49,7 @@ pub fn show(suite: &mut Suite, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
     egui::CentralPanel::default().frame(egui::Frame::new().fill(p.sidebar).inner_margin(egui::Margin::same(3))).show(
         ui,
         |ui| {
-            let wish = WindowWish { title: crate::app::TITLE.into(), decorations: true };
+            let wish = suite.core.wish.clone();
             if let Some(pane) = suite.core.concentrate.clone() {
                 let mut t = SuiteTiles { core: &mut suite.core, frame, window: 0, wish };
                 tiles::concentrated(&mut t, ui, &pane);
@@ -83,11 +83,60 @@ fn empty_main(suite: &mut Suite, ui: &mut egui::Ui) {
     });
 }
 
-fn menu_bar(suite: &mut Suite, ui: &mut egui::Ui) {
+/// La barre du haut. Par défaut, celle d'Eyrie dans le bandeau de la fenêtre : icône et titre, menus, puis contexte,
+/// commandes et cloche, avant réduire / agrandir / fermer. Avec la barre de titre de Windows (Réglages › Général),
+/// les mêmes menus juste en dessous.
+fn title_bar(suite: &mut Suite, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
     let p = suite.core.palette();
-    egui::MenuBar::new().ui(ui, |ui| {
-        ui.label(RichText::new("▦").color(p.accent).size(15.0));
-        ui.menu_button(tr("Eyrie"), |ui| {
+    let native = suite.core.st.native_title_bar;
+    if suite.shell.decorations != Some(native) {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Decorations(native));
+        suite.shell.decorations = Some(native);
+        // Ce que le bac à sable rétablit quand un module touche à la barre de titre (Fawkes le fait).
+        suite.core.wish.decorations = native;
+    }
+    if native {
+        suite_titlebar::set_caption(None);
+        egui::Panel::top("suite-menus")
+            .exact_size(30.0)
+            .frame(egui::Frame::new().fill(p.chrome).inner_margin(egui::Margin::symmetric(6, 3)))
+            .show(ui, |ui| {
+                egui::MenuBar::new().ui(ui, |ui| {
+                    ui.label(RichText::new("▦").color(p.accent).size(15.0));
+                    menus(suite, ui);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| right_items(suite, ui));
+                });
+            });
+        return;
+    }
+    // La fenêtre n'existe qu'après la première image : la barre est confiée à Windows dès que possible.
+    if !suite.shell.title_bar_hooked {
+        suite.shell.title_bar_hooked = suite_titlebar::install(&*frame);
+    }
+    let bar = suite_titlebar::Bar {
+        icon: Some(crate::icon::suite_texture(ui.ctx()).id()),
+        title: crate::app::TITLE,
+        colors: suite_titlebar::Colors { fill: p.chrome, text: p.text, text_dim: p.text_dim, hover: p.surface_hover },
+        labels: suite_titlebar::Labels {
+            minimize: tr("Réduire"),
+            maximize: tr("Agrandir"),
+            restore: tr("Niveau inférieur"),
+            close: tr("Fermer"),
+        },
+    };
+    suite_titlebar::show(ui, &bar, |side, ui| match side {
+        suite_titlebar::Side::Left => egui::MenuBar::new().ui(ui, |ui| menus(suite, ui)).inner,
+        suite_titlebar::Side::Right => {
+            right_items(suite, ui);
+            ui.min_rect()
+        }
+    });
+}
+
+/// Eyrie, Affichage, Modules, Aide ; rend la zone de leurs boutons.
+fn menus(suite: &mut Suite, ui: &mut egui::Ui) -> egui::Rect {
+    let eyrie = ui
+        .menu_button(tr("Eyrie"), |ui| {
             if ui.button(tr("Réglages…")).clicked() {
                 suite.core.act(Action::OpenSettings(settings::Page::General));
                 ui.close();
@@ -105,10 +154,12 @@ fn menu_bar(suite: &mut Suite, ui: &mut egui::Ui) {
                 suite.core.act(Action::Quit);
                 ui.close();
             }
-        });
-        ui.menu_button(tr("Affichage"), |ui| view_menu(suite, ui));
-        ui.menu_button(tr("Modules"), |ui| modules_menu(suite, ui));
-        ui.menu_button(tr("Aide"), |ui| {
+        })
+        .response;
+    let view = ui.menu_button(tr("Affichage"), |ui| view_menu(suite, ui)).response;
+    let modules = ui.menu_button(tr("Modules"), |ui| modules_menu(suite, ui)).response;
+    let help = ui
+        .menu_button(tr("Aide"), |ui| {
             if ui.button(tr("Raccourcis…")).clicked() {
                 suite.core.act(Action::OpenSettings(settings::Page::Shortcuts));
                 ui.close();
@@ -125,33 +176,33 @@ fn menu_bar(suite: &mut Suite, ui: &mut egui::Ui) {
                 suite.shell.about = true;
                 ui.close();
             }
-        });
+        })
+        .response;
+    eyrie.rect.union(view.rect).union(modules.rect).union(help.rect)
+}
 
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.spacing_mut().item_spacing.x = 16.0;
-            let unread = suite.core.notes.unread();
-            let bell = if unread > 0 { format!("🔔 {unread}") } else { "🔔".to_string() };
-            let color = if unread > 0 { p.accent } else { p.text_dim };
-            if ui
-                .add(egui::Button::new(RichText::new(bell).color(color)).frame(false))
-                .on_hover_text(tr("Notifications"))
-                .clicked()
-            {
-                suite.core.act(Action::Reveal(Pane::Suite { view: SuiteView::Notifications }));
-            }
-            if ui
-                .add(
-                    egui::Button::new(RichText::new(format!("⌕ {}  F1", tr("Commandes"))).color(p.text_dim))
-                        .frame(false),
-                )
-                .on_hover_text(tr("Palette de commandes : modules, cases, dispositions, réglages"))
-                .clicked()
-            {
-                suite.core.act(Action::TogglePalette);
-            }
-            context_chip(suite, ui);
-        });
-    });
+/// Le contexte partagé, la palette de commandes et la cloche, de droite à gauche.
+fn right_items(suite: &mut Suite, ui: &mut egui::Ui) {
+    let p = suite.core.palette();
+    ui.spacing_mut().item_spacing.x = 16.0;
+    let unread = suite.core.notes.unread();
+    let bell = if unread > 0 { format!("🔔 {unread}") } else { "🔔".to_string() };
+    let color = if unread > 0 { p.accent } else { p.text_dim };
+    if ui
+        .add(egui::Button::new(RichText::new(bell).color(color)).frame(false))
+        .on_hover_text(tr("Notifications"))
+        .clicked()
+    {
+        suite.core.act(Action::Reveal(Pane::Suite { view: SuiteView::Notifications }));
+    }
+    if ui
+        .add(egui::Button::new(RichText::new(format!("⌕ {}  F1", tr("Commandes"))).color(p.text_dim)).frame(false))
+        .on_hover_text(tr("Palette de commandes : modules, cases, dispositions, réglages"))
+        .clicked()
+    {
+        suite.core.act(Action::TogglePalette);
+    }
+    context_chip(suite, ui);
 }
 
 /// Le contexte partagé (dépôt courant) : les cases qui le suivent s'y accordent.

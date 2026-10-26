@@ -1,0 +1,21 @@
+[package]
+name = "suite-titlebar"
+description = "Barre de titre dessinée par l'application (menus dans le bandeau de la fenêtre), pour Eyrie et DragonTree"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+authors = ["Eyrie"]
+
+# Sans héritage `workspace = true` : DragonTree en dépend par chemin depuis son propre dépôt.
+[dependencies]
+egui = "0.37"
+raw-window-handle = "0.6"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+] }

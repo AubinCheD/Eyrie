@@ -241,5 +241,11 @@
   "Aucun module n'a encore démarré : Eyrie se relance pour les démarrer sur les données choisies.": "No module has started yet: Eyrie restarts to start them on the chosen data.",
   "Lancé seul, un module garde ses propres réglages ; dans Eyrie, il suit ceux d'Eyrie. Un module ne tourne jamais deux fois sur le même dossier d'état.": "Run on its own, a module keeps its own settings; in Eyrie, it follows Eyrie's. A module never runs twice on the same state folder.",
   "Un seul centre pour tous les modules (Owlery, Patronus et Eyrie y écrivent).": "One center for all modules (Owlery, Patronus and Eyrie write to it).",
-  "Journal d'Eyrie": "Eyrie log"
+  "Journal d'Eyrie": "Eyrie log",
+  "Réduire": "Minimize",
+  "Agrandir": "Maximize",
+  "Niveau inférieur": "Restore down",
+  "Barre de titre": "Title bar",
+  "Celle de Windows, menus en dessous": "The Windows one, menus below it",
+  "Sinon, les menus d'Eyrie sont dans sa propre barre de titre, à côté de son nom.": "Otherwise, Eyrie's menus are in its own title bar, next to its name."
 }

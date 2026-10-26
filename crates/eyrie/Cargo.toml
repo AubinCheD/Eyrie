@@ -27,6 +27,7 @@ rfd.workspace = true
 menagerie.workspace = true
 dragontree-forges.workspace = true
 suite-accounts.workspace = true
+suite-titlebar.workspace = true
 
 [dev-dependencies]
 egui_kittest = { version = "0.37", features = ["eframe"] }

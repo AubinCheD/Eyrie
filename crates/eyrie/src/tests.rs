@@ -783,6 +783,52 @@ fn the_menu_bar_buttons_on_the_right_are_spaced() {
     assert!(bell.left() - commands.right() >= 12.0, "{commands:?} puis {bell:?}");
 }
 
+/// Le centre du bouton de ce nom dans la barre du haut (les 32 premiers points ; le titre « Eyrie » n'est pas un
+/// bouton, le menu Eyrie si).
+fn in_title_bar(h: &Harness<'static, Suite>, label: &str) -> Option<egui::Pos2> {
+    use egui_kittest::kittest::Queryable;
+    h.query_all_by(|n| n.label().as_deref() == Some(label) && n.role() != egui::accesskit::Role::Label)
+        .map(|n| n.rect())
+        .find(|r| r.bottom() <= suite_titlebar::HEIGHT + 0.5)
+        .map(|r| r.center())
+}
+
+/// Les menus, le contexte, les commandes et la cloche sont dans la barre de titre d'Eyrie, avec réduire, agrandir et
+/// fermer ; Windows ne déplace la fenêtre que par le reste de la barre.
+#[test]
+fn the_menus_are_in_the_title_bar() {
+    let h = suite_of_size([1400.0, 900.0]);
+    let tr = crate::i18n::tr;
+    let caption = suite_titlebar::caption().expect("barre d'Eyrie confiée à Windows");
+    let hit = |at: egui::Pos2| caption.hit(at.x as i32, at.y as i32, 1400, 900, false);
+    let commands = format!("⌕ {}  F1", tr("Commandes"));
+    for label in
+        [tr("Eyrie"), tr("Affichage"), tr("Modules"), tr("Aide"), "🔔", commands.as_str(), tr("Réduire"), tr("Fermer")]
+    {
+        let at = in_title_bar(&h, label).unwrap_or_else(|| panic!("{label} dans la barre de titre"));
+        assert_eq!(hit(at), suite_titlebar::hit::CLIENT, "{label} reste à Eyrie");
+    }
+    let between = in_title_bar(&h, tr("Aide")).unwrap().x + 120.0;
+    assert_eq!(hit(egui::pos2(between, 16.0)), suite_titlebar::hit::CAPTION, "le milieu déplace la fenêtre");
+    assert!(h.state().shell.decorations == Some(false), "sans la barre de Windows");
+    assert!(!h.state().core.wish.decorations, "un module qui y touche (Fawkes) ne la fait pas revenir");
+}
+
+/// Avec la barre de titre de Windows, les menus reviennent juste en dessous, sans réduire ni fermer.
+#[test]
+fn with_the_windows_title_bar_the_menus_come_below_it() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = suite();
+    h.state_mut().core.st.native_title_bar = true;
+    h.run_steps(3);
+    let tr = crate::i18n::tr;
+    assert!(h.query_by_label(tr("Réduire")).is_none(), "plus de boutons de fenêtre");
+    assert!(h.query_by_label(tr("Affichage")).is_some(), "les menus restent");
+    assert_eq!(suite_titlebar::caption(), None, "Windows garde toute sa barre");
+    assert!(h.state().shell.decorations == Some(true));
+    assert!(h.state().core.wish.decorations, "le bac à sable garde celle de Windows");
+}
+
 /// Agrandie puis restaurée, la fenêtre principale garde ses fenêtres flottantes centrées.
 #[test]
 fn floating_windows_follow_the_main_window_size() {

@@ -336,7 +336,7 @@ impl Suite {
             focus: Focus::default(),
             shown: BTreeSet::new(),
             shown_prev: BTreeSet::new(),
-            wish: WindowWish { title: TITLE.into(), decorations: true },
+            wish: WindowWish { title: TITLE.into(), decorations: st.native_title_bar },
             fonts,
             quit: Quit::default(),
             actions: Vec::new(),

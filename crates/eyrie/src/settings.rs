@@ -278,6 +278,10 @@ fn general(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui) {
         theme::apply(ui.ctx(), suite.core.host.palette(), zoom);
     }
 
+    section(ui, tr("Barre de titre"));
+    ui.checkbox(&mut suite.core.st.native_title_bar, tr("Celle de Windows, menus en dessous"))
+        .on_hover_text(tr("Sinon, les menus d'Eyrie sont dans sa propre barre de titre, à côté de son nom."));
+
     section(ui, tr("Langue"));
     ui.horizontal(|ui| {
         if ui.radio(suite.core.st.lang.is_none(), tr("Celle de Windows")).clicked() {

@@ -100,6 +100,8 @@ pub struct SuiteState {
     pub tailnet: TailnetSettings,
     /// Les cases suivent le contexte partagé (dépôt courant).
     pub follow_context: bool,
+    /// Barre de titre de Windows, menus en dessous (sinon Eyrie dessine la sienne, menus compris).
+    pub native_title_bar: bool,
     /// Le premier lancement est passé (accueil, choix des données des modules).
     pub welcomed: bool,
     #[serde(flatten)]
@@ -121,6 +123,7 @@ impl Default for SuiteState {
             shortcuts: BTreeMap::new(),
             tailnet: TailnetSettings::default(),
             follow_context: true,
+            native_title_bar: false,
             welcomed: false,
             extra: BTreeMap::new(),
         }
