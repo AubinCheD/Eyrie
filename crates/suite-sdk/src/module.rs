@@ -35,6 +35,9 @@ pub struct ModuleInfo {
     pub name: &'static str,
     /// Glyphe de la barre d'activité (couvert par les polices de la suite).
     pub icon: &'static str,
+    /// Image du module, à la place du glyphe (barre d'activité, onglets, menus) : pixels RGBA d'un carré de la taille
+    /// demandée, comme l'icône de son exécutable.
+    pub logo: Option<fn(u32) -> Vec<u8>>,
     /// Couleur du module (barre d'activité, onglets).
     pub color: egui::Color32,
     /// Une ligne : ce que fait le module.

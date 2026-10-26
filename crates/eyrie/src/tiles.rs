@@ -11,6 +11,9 @@ use crate::layout::Pane;
 use crate::sandbox::{Policy, WindowWish};
 use crate::views;
 
+/// Côté de l'image d'un module dans son onglet.
+const TAB_LOGO: f32 = 15.0;
+
 pub struct SuiteTiles<'a> {
     pub core: &'a mut Core,
     pub frame: &'a mut eframe::Frame,
@@ -93,9 +96,9 @@ impl SuiteTiles<'_> {
             }
             SlotState::Disabled => {
                 let info = slot.info.clone();
-                views::card(
+                views::module_card(
                     ui,
-                    info.icon,
+                    &info,
                     &format!("{} {}", info.name, tr("est désactivé")),
                     tr("Un module désactivé n'est pas construit et ne coûte rien."),
                     palette.text_dim,
@@ -114,9 +117,9 @@ impl SuiteTiles<'_> {
             }
             SlotState::Unavailable(u) => {
                 let (info, u) = (slot.info.clone(), u.clone());
-                views::card(
+                views::module_card(
                     ui,
-                    info.icon,
+                    &info,
                     &format!("{} {}", info.name, tr("n'est pas disponible")),
                     &crate::app::unavailable_text(&u),
                     palette.warn,
@@ -137,7 +140,7 @@ impl SuiteTiles<'_> {
             }
             SlotState::Crashed(msg) => {
                 let (info, msg) = (slot.info.clone(), msg.clone());
-                views::card(ui, info.icon, &format!("{} {}", info.name, tr("s'est arrêté")), &msg, palette.danger);
+                views::module_card(ui, &info, &format!("{} {}", info.name, tr("s'est arrêté")), &msg, palette.danger);
                 ui.vertical_centered(|ui| {
                     ui.label(RichText::new(tr("Les autres modules continuent.")).color(palette.text_dim));
                     ui.horizontal(|ui| {
@@ -231,11 +234,15 @@ impl Behavior<Pane> for SuiteTiles<'_> {
         let p = self.core.palette();
         let font = egui::FontId::proportional(13.0);
         let mut job = LayoutJob::default();
-        job.append(icon, 0.0, egui::TextFormat { font_id: font.clone(), color, ..Default::default() });
+        // L'image d'un module se peint par-dessus la place laissée devant le titre (`on_tab_button`).
+        let logo = self.core.pane_logo(self.core.host.ctx(), pane).is_some();
+        if !logo {
+            job.append(icon, 0.0, egui::TextFormat { font_id: font.clone(), color, ..Default::default() });
+        }
         let active = pane.module_id().is_some_and(|m| self.core.focus.module.as_deref() == Some(m));
         job.append(
             &title,
-            6.0,
+            if logo { TAB_LOGO + 6.0 } else { 6.0 },
             egui::TextFormat {
                 font_id: font.clone(),
                 color: if active { p.text } else { p.text_muted },
@@ -263,6 +270,14 @@ impl Behavior<Pane> for SuiteTiles<'_> {
 
     fn on_tab_button(&mut self, tiles: &mut Tiles<Pane>, tile_id: TileId, response: egui::Response) -> egui::Response {
         let Some(pane) = tiles.get_pane(&tile_id).cloned() else { return response };
+        if let Some(t) = self.core.pane_logo(&response.ctx, &pane)
+            && !response.dragged()
+        {
+            // À la marge du titre (`tab_title_spacing` d'egui_tiles), centrée en hauteur.
+            let at = egui::pos2(response.rect.left() + 8.0, response.rect.center().y - TAB_LOGO / 2.0);
+            let painter = response.ctx.layer_painter(response.layer_id).with_clip_rect(response.rect);
+            crate::icon::paint_logo(&painter, &t, egui::Rect::from_min_size(at, egui::vec2(TAB_LOGO, TAB_LOGO)), true);
+        }
         if response.clicked() {
             self.core.last_tile.insert(self.window, tile_id);
             self.core.focus.module = pane.module_id().map(str::to_string);
@@ -395,12 +410,16 @@ impl Behavior<Pane> for SuiteTiles<'_> {
 pub fn concentrated(t: &mut SuiteTiles, ui: &mut egui::Ui, pane: &Pane) {
     let p = t.core.palette();
     let (title, icon, color) = t.core.pane_title(pane);
+    let logo = t.core.pane_logo(ui.ctx(), pane);
     egui::Panel::top("concentration")
         .exact_size(28.0)
         .frame(egui::Frame::new().fill(p.sidebar).inner_margin(egui::Margin::symmetric(8, 4)))
         .show(ui, |ui| {
             ui.horizontal_centered(|ui| {
-                ui.label(RichText::new(icon).color(color));
+                match &logo {
+                    Some(l) => ui.add(egui::Image::new((l.id(), egui::vec2(TAB_LOGO, TAB_LOGO)))),
+                    None => ui.label(RichText::new(icon).color(color)),
+                };
                 ui.label(RichText::new(title).color(p.text).strong());
                 ui.label(RichText::new(tr("· concentration")).color(p.text_dim));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

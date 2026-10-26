@@ -26,6 +26,7 @@ pub fn info() -> ModuleInfo {
         id: ID,
         name: "Menagerie",
         icon: "🖥",
+        logo: None,
         color: Color32::from_rgb(0x4c, 0xb8, 0x72),
         summary: "Services locaux, ports, Docker, mails de test et environnements",
         origin: Origin::Embedded { exe: "menagerie.exe", repo: "../Menagerie" },

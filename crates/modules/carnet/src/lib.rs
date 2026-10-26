@@ -25,6 +25,7 @@ pub fn info() -> ModuleInfo {
         id: ID,
         name: "Carnet",
         icon: "✎",
+        logo: None,
         color: Color32::from_rgb(0xd9, 0xb4, 0x3c),
         summary: "Notes par dépôt et journal du bus d'Eyrie (module natif, gabarit)",
         origin: Origin::Native,

@@ -22,6 +22,7 @@ pub fn info() -> ModuleInfo {
         id: ID,
         name: "Grimoire",
         icon: "📖",
+        logo: None,
         color: Color32::from_rgb(0xb0, 0x7c, 0xe0),
         summary: "Configuration de Claude Code, conversations et consommation",
         origin: Origin::Embedded { exe: "grimoire.exe", repo: "../Grimoire" },

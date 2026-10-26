@@ -19,9 +19,18 @@ pub fn show(core: &mut Core, ui: &mut egui::Ui, view: SuiteView) {
 
 /// Carte centrée : icône, titre, explication.
 pub fn card(ui: &mut egui::Ui, icon: &str, title: &str, body: &str, color: Color32) {
+    card_with(ui, |ui| ui.label(RichText::new(icon).size(34.0).color(color)), title, body);
+}
+
+/// La carte d'un module : son image ou son glyphe en tête.
+pub fn module_card(ui: &mut egui::Ui, info: &suite_sdk::ModuleInfo, title: &str, body: &str, color: Color32) {
+    card_with(ui, |ui| crate::icon::module_icon(ui, info, 34.0, color), title, body);
+}
+
+fn card_with(ui: &mut egui::Ui, icon: impl FnOnce(&mut egui::Ui) -> egui::Response, title: &str, body: &str) {
     ui.add_space((ui.available_height() * 0.25).min(120.0));
     ui.vertical_centered(|ui| {
-        ui.label(RichText::new(icon).size(34.0).color(color));
+        icon(ui);
         ui.add_space(4.0);
         ui.label(RichText::new(title).size(17.0).strong());
         if !body.is_empty() {
@@ -78,10 +87,11 @@ fn overview(core: &mut Core, ui: &mut egui::Ui) {
                             ui.set_height(118.0);
                             ui.vertical(|ui| {
                                 ui.horizontal(|ui| {
-                                    ui.label(
-                                        RichText::new(s.info.icon)
-                                            .size(18.0)
-                                            .color(suite_sdk::theme::readable(p, s.info.color)),
+                                    crate::icon::module_icon(
+                                        ui,
+                                        &s.info,
+                                        18.0,
+                                        suite_sdk::theme::readable(p, s.info.color),
                                     );
                                     ui.label(RichText::new(s.info.name).strong().color(p.text));
                                     ui.label(RichText::new(state).color(state_color).small());
@@ -153,12 +163,11 @@ fn overview(core: &mut Core, ui: &mut egui::Ui) {
 
 fn note_row(core: &Core, ui: &mut egui::Ui, n: &suite_sdk::Notification, read: bool) {
     let p = core.palette();
-    let (icon, color) = match core.slot(&n.module) {
-        Some(s) => (s.info.icon, suite_sdk::theme::readable(p, s.info.color)),
-        None => ("◆", p.accent),
-    };
     ui.horizontal(|ui| {
-        ui.label(RichText::new(icon).color(color));
+        match core.slot(&n.module) {
+            Some(s) => crate::icon::module_icon(ui, &s.info, 13.5, suite_sdk::theme::readable(p, s.info.color)),
+            None => ui.label(RichText::new("◆").color(p.accent)),
+        };
         let title = RichText::new(&n.title).color(if read { p.text_muted } else { p.text });
         ui.label(if read { title } else { title.strong() });
         ui.label(RichText::new(&n.body).color(p.text_dim));
@@ -222,7 +231,10 @@ fn resources(core: &mut Core, ui: &mut egui::Ui) {
             ui.end_row();
             for s in &core.slots {
                 let (state, color) = state_label(core, &s.state);
-                ui.label(RichText::new(format!("{} {}", s.info.icon, s.info.name)).color(s.info.color));
+                ui.horizontal(|ui| {
+                    crate::icon::module_icon(ui, &s.info, 13.5, s.info.color);
+                    ui.label(RichText::new(s.info.name).color(s.info.color));
+                });
                 ui.label(RichText::new(state).color(color));
                 ui.label(format!("{:.2}", s.stats.logic_avg));
                 ui.label(format!("{:.2}", s.stats.ui_avg));

@@ -279,11 +279,8 @@ fn modules_menu(suite: &mut Suite, ui: &mut egui::Ui) {
     let mut actions = Vec::new();
     for s in &suite.core.slots {
         let enabled = !matches!(s.state, SlotState::Disabled);
-        let text = RichText::new(format!("{}  {}", s.info.icon, s.info.name)).color(if enabled {
-            s.info.color
-        } else {
-            suite.core.palette().text_dim
-        });
+        let color = if enabled { s.info.color } else { suite.core.palette().text_dim };
+        let text = crate::icon::with_module(ui.ctx(), &s.info, s.info.name, color, enabled);
         ui.add_enabled_ui(enabled, |ui| {
             ui.menu_button(text, |ui| {
                 let views =
@@ -327,11 +324,13 @@ fn modules_menu(suite: &mut Suite, ui: &mut egui::Ui) {
     }
 }
 
-/// Une icône de la barre d'activité, avec sa pastille ; `label` est son nom pour l'accessibilité.
+/// Une icône de la barre d'activité (le glyphe `icon`, ou l'image `logo` d'un module), avec sa pastille ; `label` est
+/// son nom pour l'accessibilité.
 #[allow(clippy::too_many_arguments)]
 fn activity_button(
     ui: &mut egui::Ui,
     icon: &str,
+    logo: Option<&egui::TextureHandle>,
     label: &str,
     color: Color32,
     badge: Option<(String, Color32)>,
@@ -353,7 +352,21 @@ fn activity_button(
         );
         painter.rect_filled(bar, egui::CornerRadius::same(2), if focused { p.accent } else { p.text_dim });
     }
-    painter.text(rect.center(), egui::Align2::CENTER_CENTER, icon, egui::FontId::proportional(19.0), color);
+    match logo {
+        // Éteinte comme le glyphe d'un module arrêté (`color` grisée).
+        Some(t) => {
+            let on = color != p.text_dim;
+            crate::icon::paint_logo(
+                &painter,
+                t,
+                egui::Rect::from_center_size(rect.center(), egui::vec2(22.0, 22.0)),
+                on,
+            );
+        }
+        None => {
+            painter.text(rect.center(), egui::Align2::CENTER_CENTER, icon, egui::FontId::proportional(19.0), color);
+        }
+    }
     if let Some((text, c)) = badge {
         let center = egui::pos2(rect.right() - 8.0, rect.top() + 8.0);
         let galley = painter.layout_no_wrap(text, egui::FontId::proportional(10.0), p.on_alert_badge);
@@ -372,7 +385,7 @@ fn activity_bar(suite: &mut Suite, ui: &mut egui::Ui) {
         ui.spacing_mut().item_spacing.y = 4.0;
         // La vue d'ensemble d'abord, au-dessus des modules.
         let shown = suite.locate(&Pane::Suite { view: SuiteView::Overview }).is_some();
-        if activity_button(ui, "⌂", tr("Vue d'ensemble"), p.text_muted, None, shown, false, p)
+        if activity_button(ui, "⌂", None, tr("Vue d'ensemble"), p.text_muted, None, shown, false, p)
             .on_hover_text(tr("Vue d'ensemble (Alt+Maj+O)"))
             .clicked()
         {
@@ -398,7 +411,8 @@ fn activity_bar(suite: &mut Suite, ui: &mut egui::Ui) {
             let color = if s.is_running() { suite_sdk::theme::readable(p, s.info.color) } else { p.text_dim };
             let shown = suite.core.shown_prev.contains(s.info.id);
             let focused = suite.core.focus.module.as_deref() == Some(s.info.id);
-            let resp = activity_button(ui, s.info.icon, s.info.name, color, badge, shown, focused, p);
+            let logo = crate::icon::logo(ui.ctx(), &s.info);
+            let resp = activity_button(ui, s.info.icon, logo.as_ref(), s.info.name, color, badge, shown, focused, p);
             let state = match &s.state {
                 SlotState::Running(m) => m.status().badge.map(|b| b.tip).unwrap_or_default(),
                 SlotState::Unavailable(u) => crate::app::unavailable_text(u),
@@ -534,14 +548,16 @@ fn toasts(suite: &mut Suite, ctx: &egui::Context) {
         .interactable(false)
         .show(ctx, |ui| {
             for (n, _) in suite.core.notes.toasts.iter().rev().take(3) {
-                let (icon, color) =
-                    suite.core.slot(&n.module).map(|s| (s.info.icon, s.info.color)).unwrap_or(("◆", p.accent));
+                let module = suite.core.slot(&n.module).map(|s| &s.info);
                 egui::Frame::popup(ui.style()).fill(p.window).stroke(egui::Stroke::new(1.0, n.tone.color(p))).show(
                     ui,
                     |ui| {
                         ui.set_max_width(340.0);
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new(icon).color(color).size(16.0));
+                            match module {
+                                Some(info) => crate::icon::module_icon(ui, info, 16.0, info.color),
+                                None => ui.label(RichText::new("◆").color(p.accent).size(16.0)),
+                            };
                             ui.vertical(|ui| {
                                 ui.label(RichText::new(&n.title).strong().color(p.text));
                                 if !n.body.is_empty() {
@@ -675,7 +691,10 @@ fn about(suite: &mut Suite, ctx: &egui::Context) {
                     suite_sdk::Origin::Native => tr("natif").to_string(),
                     suite_sdk::Origin::Embedded { exe, repo } => format!("{} {exe} ({repo})", tr("embarqué :")),
                 };
-                ui.label(RichText::new(format!("{} {} — {origin}", s.info.icon, s.info.name)).color(s.info.color));
+                ui.horizontal(|ui| {
+                    crate::icon::module_icon(ui, &s.info, 13.5, s.info.color);
+                    ui.label(RichText::new(format!("{} — {origin}", s.info.name)).color(s.info.color));
+                });
             }
         });
     if !open {

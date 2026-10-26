@@ -30,6 +30,8 @@ impl PaletteState {
 
 pub struct Item {
     pub icon: String,
+    /// Le module de l'entrée : son image remplace alors le glyphe.
+    pub module: Option<suite_sdk::ModuleInfo>,
     pub color: Color32,
     pub title: String,
     pub detail: String,
@@ -93,6 +95,7 @@ pub fn items(suite: &Suite) -> Vec<Item> {
             };
             v.push(Item {
                 icon: s.info.icon.into(),
+                module: Some(s.info.clone()),
                 color: suite_sdk::theme::readable(p, s.info.color),
                 title,
                 detail: s.info.summary.into(),
@@ -100,6 +103,7 @@ pub fn items(suite: &Suite) -> Vec<Item> {
             });
             v.push(Item {
                 icon: "⧉".into(),
+                module: None,
                 color: suite_sdk::theme::readable(p, s.info.color),
                 title: format!("{} {} {}", tr("Ouvrir"), view.title, tr("dans une nouvelle fenêtre")),
                 detail: String::new(),
@@ -110,6 +114,7 @@ pub fn items(suite: &Suite) -> Vec<Item> {
             for c in m.commands() {
                 v.push(Item {
                     icon: s.info.icon.into(),
+                    module: Some(s.info.clone()),
                     color: suite_sdk::theme::readable(p, s.info.color),
                     title: format!("{} : {}", s.info.name, c.title),
                     detail: c.shortcut.map(|sc| sc.to_string()).unwrap_or_default(),
@@ -121,6 +126,7 @@ pub fn items(suite: &Suite) -> Vec<Item> {
     for view in SuiteView::ALL {
         v.push(Item {
             icon: view.icon().into(),
+            module: None,
             color: p.accent,
             title: tr(view.title()).into(),
             detail: tr("vue d'Eyrie").into(),
@@ -130,6 +136,7 @@ pub fn items(suite: &Suite) -> Vec<Item> {
     for kind in Preset::ALL {
         v.push(Item {
             icon: kind.icon().into(),
+            module: None,
             color: p.text_muted,
             title: format!("{} : {}", tr("Disposition"), tr(kind.label())),
             detail: String::new(),
@@ -145,6 +152,7 @@ pub fn items(suite: &Suite) -> Vec<Item> {
     for name in names {
         v.push(Item {
             icon: "▦".into(),
+            module: None,
             color: p.text_muted,
             title: format!("{} « {name} »", tr("Disposition")),
             detail: tr("enregistrée").into(),
@@ -154,6 +162,7 @@ pub fn items(suite: &Suite) -> Vec<Item> {
     if let Some(pane) = suite.active_pane() {
         v.push(Item {
             icon: "⛶".into(),
+            module: None,
             color: p.text_muted,
             title: tr("Agrandir ou restaurer la case active").into(),
             detail: "Alt+Maj+Entrée".into(),
@@ -161,6 +170,7 @@ pub fn items(suite: &Suite) -> Vec<Item> {
         });
         v.push(Item {
             icon: "⧉".into(),
+            module: None,
             color: p.text_muted,
             title: tr("Détacher la case active").into(),
             detail: "Alt+Maj+D".into(),
@@ -170,6 +180,7 @@ pub fn items(suite: &Suite) -> Vec<Item> {
     if !suite.windows.is_empty() {
         v.push(Item {
             icon: "⇲".into(),
+            module: None,
             color: p.text_muted,
             title: tr("Remettre toutes les fenêtres dans la principale").into(),
             detail: String::new(),
@@ -179,6 +190,7 @@ pub fn items(suite: &Suite) -> Vec<Item> {
     for t in ThemeChoice::ALL {
         v.push(Item {
             icon: "◐".into(),
+            module: None,
             color: p.text_muted,
             title: format!("{} : {}", tr("Thème"), tr(t.label())),
             detail: String::new(),
@@ -188,6 +200,7 @@ pub fn items(suite: &Suite) -> Vec<Item> {
     for l in Lang::ALL {
         v.push(Item {
             icon: "🌐".into(),
+            module: None,
             color: p.text_muted,
             title: format!("{} : {}", tr("Langue"), l.label()),
             detail: String::new(),
@@ -204,6 +217,7 @@ pub fn items(suite: &Suite) -> Vec<Item> {
     ] {
         v.push(Item {
             icon: "⚙".into(),
+            module: None,
             color: p.text_muted,
             title: tr(title).into(),
             detail: String::new(),
@@ -212,6 +226,7 @@ pub fn items(suite: &Suite) -> Vec<Item> {
     }
     v.push(Item {
         icon: "⟳".into(),
+        module: None,
         color: p.text_muted,
         title: tr("Relancer Eyrie").into(),
         detail: String::new(),
@@ -282,7 +297,10 @@ pub fn show(suite: &mut Suite, ctx: &egui::Context) {
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
                                 ui.horizontal(|ui| {
-                                    ui.label(RichText::new(&it.icon).color(it.color));
+                                    match &it.module {
+                                        Some(info) => crate::icon::module_icon(ui, info, 13.5, it.color),
+                                        None => ui.label(RichText::new(&it.icon).color(it.color)),
+                                    };
                                     ui.label(RichText::new(&it.title).color(p.text));
                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                         ui.label(RichText::new(&it.detail).color(p.text_dim).small());

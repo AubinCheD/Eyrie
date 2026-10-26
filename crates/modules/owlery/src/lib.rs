@@ -33,6 +33,7 @@ pub fn info() -> ModuleInfo {
         id: ID,
         name: "Owlery",
         icon: "✉",
+        logo: None,
         color: Color32::from_rgb(0x3a, 0xa8, 0xd8),
         summary: "Boîte de réception : PR à relire, CI en échec, mentions, tickets",
         origin: Origin::Embedded { exe: "owlery.exe", repo: "../Owlery" },

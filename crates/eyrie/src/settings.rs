@@ -209,7 +209,7 @@ fn nav(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui) {
             continue;
         }
         let page = Page::Module(s.info.id.to_string());
-        let text = RichText::new(format!("{}  {}", s.info.icon, s.info.name)).color(theme::readable(p, s.info.color));
+        let text = crate::icon::with_module(ui.ctx(), &s.info, s.info.name, theme::readable(p, s.info.color), true);
         if ui.selectable_label(suite.shell.settings.page == page, text).clicked() {
             suite.shell.settings.page = page;
         }
@@ -347,7 +347,7 @@ fn slot_row(s: &crate::core::Slot, p: &theme::Palette, ui: &mut egui::Ui, action
     let color = theme::readable(p, s.info.color);
     ui.horizontal(|ui| {
         slot_toggle(s, ui, actions);
-        ui.label(RichText::new(s.info.icon).size(18.0).color(color));
+        crate::icon::module_icon(ui, &s.info, 18.0, color);
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(s.info.name).color(color).strong());
@@ -688,7 +688,10 @@ fn module_page(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui, id: &str) {
     let p = suite.core.palette();
     let mut actions = Vec::new();
     let Some(s) = suite.core.slots.iter_mut().find(|s| s.info.id == id) else { return };
-    ui.heading(RichText::new(format!("{}  {}", s.info.icon, s.info.name)).color(theme::readable(p, s.info.color)));
+    ui.horizontal(|ui| {
+        crate::icon::module_icon(ui, &s.info, 18.0, theme::readable(p, s.info.color));
+        ui.heading(RichText::new(s.info.name).color(theme::readable(p, s.info.color)));
+    });
     hint(ui, p, s.info.summary);
     ui.add_space(4.0);
     ui.horizontal(|ui| {

@@ -209,6 +209,11 @@ impl Core {
             },
         }
     }
+
+    /// L'image du module de cette case, s'il en a une (elle remplace alors le glyphe de `pane_title`).
+    pub fn pane_logo(&self, ctx: &egui::Context, pane: &Pane) -> Option<egui::TextureHandle> {
+        crate::icon::logo(ctx, &self.slot(pane.module_id()?)?.info)
+    }
 }
 
 pub struct Suite {

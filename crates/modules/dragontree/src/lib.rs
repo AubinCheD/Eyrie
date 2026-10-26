@@ -31,6 +31,7 @@ pub fn info() -> ModuleInfo {
         id: ID,
         name: "DragonTree",
         icon: "⎇",
+        logo: None,
         color: Color32::from_rgb(0xe0, 0x8a, 0x5c),
         summary: "Client git : historique, changements, branches, plusieurs dépôts en onglets",
         origin: Origin::Embedded { exe: "dragontree.exe", repo: "../DragonTree" },

@@ -340,6 +340,7 @@ mod tests {
             id: "factice",
             name: "Factice",
             icon: "?",
+            logo: None,
             color: egui::Color32::GRAY,
             summary: "essai",
             origin: crate::module::Origin::Native,

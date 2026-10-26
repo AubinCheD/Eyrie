@@ -165,6 +165,7 @@ fn boom_info() -> ModuleInfo {
         id: "boum",
         name: "Boum",
         icon: "!",
+        logo: None,
         color: egui::Color32::RED,
         summary: "essai",
         origin: Origin::Native,
@@ -230,7 +231,15 @@ struct Watcher {
 }
 
 fn closing_info(id: &'static str) -> ModuleInfo {
-    ModuleInfo { id, name: id, icon: "?", color: egui::Color32::GRAY, summary: "essai", origin: Origin::Native }
+    ModuleInfo {
+        id,
+        name: id,
+        icon: "?",
+        logo: None,
+        color: egui::Color32::GRAY,
+        summary: "essai",
+        origin: Origin::Native,
+    }
 }
 
 impl Module for Asker {
@@ -427,6 +436,7 @@ fn tuned_info() -> ModuleInfo {
         id: "regle",
         name: "Réglé",
         icon: "⚙",
+        logo: None,
         color: egui::Color32::LIGHT_BLUE,
         summary: "essai",
         origin: Origin::Native,
@@ -440,6 +450,23 @@ fn build_tuned(_: &suite_sdk::BuildCx) -> Result<Box<dyn Module>, suite_sdk::Una
 /// Le module dessine ses réglages dans la page que lui donne Eyrie.
 fn draw_tuned_settings(ui: &mut egui::Ui) {
     ui.label("réglage-témoin");
+}
+
+/// Un module qui a une image (le phénix de Fawkes) la montre à la place de son glyphe.
+#[test]
+fn a_module_logo_replaces_its_glyph() {
+    use egui_kittest::kittest::Queryable;
+    fn red(size: u32) -> Vec<u8> {
+        [255, 0, 0, 255].repeat((size * size) as usize)
+    }
+    let mut h = suite();
+    add_slot(&mut h, ModuleInfo { logo: Some(red), ..tuned_info() }, build_tuned);
+    act(&mut h, Action::OpenSettings(crate::settings::Page::General));
+    assert!(h.query_all_by_label("Réglé").count() >= 2, "son nom, dans la barre d'activité et les réglages");
+    assert!(h.query_by_label("⚙  Réglé").is_none(), "plus de glyphe devant son nom");
+    assert!(h.query_by_label("✎  Carnet").is_some(), "Carnet, sans image, garde son glyphe");
+    let info = h.state().core.slot("regle").unwrap().info.clone();
+    assert!(crate::icon::logo(&h.ctx, &info).is_some(), "image chargée");
 }
 
 fn add_slot(

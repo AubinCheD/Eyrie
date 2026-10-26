@@ -1,6 +1,8 @@
-//! Icône de la suite, dessinée : quatre cases de couleurs, comme les modules qu'elle réunit.
+//! Icône de la suite, dessinée : quatre cases de couleurs, comme les modules qu'elle réunit. Et l'image des modules
+//! qui en ont une (le phénix de Fawkes), à la place de leur glyphe.
 
-use eframe::egui;
+use eframe::egui::{self, Color32, IntoAtoms as _};
+use suite_sdk::ModuleInfo;
 
 const COLORS: [[u8; 3]; 4] = [[0x5b, 0x8d, 0xef], [0xe0, 0x8a, 0x5c], [0x4c, 0xb8, 0x72], [0xb0, 0x5c, 0xc9]];
 
@@ -47,6 +49,58 @@ pub fn render(size: usize) -> Vec<u8> {
 pub fn window_icon() -> egui::IconData {
     let size = 64;
     egui::IconData { rgba: render(size), width: size as u32, height: size as u32 }
+}
+
+/// L'image d'un module qui en a une (`ModuleInfo::logo`), chargée une fois pour toutes les fenêtres.
+pub fn logo(ctx: &egui::Context, info: &ModuleInfo) -> Option<egui::TextureHandle> {
+    let render = info.logo?;
+    let id = egui::Id::unique(("suite-logo", info.id));
+    if let Some(t) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
+        return Some(t);
+    }
+    // Rendue en grand, réduite à l'affichage : les mipmaps gardent les petites tailles nettes.
+    const SIZE: usize = 64;
+    let image = egui::ColorImage::from_rgba_unmultiplied([SIZE, SIZE], &render(SIZE as u32));
+    let options = egui::TextureOptions::LINEAR.with_mipmap_mode(Some(egui::TextureFilter::Linear));
+    let t = ctx.load_texture(format!("logo-{}", info.id), image, options);
+    ctx.data_mut(|d| d.insert_temp(id, t.clone()));
+    Some(t)
+}
+
+/// L'image du module à `size` points, éteinte (`on` faux) pour un module arrêté.
+fn logo_image(t: &egui::TextureHandle, size: f32, on: bool) -> egui::Image<'static> {
+    let tint = if on { Color32::WHITE } else { Color32::WHITE.gamma_multiply(0.4) };
+    egui::Image::new((t.id(), egui::vec2(size, size))).tint(tint)
+}
+
+/// L'icône d'un module dans une ligne : son image, sinon son glyphe dans sa couleur.
+pub fn module_icon(ui: &mut egui::Ui, info: &ModuleInfo, size: f32, color: Color32) -> egui::Response {
+    match logo(ui.ctx(), info) {
+        Some(t) => ui.add(logo_image(&t, size + 1.0, true)),
+        None => ui.label(egui::RichText::new(info.icon).size(size).color(color)),
+    }
+}
+
+/// Le module devant le texte d'un bouton ou d'un menu, dans `color` : son image (éteinte si `on` est faux), sinon son
+/// glyphe dans le texte.
+pub fn with_module(
+    ctx: &egui::Context,
+    info: &ModuleInfo,
+    text: &str,
+    color: Color32,
+    on: bool,
+) -> egui::Atoms<'static> {
+    match logo(ctx, info) {
+        Some(t) => (logo_image(&t, 15.0, on), egui::RichText::new(text).color(color)).into_atoms(),
+        None => egui::RichText::new(format!("{}  {text}", info.icon)).color(color).into_atoms(),
+    }
+}
+
+/// Dessine l'image d'un module dans `rect` (barre d'activité, onglets).
+pub fn paint_logo(painter: &egui::Painter, t: &egui::TextureHandle, rect: egui::Rect, on: bool) {
+    let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+    let tint = if on { Color32::WHITE } else { Color32::WHITE.gamma_multiply(0.4) };
+    painter.image(t.id(), rect, uv, tint);
 }
 
 #[cfg(test)]

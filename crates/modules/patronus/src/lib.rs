@@ -27,6 +27,7 @@ pub fn info() -> ModuleInfo {
         id: ID,
         name: "Patronus",
         icon: "✦",
+        logo: None,
         color: Color32::from_rgb(0x9f, 0xc5, 0xff),
         summary: "Agents autonomes et tâches récurrentes",
         origin: Origin::Embedded { exe: "patronus.exe", repo: "../Patronus" },

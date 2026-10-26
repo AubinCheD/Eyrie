@@ -5,8 +5,9 @@
 //! - **thème** : Fawkes lit sa palette à chaque dessin (`theme::p()`) ; pendant son affichage, son
 //!   réglage de thème vaut celui de la suite, puis reprend sa valeur (son état enregistré garde le
 //!   thème choisi dans Fawkes seul) ;
-//! - sa barre de titre dessinée reste dans sa case : ses boutons réduire, agrandir et fermer sont
-//!   contenus par la suite (le bac à sable de l'hôte) ;
+//! - **pas de barre de titre dans sa case** : pendant son affichage, il se croit sous celle de Windows (la barre
+//!   d'Eyrie) et ne montre que ses menus et sa recherche, sans réduire, agrandir et fermer ; son réglage enregistré
+//!   ne change pas ;
 //! - **réglages** : les siens sont dans ceux d'Eyrie (page Fawkes), et « Réglages… » y mène ;
 //! - les sessions Claude qui attendent une réponse deviennent sa pastille ;
 //! - il reçoit `ouvrir` des autres modules (Owlery, Patronus, Grimoire), en appel Rust : c'est le
@@ -31,6 +32,8 @@ pub fn info() -> ModuleInfo {
         id: ID,
         name: "Fawkes",
         icon: "🔥",
+        // Le phénix de son exécutable.
+        logo: Some(fawkes::phoenix::render),
         color: Color32::from_rgb(0xf2, 0x6d, 0x3b),
         summary: "Terminaux par groupes, restauration exacte des sessions Claude",
         origin: Origin::Embedded { exe: "fawkes.exe", repo: "../Fawkes" },
@@ -153,11 +156,11 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
     app.set_settings_link(Box::new(move || link.open_settings(&format!("module:{ID}"))));
     let panel_host = bcx.host.clone();
 
-    // Pendant l'affichage : le thème de la suite, et la géométrie de la fenêtre où Fawkes est
-    // dessiné (il la relève à chaque image pour son propre lancement : sans cela, `fawkes.exe`
-    // rouvrirait à la taille de la suite). Les deux reprennent ensuite la valeur de Fawkes.
-    let saved =
-        std::rc::Rc::new(std::cell::RefCell::new(None::<(FawkesTheme, FawkesTheme, fawkes::model::WindowGeom)>));
+    // Pendant l'affichage : le thème de la suite, la barre de titre de Windows (celle d'Eyrie) et la géométrie de la
+    // fenêtre où Fawkes est dessiné (il la relève à chaque image pour son propre lancement : sans cela, `fawkes.exe`
+    // rouvrirait à la taille de la suite). Tous reprennent ensuite la valeur de Fawkes.
+    type Saved = (FawkesTheme, FawkesTheme, bool, fawkes::model::WindowGeom);
+    let saved = std::rc::Rc::new(std::cell::RefCell::new(None::<Saved>));
     let (before, after) = (saved.clone(), saved);
     // Fawkes pose ses notifications sur sa propre fenêtre, qu'il ne trouve pas dans la suite : les
     // sessions Claude qui se mettent à attendre vont au centre de notifications de la suite.
@@ -197,8 +200,10 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
         })
         .before_ui(move |app, cx| {
             let suite = suite_theme_of(cx.host);
-            *before.borrow_mut() = Some((app.st.settings.theme, suite, app.st.window.clone()));
-            app.st.settings.theme = suite;
+            let s = &mut app.st.settings;
+            *before.borrow_mut() = Some((s.theme, suite, s.native_title_bar, app.st.window.clone()));
+            s.theme = suite;
+            s.native_title_bar = true;
             // Ce que `track_window` va relever : rien ne change, rien n'est marqué à enregistrer.
             let (outer, inner, maximized) =
                 cx.host.ctx().input(|i| (i.viewport().outer_rect, i.viewport().inner_rect, i.viewport().maximized));
@@ -214,12 +219,13 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
             }
         })
         .after_ui(move |app, _cx| {
-            if let Some((own, suite, window)) = after.borrow_mut().take() {
+            if let Some((own, suite, title_bar, window)) = after.borrow_mut().take() {
                 // Inchangé pendant l'image : on rend à Fawkes son propre choix. Changé (menu de
                 // Fawkes) : c'est le nouveau choix de Fawkes, gardé.
                 if app.st.settings.theme == suite {
                     app.st.settings.theme = own;
                 }
+                app.st.settings.native_title_bar = title_bar;
                 app.st.window = window;
             }
         })
