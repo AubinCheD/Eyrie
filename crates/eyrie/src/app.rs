@@ -1159,6 +1159,7 @@ impl eframe::App for Suite {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.shell.follow.update(&ctx);
         self.core.shown.clear();
         self.handle_shortcuts(&ctx);
         self.pending_commands(frame, &ctx);

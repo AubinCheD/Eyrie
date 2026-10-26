@@ -27,6 +27,8 @@ pub struct ShellState {
     pub save_layout: Option<String>,
     /// Commandes de module demandées depuis la palette ou un menu : (module, commande).
     pub pending_commands: Vec<(String, String)>,
+    /// Les fenêtres flottantes de la fenêtre principale suivent sa taille.
+    pub follow: crate::popups::Follow,
 }
 
 pub fn show(suite: &mut Suite, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -429,13 +431,7 @@ fn activity_bar(suite: &mut Suite, ui: &mut egui::Ui) {
                 }
             });
         }
-        // Les notifications sont dans la barre de menus (la cloche) : seule la molette reste en bas.
-        ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
-            let label = tr("Réglages d'Eyrie");
-            if activity_button(ui, "⚙", label, p.text_muted, None, false, false, p).on_hover_text(label).clicked() {
-                actions.push(Action::OpenSettings(settings::Page::General));
-            }
-        });
+        // Ni cloche ni molette en bas : les notifications et Eyrie › Réglages sont dans la barre de titre.
     });
     for a in actions {
         suite.core.act(a);

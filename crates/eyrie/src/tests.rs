@@ -738,13 +738,13 @@ fn the_overview_comes_first_in_the_activity_bar() {
 }
 
 #[test]
-fn the_bell_is_only_in_the_menu_bar() {
+fn neither_bell_nor_gear_in_the_activity_bar() {
     let h = suite();
     assert!(
         activity_buttons(&h, crate::i18n::tr("Notifications")).is_empty(),
         "pas de cloche dans la barre d'activité"
     );
-    assert_eq!(activity_buttons(&h, crate::i18n::tr("Réglages d'Eyrie")).len(), 1, "la molette reste en bas");
+    assert!(activity_buttons(&h, crate::i18n::tr("Réglages d'Eyrie")).is_empty(), "pas de molette non plus");
 }
 
 #[test]
@@ -754,6 +754,30 @@ fn the_menu_bar_buttons_on_the_right_are_spaced() {
     let bell = h.get_by_label("🔔").rect();
     let commands = h.get_by_label(&format!("⌕ {}  F1", crate::i18n::tr("Commandes"))).rect();
     assert!(bell.left() - commands.right() >= 12.0, "{commands:?} puis {bell:?}");
+}
+
+/// Agrandie puis restaurée, la fenêtre principale garde ses fenêtres flottantes centrées.
+#[test]
+fn floating_windows_follow_the_main_window_size() {
+    let mut h = suite_of_size([1000.0, 700.0]);
+    act(&mut h, Action::OpenSettings(crate::settings::Page::General));
+    let rect = |h: &Harness<'static, Suite>| {
+        egui::AreaState::load(&h.ctx, egui::Id::unique("suite-reglages")).expect("réglages ouverts").rect()
+    };
+    let start = rect(&h);
+    let screen = h.ctx.content_rect();
+    // Au départ, l'écart au centre ne tient qu'à la barre de titre de la fenêtre.
+    assert!((start.center() - screen.center()).length() < 30.0, "{start:?} dans {screen:?}");
+    for size in [[1600.0, 1000.0], [1000.0, 700.0]] {
+        let (was, before) = (rect(&h), h.ctx.content_rect());
+        h.set_size(egui::Vec2::from(size));
+        h.run_steps(3);
+        let now = h.ctx.content_rect();
+        assert_ne!(now, before);
+        let want = crate::popups::follow(was, before, now);
+        assert!((rect(&h).min - want).length() < 2.0, "{size:?} : {:?} au lieu de {want:?}", rect(&h).min);
+    }
+    assert!((rect(&h).min - start.min).length() < 2.0, "revenue à sa place de départ");
 }
 
 /// Les commandes d'un module sont dans Modules › module : le menu ⋯ de la case ne les répète pas.

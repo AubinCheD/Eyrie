@@ -16,6 +16,7 @@ mod layout;
 mod migrate;
 mod palette;
 mod persist;
+mod popups;
 mod registry;
 mod sandbox;
 mod screens;

@@ -23,6 +23,8 @@ pub struct Detached {
     /// Position et taille actuelles, relevées pour l'enregistrement.
     pos: Option<egui::Pos2>,
     size: egui::Vec2,
+    /// Ses fenêtres flottantes suivent sa taille.
+    follow: crate::popups::Follow,
 }
 
 pub fn viewport_id(id: u64) -> egui::ViewportId {
@@ -39,6 +41,7 @@ impl Detached {
             initial_size: size,
             pos: None,
             size,
+            follow: Default::default(),
         }
     }
 
@@ -46,7 +49,7 @@ impl Detached {
         // Un écran débranché depuis : la fenêtre revient sur l'écran principal.
         let pos = s.pos.filter(|p| crate::screens::on_some_monitor(*p)).map(|p| egui::pos2(p[0], p[1]));
         let size = egui::vec2(s.size[0], s.size[1]);
-        Detached { id: s.id, tree: s.tree, initial_pos: pos, initial_size: size, pos, size }
+        Detached { id: s.id, tree: s.tree, initial_pos: pos, initial_size: size, pos, size, follow: Default::default() }
     }
 
     pub fn to_saved(&self) -> SavedWindow {
@@ -82,6 +85,7 @@ pub fn show_all(suite: &mut Suite, ctx: &egui::Context, frame: &mut eframe::Fram
             // Des polices posées par un module pendant l'image de la fenêtre principale s'appliquent
             // au début de celle-ci : le plan de la suite est rétabli avant toute mise en page.
             suite_sdk::fonts::guard(&vctx, &core.fonts);
+            w.follow.update(&vctx);
             let (outer, inner, close) =
                 vctx.input(|i| (i.viewport().outer_rect, i.viewport().inner_rect, i.viewport().close_requested()));
             if let Some(r) = outer {
