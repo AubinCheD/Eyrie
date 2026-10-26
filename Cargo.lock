@@ -1061,6 +1061,7 @@ dependencies = [
  "serde_json",
  "similar",
  "suite-accounts",
+ "suite-titlebar",
  "syntect",
  "windows-sys 0.61.2",
 ]

@@ -113,7 +113,7 @@ pub fn show(ui: &mut egui::Ui, bar: &Bar, mut contents: impl FnMut(Side, &mut eg
                 |ui| {
                     ui.add_space(10.0);
                     if let Some(icon) = bar.icon {
-                        ui.add(egui::Image::new((icon, vec2(16.0, 16.0))));
+                        ui.add(egui::Image::new((icon, vec2(16.0, 16.0))).alt_text(bar.title));
                         ui.add_space(6.0);
                     }
                     let color = if focused { c.text } else { c.text_dim };

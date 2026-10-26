@@ -783,11 +783,11 @@ fn the_menu_bar_buttons_on_the_right_are_spaced() {
     assert!(bell.left() - commands.right() >= 12.0, "{commands:?} puis {bell:?}");
 }
 
-/// Le centre du bouton de ce nom dans la barre du haut (les 32 premiers points ; le titre « Eyrie » n'est pas un
-/// bouton, le menu Eyrie si).
+/// Le centre du bouton de ce nom dans la barre du haut (les 32 premiers points ; le titre « Eyrie » et l'icône ne sont
+/// pas des boutons, le menu Eyrie si).
 fn in_title_bar(h: &Harness<'static, Suite>, label: &str) -> Option<egui::Pos2> {
     use egui_kittest::kittest::Queryable;
-    h.query_all_by(|n| n.label().as_deref() == Some(label) && n.role() != egui::accesskit::Role::Label)
+    h.query_all_by(|n| n.label().as_deref() == Some(label) && n.role() == egui::accesskit::Role::Button)
         .map(|n| n.rect())
         .find(|r| r.bottom() <= suite_titlebar::HEIGHT + 0.5)
         .map(|r| r.center())

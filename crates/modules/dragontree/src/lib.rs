@@ -6,7 +6,8 @@
 //!   il remplace toutes les polices au démarrage et quand la police du diff change, la suite les
 //!   rétablit en gardant les siennes ;
 //! - **thème et langue de la suite** : passés comme `--theme` et `--lang` (`set_host_overrides`),
-//!   ils remplacent ses réglages pour la session sans y être écrits ;
+//!   ils remplacent ses réglages pour la session sans y être écrits ; ses fonds, son texte et ses sélections prennent
+//!   les couleurs de la suite (`set_host_palette`), comme les autres modules ;
 //! - **réglages** : les siens sont dans ceux d'Eyrie (page DragonTree), et « Réglages… » y mène ;
 //! - **comptes** : ceux de toute la suite, que DragonTree lit lui-même ; « Comptes… » ouvre la page Comptes d'Eyrie,
 //!   et Thème et Langue disparaissent de ses réglages et de ses menus (`set_hosted`) ;
@@ -50,6 +51,26 @@ fn fonts(plan: &mut FontPlan) {
     plan.add_second(egui::FontFamily::Proportional, "phosphor", phosphor.clone());
     plan.add_second(egui::FontFamily::Monospace, "phosphor", phosphor.clone());
     plan.add_second(egui::FontFamily::Name(suite_sdk::fonts::BOLD.into()), "phosphor", phosphor);
+}
+
+/// La palette de DragonTree dans les couleurs de la suite : fonds (case, fenêtres, barres), bordures, texte, accent,
+/// sélection et survol viennent d'Eyrie ; les couleurs métier (diff, branches, étiquettes) restent les siennes.
+pub fn palette_of(s: &suite_sdk::theme::Palette) -> dragontree_app::theme::Palette {
+    let own = if s.dark { dragontree_app::theme::Palette::dark() } else { dragontree_app::theme::Palette::light() };
+    dragontree_app::theme::Palette {
+        bg: s.panel,
+        panel: s.window,
+        sidebar: s.sidebar,
+        border: s.border,
+        text: s.text,
+        weak: s.text_dim,
+        accent: s.accent,
+        selection: s.selection,
+        hover: s.surface_hover,
+        row_alt: s.panel.lerp_to_gamma(s.surface, 0.3),
+        gutter: s.panel.lerp_to_gamma(s.surface, 0.5),
+        ..own
+    }
 }
 
 fn commands() -> Vec<KeyCommand> {
@@ -126,6 +147,8 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
             }
         });
     let module = module.before_logic(|app, cx| {
+        // Ses fonds, son texte et ses sélections sont ceux de la suite : il se fond dans les autres modules.
+        dragontree_app::theme::set_host_palette(cx.host.ctx(), Some(palette_of(cx.host.palette())));
         let theme = if cx.host.palette().dark { ThemeChoice::Dark } else { ThemeChoice::Light };
         let lang = match cx.host.lang() {
             suite_sdk::i18n::Lang::Fr => Lang::Fr,
@@ -134,4 +157,22 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
         app.set_host_overrides(Some(theme), Some(lang));
     });
     Ok(Box::new(module))
+}
+
+#[cfg(test)]
+mod tests {
+    use suite_sdk::theme::{FLUENT, GRAPHITE, NUIT};
+
+    /// Le fond principal et les barres de DragonTree sont ceux de la suite, dans chaque thème ; ses couleurs de diff
+    /// restent les siennes.
+    #[test]
+    fn dragontree_takes_the_suite_backgrounds() {
+        for s in [&GRAPHITE, &FLUENT, &NUIT] {
+            let p = super::palette_of(s);
+            assert_eq!((p.dark, p.bg, p.sidebar, p.text), (s.dark, s.panel, s.sidebar, s.text));
+            let own =
+                if s.dark { dragontree_app::theme::Palette::dark() } else { dragontree_app::theme::Palette::light() };
+            assert_eq!(p.added_bg, own.added_bg, "diff inchangé");
+        }
+    }
 }

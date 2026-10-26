@@ -11,6 +11,18 @@ Le raisonnement est dans `reflexions.md`, le constat technique dans `etat-des-li
 | Conception de l'intégration (questions ouvertes de `reflexions.md` §11) | choix provisoires (23/10) : `premier-jet.md` §5 |
 | Premier jet de l'hôte, sans toucher au code des modules | fait (23/10) : `premier-jet.md`, `README.md` ; branche `premier-jet` |
 | Étape 2 : premières retouches dans les modules, essais approfondis | fait (23/10) : `etape-2.md` ; branches `suite/etape-2` et `suite/module` |
+| Retouches du 26/10 (deux listes de l'utilisateur) | fait : branches `suite/retouches` (Eyrie, DragonTree, Owlery) ; ci-dessous |
+
+## Fait le 26/10
+
+- Barre d'activité : vue d'ensemble en haut, ni cloche ni molette en bas ; menu ⋯ d'une case sans Commandes.
+- Fenêtres flottantes (réglages, Cloner de DragonTree…) qui suivent la taille de la fenêtre (`popups.rs`).
+- **Menus dans la barre de titre** : crate commune `suite-titlebar` (reprise de Fawkes), pour Eyrie et DragonTree lancé
+  seul ; réglage « barre de titre de Windows » dans Eyrie. Dans Eyrie, Fawkes n'affiche plus la sienne dans sa case.
+- Phénix de Fawkes à la place de son glyphe (`ModuleInfo::logo`).
+- DragonTree aux couleurs de la suite quand il est embarqué ; fenêtre Cloner bornée. Owlery : filtre par compte.
+- À concevoir avec l'utilisateur : icône d'Eyrie (propositions faites), édition des réglages de Claude et suivi de
+  consommation dans Grimoire.
 
 ## Fait dans le premier jet (23/10)
 
@@ -49,7 +61,7 @@ Le raisonnement est dans `reflexions.md`, le constat technique dans `etat-des-li
 ## Chantiers à part
 
 - Recherche globale au milieu du bandeau (demande du 26/10) : faisable en trois paliers, étude dans
-  `recherche-globale.md` ; à planifier après les menus dans le bandeau.
+  `recherche-globale.md` ; les menus sont dans le bandeau (26/10), la place du milieu est libre.
 
 - Traduction de Fawkes, Patronus, Owlery, Menagerie, Grimoire (3 à 5 j chacun).
 - Contrat par tube côté Fawkes (rien n'existe encore, alors que tous les modules le visent).
