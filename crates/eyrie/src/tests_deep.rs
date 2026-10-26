@@ -2,7 +2,7 @@
 //!
 //! - `random_actions_keep_the_layout_sound` : des centaines d'actions tirées au hasard (graine
 //!   fixe), avec des clics à des endroits quelconques, et des invariants vérifiés après chacune ;
-//! - `real_modules_*` (ignorés par défaut, lents, lancent de vrais terminaux) : les sept modules
+//! - `real_modules_*` (ignorés par défaut, lents, lancent de vrais terminaux) : les huit modules
 //!   réels, en mode essai, dans un dossier temporaire. À lancer seuls :
 //!   `cargo test -p eyrie -- --ignored --test-threads=1`.
 
@@ -176,7 +176,7 @@ fn random_actions(seed: u64, steps: usize) {
     }
 }
 
-// --- Les sept modules réels -------------------------------------------------------------------
+// --- Les huit modules réels -------------------------------------------------------------------
 
 /// La suite avec tous les modules, en mode essai dans un dossier temporaire (variables posées
 /// avant toute construction, comme `eyrie.exe`), Owlery en démonstration.
@@ -204,14 +204,14 @@ fn running(s: &Suite) -> Vec<&'static str> {
 }
 
 #[test]
-#[ignore = "lent : les sept modules réels (terminaux, relevés) ; à lancer seul"]
+#[ignore = "lent : les huit modules réels (terminaux, relevés) ; à lancer seul"]
 fn real_modules_survive_every_layout_operation() {
     let (mut h, _dir) = real_suite("reels");
     h.run_steps(10);
     let started = running(h.state());
     assert_eq!(
         started.len(),
-        7,
+        8,
         "tous les modules démarrent en mode essai : {started:?} ; journal : {:?}",
         h.state().core.journal.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>()
     );
@@ -264,7 +264,7 @@ fn real_modules_survive_every_layout_operation() {
 }
 
 #[test]
-#[ignore = "lent : les sept modules réels ; à lancer seul"]
+#[ignore = "lent : les huit modules réels ; à lancer seul"]
 fn real_modules_can_be_stopped_and_restarted() {
     let (mut h, _dir) = real_suite("relance");
     h.run_steps(6);
@@ -289,7 +289,7 @@ fn real_modules_can_be_stopped_and_restarted() {
 }
 
 #[test]
-#[ignore = "lent : les sept modules réels ; à lancer seul"]
+#[ignore = "lent : les huit modules réels ; à lancer seul"]
 fn real_modules_let_the_suite_close() {
     let (mut h, _dir) = real_suite("fermeture");
     h.run_steps(6);
@@ -311,7 +311,7 @@ fn real_modules_let_the_suite_close() {
 }
 
 #[test]
-#[ignore = "lent : les sept modules réels ; à lancer seul"]
+#[ignore = "lent : les huit modules réels ; à lancer seul"]
 fn real_dragontree_shares_its_active_repository() {
     let (mut h, dir) = real_suite("contexte");
     h.run_steps(6);
@@ -341,7 +341,7 @@ fn real_dragontree_shares_its_active_repository() {
 /// Les réglages de chaque module réel sont dans ceux d'Eyrie (sa page), sans le thème (celui d'Eyrie) ; et son propre
 /// bouton de réglages mène à cette page.
 #[test]
-#[ignore = "lent : les sept modules réels ; à lancer seul"]
+#[ignore = "lent : les huit modules réels ; à lancer seul"]
 fn real_modules_show_their_settings_in_eyrie() {
     use egui_kittest::kittest::Queryable;
     let (mut h, _dir) = real_suite("reglages");
@@ -372,7 +372,7 @@ fn real_modules_show_their_settings_in_eyrie() {
 /// Un raccourci en cours de saisie dans la page d'un module réel est abandonné quand la page est quittée : sinon la
 /// frappe suivante, dans sa case (le terminal de Fawkes), deviendrait ce raccourci.
 #[test]
-#[ignore = "lent : les sept modules réels ; à lancer seul"]
+#[ignore = "lent : les huit modules réels ; à lancer seul"]
 fn real_modules_forget_an_unfinished_shortcut_when_their_page_is_left() {
     use egui_kittest::kittest::Queryable;
     let (mut h, _dir) = real_suite("saisie");
@@ -409,7 +409,7 @@ fn real_modules_forget_an_unfinished_shortcut_when_their_page_is_left() {
 
 /// Dans la page de Menagerie, rien ne se ferme : le bouton du bas remet les champs aux réglages enregistrés, et le dit.
 #[test]
-#[ignore = "lent : les sept modules réels ; à lancer seul"]
+#[ignore = "lent : les huit modules réels ; à lancer seul"]
 fn menagerie_in_eyrie_cancels_instead_of_closing() {
     use egui_kittest::kittest::Queryable;
     let (mut h, _dir) = real_suite("menagerie");

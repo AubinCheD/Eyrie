@@ -88,6 +88,16 @@ pub struct ModuleStatus {
     pub badge: Option<Badge>,
     /// Ce qui attend l'utilisateur, pour la vue d'ensemble.
     pub waiting: Vec<String>,
+    /// Texte court affiché en permanence dans la barre d'état de l'hôte (en bas de la fenêtre).
+    pub status_line: Option<StatusText>,
+}
+
+/// Un texte de la barre d'état de l'hôte : quelques mots, leur ton (couleur) et le détail en infobulle.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StatusText {
+    pub text: String,
+    pub tone: Tone,
+    pub tip: String,
 }
 
 /// Une commande du module, pour la palette et le registre des raccourcis.

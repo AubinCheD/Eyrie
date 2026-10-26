@@ -93,6 +93,10 @@ fn message_box(text: &str) {
 
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // Ligne d'état de Claude Code (relais de Gringotts) : relève les limites, rien d'autre ne démarre.
+    if args.first().map(String::as_str) == Some(suite_gringotts::relay::ARG) {
+        std::process::exit(suite_gringotts::relay::main());
+    }
     // Menagerie relance son exe en relais (`current_exe() --relais …`) : dans la suite, c'est celui-ci.
     if args.first().map(String::as_str) == Some("--relais") {
         std::process::exit(menagerie::relay::main(&args));

@@ -223,6 +223,7 @@ impl Module for Carnet {
             } else {
                 Vec::new()
             },
+            ..Default::default()
         }
     }
 

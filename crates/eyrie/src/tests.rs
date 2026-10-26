@@ -452,6 +452,54 @@ fn draw_tuned_settings(ui: &mut egui::Ui) {
     ui.label("réglage-témoin");
 }
 
+/// Un module qui affiche un texte en permanence en bas de la fenêtre (les limites de Gringotts).
+struct Teller {
+    info: ModuleInfo,
+}
+
+impl Module for Teller {
+    fn info(&self) -> &ModuleInfo {
+        &self.info
+    }
+
+    fn logic(&mut self, _ctx: &egui::Context, _cx: &mut Cx) {}
+
+    fn ui(&mut self, _ui: &mut egui::Ui, _view: &str, _cx: &mut Cx) {}
+
+    fn status(&self) -> suite_sdk::ModuleStatus {
+        suite_sdk::ModuleStatus {
+            status_line: Some(suite_sdk::StatusText {
+                text: "Claude 5 h 23 %".into(),
+                tone: suite_sdk::Tone::Ok,
+                tip: "détail".into(),
+            }),
+            ..Default::default()
+        }
+    }
+}
+
+fn teller_info() -> ModuleInfo {
+    ModuleInfo { id: "compteur", name: "Compteur", ..closing_info("compteur") }
+}
+
+fn build_teller(_: &suite_sdk::BuildCx) -> Result<Box<dyn Module>, suite_sdk::Unavailable> {
+    Ok(Box::new(Teller { info: teller_info() }))
+}
+
+/// Le texte d'un module est dans la barre d'état ; un clic montre le module.
+#[test]
+fn a_module_text_sits_in_the_status_bar() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = suite();
+    add_slot(&mut h, teller_info(), build_teller);
+    h.run_steps(3);
+    let text = h.get_by_label("Claude 5 h 23 %");
+    assert!(text.rect().top() > 900.0 - 24.0 - 1.0, "en bas de la fenêtre : {:?}", text.rect());
+    text.click();
+    h.run_steps(3);
+    assert!(h.state().locate(&Pane::module("compteur", suite_sdk::ViewInfo::MAIN)).is_some(), "le module est montré");
+}
+
 /// Un module qui a une image (le phénix de Fawkes) la montre à la place de son glyphe.
 #[test]
 fn a_module_logo_replaces_its_glyph() {

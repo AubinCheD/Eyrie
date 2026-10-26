@@ -1396,6 +1396,7 @@ dependencies = [
  "suite-dragontree",
  "suite-fawkes",
  "suite-grimoire",
+ "suite-gringotts",
  "suite-menagerie",
  "suite-owlery",
  "suite-patronus",
@@ -3978,6 +3979,22 @@ dependencies = [
  "eframe",
  "grimoire",
  "suite-sdk",
+]
+
+[[package]]
+name = "suite-gringotts"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "dirs",
+ "eframe",
+ "egui_kittest",
+ "grimoire",
+ "serde",
+ "serde_json",
+ "suite-accounts",
+ "suite-sdk",
+ "tempfile",
 ]
 
 [[package]]

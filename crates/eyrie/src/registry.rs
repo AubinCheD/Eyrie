@@ -11,6 +11,7 @@ pub fn factories() -> Vec<ModuleFactory> {
         suite_patronus::factory(),
         suite_menagerie::factory(),
         suite_grimoire::factory(),
+        suite_gringotts::factory(),
         suite_carnet::factory(),
     ]
 }

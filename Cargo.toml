@@ -20,6 +20,7 @@ suite-patronus = { path = "crates/modules/patronus" }
 suite-owlery = { path = "crates/modules/owlery" }
 suite-menagerie = { path = "crates/modules/menagerie" }
 suite-grimoire = { path = "crates/modules/grimoire" }
+suite-gringotts = { path = "crates/modules/gringotts" }
 
 # Les modules, dans les dépôts voisins (lecture seule : la suite ne modifie pas leur code).
 fawkes = { path = "../Fawkes" }
@@ -45,6 +46,7 @@ keyring = "4"
 rfd = "0.17"
 raw-window-handle = "0.6"
 windows-sys = "0.61"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [profile.dev]
 opt-level = 1
