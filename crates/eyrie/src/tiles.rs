@@ -186,28 +186,13 @@ pub fn pane_menu(core: &mut Core, ui: &mut egui::Ui, pane: &Pane, window: u64) {
             ui.separator();
             for v in views {
                 let p = Pane::module(&m, &v.id);
-                if &p != pane && ui.button(format!("＋  {}", v.title)).clicked() {
+                if &p != pane && ui.button(format!("+  {}", v.title)).clicked() {
                     core.act(Action::Reveal(p));
                     ui.close();
                 }
             }
         }
-        let commands = core.slot(&m).and_then(|s| s.module()).map(|m| m.commands()).unwrap_or_default();
-        if !commands.is_empty() {
-            ui.separator();
-            ui.menu_button(tr("Commandes"), |ui| {
-                for c in commands {
-                    let text = match c.shortcut {
-                        Some(sc) => format!("{}    {sc}", c.title),
-                        None => c.title.clone(),
-                    };
-                    if ui.button(text).clicked() {
-                        core.act(Action::RunCommand { module: m.clone(), command: c.id.clone() });
-                        ui.close();
-                    }
-                }
-            });
-        }
+        // Les commandes du module sont dans Modules › module et dans la palette : pas ici.
     }
     ui.separator();
     if ui

@@ -722,6 +722,53 @@ fn a_successful_add_clears_the_form() {
     assert!(h.get_by_label(add).accesskit_node().is_disabled(), "ajouté : le jeton a quitté le formulaire");
 }
 
+/// Les boutons de la barre d'activité (à gauche de la fenêtre) qui portent ce nom.
+fn activity_buttons(h: &Harness<'static, Suite>, label: &str) -> Vec<egui::Rect> {
+    use egui_kittest::kittest::Queryable;
+    h.query_all_by_label(label).map(|n| n.rect()).filter(|r| r.right() <= 48.0).collect()
+}
+
+#[test]
+fn the_overview_comes_first_in_the_activity_bar() {
+    let h = suite();
+    let overview = activity_buttons(&h, crate::i18n::tr("Vue d'ensemble"));
+    let carnet = activity_buttons(&h, "Carnet");
+    assert_eq!((overview.len(), carnet.len()), (1, 1), "un bouton chacun");
+    assert!(overview[0].top() < carnet[0].top(), "la vue d'ensemble au-dessus des modules");
+}
+
+#[test]
+fn the_bell_is_only_in_the_menu_bar() {
+    let h = suite();
+    assert!(
+        activity_buttons(&h, crate::i18n::tr("Notifications")).is_empty(),
+        "pas de cloche dans la barre d'activité"
+    );
+    assert_eq!(activity_buttons(&h, crate::i18n::tr("Réglages d'Eyrie")).len(), 1, "la molette reste en bas");
+}
+
+#[test]
+fn the_menu_bar_buttons_on_the_right_are_spaced() {
+    use egui_kittest::kittest::Queryable;
+    let h = suite();
+    let bell = h.get_by_label("🔔").rect();
+    let commands = h.get_by_label(&format!("⌕ {}  F1", crate::i18n::tr("Commandes"))).rect();
+    assert!(bell.left() - commands.right() >= 12.0, "{commands:?} puis {bell:?}");
+}
+
+/// Les commandes d'un module sont dans Modules › module : le menu ⋯ de la case ne les répète pas.
+#[test]
+fn the_pane_menu_does_not_repeat_the_module_commands() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = suite();
+    act(&mut h, Action::Reveal(notes()));
+    act(&mut h, Action::ClosePane(Pane::Suite { view: SuiteView::Overview }));
+    h.get_by_label("⋯").click();
+    h.run_steps(3);
+    assert!(h.query_by_label(&format!("✕  {}", crate::i18n::tr("Fermer la case"))).is_some(), "menu de la case ouvert");
+    assert!(h.query_by_label(crate::i18n::tr("Commandes")).is_none(), "pas de sous-menu Commandes");
+}
+
 /// Fermés dans une fenêtre détachée, les réglages oublient aussi une demande de retrait en attente.
 #[test]
 fn a_pending_removal_is_forgotten_when_a_detached_window_closes_its_settings() {

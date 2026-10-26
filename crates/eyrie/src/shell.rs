@@ -126,6 +126,7 @@ fn menu_bar(suite: &mut Suite, ui: &mut egui::Ui) {
         });
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 16.0;
             let unread = suite.core.notes.unread();
             let bell = if unread > 0 { format!("🔔 {unread}") } else { "🔔".to_string() };
             let color = if unread > 0 { p.accent } else { p.text_dim };
@@ -324,10 +325,12 @@ fn modules_menu(suite: &mut Suite, ui: &mut egui::Ui) {
     }
 }
 
-/// Une icône de la barre d'activité, avec sa pastille.
+/// Une icône de la barre d'activité, avec sa pastille ; `label` est son nom pour l'accessibilité.
+#[allow(clippy::too_many_arguments)]
 fn activity_button(
     ui: &mut egui::Ui,
     icon: &str,
+    label: &str,
     color: Color32,
     badge: Option<(String, Color32)>,
     shown: bool,
@@ -336,6 +339,7 @@ fn activity_button(
 ) -> egui::Response {
     let size = egui::vec2(40.0, 38.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
     let painter = ui.painter_at(rect.expand(2.0));
     if resp.hovered() || focused {
         painter.rect_filled(rect, egui::CornerRadius::same(p.radius), p.surface_hover);
@@ -364,6 +368,15 @@ fn activity_bar(suite: &mut Suite, ui: &mut egui::Ui) {
     let mut actions = Vec::new();
     ui.vertical_centered(|ui| {
         ui.spacing_mut().item_spacing.y = 4.0;
+        // La vue d'ensemble d'abord, au-dessus des modules.
+        let shown = suite.locate(&Pane::Suite { view: SuiteView::Overview }).is_some();
+        if activity_button(ui, "⌂", tr("Vue d'ensemble"), p.text_muted, None, shown, false, p)
+            .on_hover_text(tr("Vue d'ensemble (Alt+Maj+O)"))
+            .clicked()
+        {
+            actions.push(Action::Reveal(Pane::Suite { view: SuiteView::Overview }));
+        }
+        ui.separator();
         let mut i = 0;
         for s in &suite.core.slots {
             if matches!(s.state, SlotState::Disabled) {
@@ -383,7 +396,7 @@ fn activity_bar(suite: &mut Suite, ui: &mut egui::Ui) {
             let color = if s.is_running() { suite_sdk::theme::readable(p, s.info.color) } else { p.text_dim };
             let shown = suite.core.shown_prev.contains(s.info.id);
             let focused = suite.core.focus.module.as_deref() == Some(s.info.id);
-            let resp = activity_button(ui, s.info.icon, color, badge, shown, focused, p);
+            let resp = activity_button(ui, s.info.icon, s.info.name, color, badge, shown, focused, p);
             let state = match &s.state {
                 SlotState::Running(m) => m.status().badge.map(|b| b.tip).unwrap_or_default(),
                 SlotState::Unavailable(u) => crate::app::unavailable_text(u),
@@ -416,28 +429,11 @@ fn activity_bar(suite: &mut Suite, ui: &mut egui::Ui) {
                 }
             });
         }
+        // Les notifications sont dans la barre de menus (la cloche) : seule la molette reste en bas.
         ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
-            if activity_button(ui, "⚙", p.text_muted, None, false, false, p)
-                .on_hover_text(tr("Réglages d'Eyrie"))
-                .clicked()
-            {
+            let label = tr("Réglages d'Eyrie");
+            if activity_button(ui, "⚙", label, p.text_muted, None, false, false, p).on_hover_text(label).clicked() {
                 actions.push(Action::OpenSettings(settings::Page::General));
-            }
-            let unread = suite.core.notes.unread();
-            let badge = (unread > 0).then(|| (unread.to_string(), p.accent));
-            let shown = suite.locate(&Pane::Suite { view: SuiteView::Notifications }).is_some();
-            if activity_button(ui, "🔔", p.text_muted, badge, shown, false, p)
-                .on_hover_text(tr("Notifications"))
-                .clicked()
-            {
-                actions.push(Action::Reveal(Pane::Suite { view: SuiteView::Notifications }));
-            }
-            let shown = suite.locate(&Pane::Suite { view: SuiteView::Overview }).is_some();
-            if activity_button(ui, "⌂", p.text_muted, None, shown, false, p)
-                .on_hover_text(tr("Vue d'ensemble (Alt+Maj+O)"))
-                .clicked()
-            {
-                actions.push(Action::Reveal(Pane::Suite { view: SuiteView::Overview }));
             }
         });
     });
