@@ -256,9 +256,15 @@ impl Parts {
     }
 }
 
-/// « 23 % » ; « 0,4 % » sous 1 %.
+/// « 23 % » ; « 0,4 % » sous 1 % ; « < 0,1 % » pour presque rien.
 pub fn pct_text(p: f64) -> String {
-    if p > 0.0 && p < 1.0 { format!("{:.1} %", p).replace('.', ",") } else { format!("{:.0} %", p) }
+    if p > 0.0 && p < 0.05 {
+        "< 0,1 %".into()
+    } else if p > 0.0 && p < 1.0 {
+        format!("{:.1} %", p).replace('.', ",")
+    } else {
+        format!("{:.0} %", p)
+    }
 }
 
 /// L'heure locale d'un instant Unix, au format `fmt`.

@@ -437,8 +437,10 @@ impl Suite {
                         data: serde_json::json!({ "dir": dir, "titre": "Ouvert par la suite" }),
                     });
                 }
+                // `module:<id>`, ou `module:<id>:<vue>`.
                 m if m.starts_with("module:") => {
-                    self.core.act(Action::Reveal(Pane::module(&m[7..], suite_sdk::ViewInfo::MAIN)))
+                    let (id, view) = m[7..].split_once(':').unwrap_or((&m[7..], suite_sdk::ViewInfo::MAIN));
+                    self.core.act(Action::Reveal(Pane::module(id, view)))
                 }
                 m if m.starts_with("theme:") => {
                     let t = match &m[6..] {

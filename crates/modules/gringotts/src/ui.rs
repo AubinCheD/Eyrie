@@ -137,9 +137,11 @@ pub fn ago(t: i64, now: i64) -> String {
 
 /// « 12,34 $ ».
 pub fn money(d: f64) -> String {
-    if d > 0.0 && d < 0.01 {
+    if d > 0.0 && d < 0.005 {
         return "< 0,01 $".into();
     }
+    // Pas de « -0,00 » (une somme vide de flottants vaut -0).
+    let d = if d.abs() < 0.005 { 0.0 } else { d };
     let s = format!("{d:.2}");
     let (int, dec) = s.split_once('.').unwrap_or((&s, "00"));
     let mut grouped = String::new();
@@ -230,25 +232,28 @@ fn account_card(ui: &mut egui::Ui, p: &Palette, a: &AccountInfo, now: i64) {
         .corner_radius(egui::CornerRadius::same(p.radius))
         .inner_margin(egui::Margin::same(12))
         .show(ui, |ui| {
-            ui.set_width(330.0);
-            ui.label(RichText::new(&a.label).strong().color(p.text));
-            for kind in Kind::ALL {
-                let Some(w) = a.last.window(kind) else { continue };
-                let pct = crate::current(w, now);
-                ui.horizontal(|ui| {
-                    ui.add_sized([62.0, 18.0], egui::Label::new(RichText::new(kind.label()).color(p.text_muted)));
-                    bar(ui, p, pct, 160.0, 10.0);
-                    ui.label(RichText::new(readings::pct_text(pct)).strong().color(tone_color(p, pct)));
-                });
-                let fmt = if kind == Kind::FiveHour { "%H:%M" } else { "%d/%m à %H:%M" };
-                let reset = if w.resets_at <= now {
-                    "remise à zéro depuis le relevé".to_string()
-                } else {
-                    format!("remise à zéro {} ({})", readings::local(w.resets_at, fmt), until(w.resets_at, now))
-                };
-                ui.label(RichText::new(reset).small().color(p.text_dim));
-            }
-            ui.label(RichText::new(format!("relevé {}", ago(a.last.t, now))).small().color(p.text_dim));
+            // Dans une rangée de cartes : le contenu de la carte, lui, va de haut en bas.
+            ui.vertical(|ui| {
+                ui.set_width(330.0);
+                ui.label(RichText::new(&a.label).strong().color(p.text));
+                for kind in Kind::ALL {
+                    let Some(w) = a.last.window(kind) else { continue };
+                    let pct = crate::current(w, now);
+                    ui.horizontal(|ui| {
+                        ui.add_sized([62.0, 18.0], egui::Label::new(RichText::new(kind.label()).color(p.text_muted)));
+                        bar(ui, p, pct, 180.0, 10.0);
+                        ui.label(RichText::new(readings::pct_text(pct)).strong().color(tone_color(p, pct)));
+                    });
+                    let fmt = if kind == Kind::FiveHour { "%H:%M" } else { "%d/%m à %H:%M" };
+                    let reset = if w.resets_at <= now {
+                        "remise à zéro depuis le relevé".to_string()
+                    } else {
+                        format!("remise à zéro {} ({})", readings::local(w.resets_at, fmt), until(w.resets_at, now))
+                    };
+                    ui.label(RichText::new(reset).small().color(p.text_dim));
+                }
+                ui.label(RichText::new(format!("relevé {}", ago(a.last.t, now))).small().color(p.text_dim));
+            });
         });
 }
 
@@ -410,9 +415,11 @@ pub fn conversations(ui: &mut egui::Ui, p: &Palette, d: &Data, v: &mut ViewState
         chip(ui, rows.len().to_string(), "conversations", p.text);
         chip(ui, tokens(total_tokens), "jetons", p.text);
         chip(ui, money(total_cost), "équivalent API", p.accent);
+        // Parts cumulées : en fenêtres entières (100 % = une fenêtre de 5 h, ou une semaine, toute entière).
         if five > 0.0 || week > 0.0 {
-            chip(ui, readings::pct_text(five), "de fenêtres de 5 h", p.text);
-            chip(ui, readings::pct_text(week), "de semaines", p.text);
+            let windows = |x: f64| format!("{:.1}", x / 100.0).replace('.', ",");
+            chip(ui, windows(five), "fenêtres de 5 h (équivalent)", p.text);
+            chip(ui, windows(week), "semaines (équivalent)", p.text);
         }
         if overflow > 0.0 {
             chip(ui, money(overflow), "limite atteinte (dépassement)", p.danger);
@@ -474,10 +481,22 @@ fn by_repo(ui: &mut egui::Ui, p: &Palette, rows: &[(&Conversation, &ConvStats)],
 
 const ROW: f32 = 22.0;
 
+/// Les colonnes de droite (chiffres) s'alignent à droite.
+const RIGHT: [bool; 8] = [false, false, false, false, true, true, true, true];
+
+/// Une case du tableau, de largeur exacte : ce qui dépasse est coupé (« … »).
+fn cell<R>(ui: &mut egui::Ui, width: f32, right: bool, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let (_, rect) = ui.allocate_space(vec2(width, ROW));
+    let layout = if right { Layout::right_to_left(Align::Center) } else { Layout::left_to_right(Align::Center) };
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(layout));
+    child.set_clip_rect(rect.intersect(ui.clip_rect()));
+    add(&mut child)
+}
+
 /// Le tableau des conversations ; un clic sur un titre de colonne trie.
 fn table(ui: &mut egui::Ui, p: &Palette, rows: &[(&Conversation, &ConvStats)], v: &mut ViewState, now: i64) {
     let widths = |avail: f32| {
-        let fixed = [104.0, 120.0, 0.0, 120.0, 64.0, 76.0, 62.0, 62.0];
+        let fixed = [96.0, 110.0, 0.0, 110.0, 64.0, 76.0, 64.0, 70.0];
         let flex = (avail - fixed.iter().sum::<f32>() - 8.0 * 6.0).max(140.0);
         let mut w = fixed;
         w[2] = flex;
@@ -509,7 +528,7 @@ fn table(ui: &mut egui::Ui, p: &Palette, rows: &[(&Conversation, &ConvStats)], v
                 _ => "",
             };
             let text = RichText::new(format!("{label}{arrow}")).strong().color(p.text_muted);
-            let resp = ui.add_sized([w[i], ROW], egui::Button::new(text).frame(false));
+            let resp = cell(ui, w[i], RIGHT[i], |ui| ui.add(egui::Button::new(text).frame(false)));
             if let Some(c) = col
                 && resp.clicked()
             {
@@ -536,32 +555,25 @@ fn table(ui: &mut egui::Ui, p: &Palette, rows: &[(&Conversation, &ConvStats)], v
                 // Le fond d'une ligne sur deux, sous le texte (sa taille n'est connue qu'après).
                 let stripe = ui.painter().add(egui::Shape::Noop);
                 let row = ui.horizontal(|ui| {
-                    let cell = |ui: &mut egui::Ui, i: usize, text: RichText, right: bool| {
-                        let layout = if right {
-                            Layout::right_to_left(Align::Center)
-                        } else {
-                            Layout::left_to_right(Align::Center)
-                        };
-                        ui.allocate_ui_with_layout(vec2(w[i], ROW), layout, |ui| {
-                            ui.add(egui::Label::new(text).truncate());
-                        });
+                    let text_cell = |ui: &mut egui::Ui, i: usize, text: RichText| {
+                        cell(ui, w[i], RIGHT[i], |ui| ui.add(egui::Label::new(text).truncate()));
                     };
                     let dim = if c.gone { p.text_dim } else { p.text };
-                    cell(ui, 0, RichText::new(readings::local(c.ended, "%d/%m %H:%M")).color(p.text_dim), false);
-                    cell(ui, 1, RichText::new(c.repo()).color(p.text_muted), false);
+                    text_cell(ui, 0, RichText::new(readings::local(c.ended, "%d/%m %H:%M")).color(p.text_dim));
+                    text_cell(ui, 1, RichText::new(c.repo()).color(p.text_muted));
                     let title = if c.gone { format!("{} (transcription effacée)", c.title) } else { c.title.clone() };
-                    cell(ui, 2, RichText::new(title).color(dim), false);
-                    cell(ui, 3, RichText::new(c.models().join(", ")).small().color(p.text_dim), false);
-                    cell(ui, 4, RichText::new(tokens(s.tokens)).color(p.text_muted), true);
+                    text_cell(ui, 2, RichText::new(title).color(dim));
+                    text_cell(ui, 3, RichText::new(c.models().join(", ")).small().color(p.text_dim));
+                    text_cell(ui, 4, RichText::new(tokens(s.tokens)).color(p.text_muted));
                     let cost_color = if s.overflow > 0.0 { p.danger } else { p.text };
-                    cell(ui, 5, RichText::new(money(s.cost)).color(cost_color), true);
+                    text_cell(ui, 5, RichText::new(money(s.cost)).color(cost_color));
                     for (k, i) in [(0usize, 6usize), (1, 7)] {
                         let text = match (&s.account, s.share[k]) {
                             (None, _) => "—".to_string(),
                             (Some(_), x) if s.estimated => format!("≈ {}", readings::pct_text(x)),
                             (Some(_), x) => readings::pct_text(x),
                         };
-                        cell(ui, i, RichText::new(text).color(p.text_muted), true);
+                        text_cell(ui, i, RichText::new(text).color(p.text_muted));
                     }
                 });
                 if (range.start + n) % 2 == 1 {
