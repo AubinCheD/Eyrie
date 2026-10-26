@@ -11,7 +11,7 @@ Le raisonnement est dans `reflexions.md`, le constat technique dans `etat-des-li
 | Conception de l'intégration (questions ouvertes de `reflexions.md` §11) | choix provisoires (23/10) : `premier-jet.md` §5 |
 | Premier jet de l'hôte, sans toucher au code des modules | fait (23/10) : `premier-jet.md`, `README.md` ; branche `premier-jet` |
 | Étape 2 : premières retouches dans les modules, essais approfondis | fait (23/10) : `etape-2.md` ; branches `suite/etape-2` et `suite/module` |
-| Retouches du 26/10 (deux listes de l'utilisateur) | fait : branches `suite/retouches` (Eyrie, DragonTree, Owlery) ; ci-dessous |
+| Retouches du 26/10 (deux listes de l'utilisateur) | fait : branches `suite/retouches` (Eyrie, DragonTree, Owlery, Grimoire) ; ci-dessous |
 
 ## Fait le 26/10
 
@@ -26,8 +26,14 @@ Le raisonnement est dans `reflexions.md`, le constat technique dans `etat-des-li
   (maximum, heure des 100 %, dépassement), limites en cours dans la barre d'état d'Eyrie
   (`ModuleStatus::status_line`), relais `eyrie.exe --ligne-d-etat` (ligne d'état de Claude Code : part de la
   conversation dans chaque terminal). Grimoire embarqué n'a plus d'onglet Consommation.
-- Reste : icône d'Eyrie (choix en cours sur la page des propositions), édition des réglages de Claude dans Grimoire
-  (éditeur JSON, liste des réglages connus, édition clé par clé).
+- **Réglages de Claude Code dans Grimoire** (branche `suite/retouches` de Grimoire) :
+  - catalogue des 231 réglages du schéma de SchemaStore (embarqué) : type, valeurs permises, défaut, description,
+    valeur en vigueur et sa source ;
+  - édition d'un réglage à la fois dans le fichier utilisateur, projet ou local, sans réécrire le reste du fichier
+    (`jsonedit.rs`) ;
+  - éditeur JSON : coloration, numéros de ligne, mise en forme, remarques du schéma (clé inconnue et sa suggestion,
+    type inattendu).
+- Reste : icône d'Eyrie (choix en cours sur la page des propositions).
 
 ## Fait dans le premier jet (23/10)
 
