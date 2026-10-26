@@ -11,7 +11,7 @@ Le raisonnement est dans `reflexions.md`, le constat technique dans `etat-des-li
 | Conception de l'intégration (questions ouvertes de `reflexions.md` §11) | choix provisoires (23/10) : `premier-jet.md` §5 |
 | Premier jet de l'hôte, sans toucher au code des modules | fait (23/10) : `premier-jet.md`, `README.md` ; branche `premier-jet` |
 | Étape 2 : premières retouches dans les modules, essais approfondis | fait (23/10) : `etape-2.md` ; branches `suite/etape-2` et `suite/module` |
-| Retouches du 26/10 (deux listes de l'utilisateur) | fait : branches `suite/retouches` (Eyrie, DragonTree, Owlery, Grimoire) ; ci-dessous |
+| Retouches du 26/10 (deux listes de l'utilisateur) | fait : branches `suite/retouches` (Eyrie, DragonTree, Owlery, Grimoire, Menagerie) ; ci-dessous |
 
 ## Fait le 26/10
 
@@ -33,7 +33,11 @@ Le raisonnement est dans `reflexions.md`, le constat technique dans `etat-des-li
     (`jsonedit.rs`) ;
   - éditeur JSON : coloration, numéros de ligne, mise en forme, remarques du schéma (clé inconnue et sa suggestion,
     type inattendu).
-- Reste : icône d'Eyrie (choix en cours sur la page des propositions).
+- **Icône d'Eyrie** : D24, « la fleur », choisie pour l'instant (`nest.rs`) ; fenêtres, barre de titre et exécutable
+  (`build.rs`, ressource écrite comme pour Fawkes, avec les informations de version).
+- **Tests corrigés** : Grimoire (SID d'Entra ID, délais comptant l'attente des lancements), Menagerie (branche
+  `suite/retouches` : lancement lent, journal créé par le relais, arrêt asynchrone), essais d'Eyrie sur les modules
+  réels (un par un, même lancés ensemble).
 
 ## Fait dans le premier jet (23/10)
 
