@@ -21,8 +21,13 @@ Le raisonnement est dans `reflexions.md`, le constat technique dans `etat-des-li
   seul ; réglage « barre de titre de Windows » dans Eyrie. Dans Eyrie, Fawkes n'affiche plus la sienne dans sa case.
 - Phénix de Fawkes à la place de son glyphe (`ModuleInfo::logo`).
 - DragonTree aux couleurs de la suite quand il est embarqué ; fenêtre Cloner bornée. Owlery : filtre par compte.
-- À concevoir avec l'utilisateur : icône d'Eyrie (propositions faites), édition des réglages de Claude et suivi de
-  consommation dans Grimoire.
+- **Gringotts** (module natif, `crates/modules/gringotts`) : consommation de Claude conversation par conversation
+  (coût équivalent API, part des limites mesurée entre deux relevés, estimée hors relevés), historique des limites
+  (maximum, heure des 100 %, dépassement), limites en cours dans la barre d'état d'Eyrie
+  (`ModuleStatus::status_line`), relais `eyrie.exe --ligne-d-etat` (ligne d'état de Claude Code : part de la
+  conversation dans chaque terminal). Grimoire embarqué n'a plus d'onglet Consommation.
+- Reste : icône d'Eyrie (choix en cours sur la page des propositions), édition des réglages de Claude dans Grimoire
+  (éditeur JSON, liste des réglages connus, édition clé par clé).
 
 ## Fait dans le premier jet (23/10)
 
