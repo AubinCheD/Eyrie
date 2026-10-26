@@ -38,6 +38,9 @@ Le raisonnement est dans `reflexions.md`, le constat technique dans `etat-des-li
 - **Tests corrigés** : Grimoire (SID d'Entra ID, délais comptant l'attente des lancements), Menagerie (branche
   `suite/retouches` : lancement lent, journal créé par le relais, arrêt asynchrone), essais d'Eyrie sur les modules
   réels (un par un, même lancés ensemble).
+- **Menagerie** : « Arrêter » et « Relancer » ne figent plus l'interface (arrêt dans un fil, fin relevée par `tick`,
+  « arrêt en cours… »). Restent synchrones : quitter, retirer un service, libérer un port avant un autre lancement,
+  arrêter un programme lancé hors de Menagerie.
 
 ## Fait dans le premier jet (23/10)
 
