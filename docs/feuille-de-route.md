@@ -48,6 +48,9 @@ Le raisonnement est dans `reflexions.md`, le constat technique dans `etat-des-li
 
 ## Chantiers à part
 
+- Recherche globale au milieu du bandeau (demande du 26/10) : faisable en trois paliers, étude dans
+  `recherche-globale.md` ; à planifier après les menus dans le bandeau.
+
 - Traduction de Fawkes, Patronus, Owlery, Menagerie, Grimoire (3 à 5 j chacun).
 - Contrat par tube côté Fawkes (rien n'existe encore, alors que tous les modules le visent).
 - Harmonisation des contrats existants (noms de tube SID ou nom d'utilisateur, `demande` / `action` /
