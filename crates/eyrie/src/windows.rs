@@ -76,7 +76,7 @@ pub fn show_all(suite: &mut Suite, ctx: &egui::Context, frame: &mut eframe::Fram
             .with_title(&title)
             .with_inner_size(w.initial_size)
             .with_min_inner_size([360.0, 240.0])
-            .with_icon(std::sync::Arc::new(crate::icon::window_icon()));
+            .with_icon(crate::icon::window_icon());
         if let Some(p) = w.initial_pos {
             builder = builder.with_position(p);
         }

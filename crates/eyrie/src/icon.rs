@@ -1,54 +1,19 @@
-//! Icône de la suite, dessinée : quatre cases de couleurs, comme les modules qu'elle réunit. Et l'image des modules
-//! qui en ont une (le phénix de Fawkes), à la place de leur glyphe.
+//! Icône de la suite (le nid de `nest.rs`, aussi celle de l'exécutable). Et l'image des modules qui en ont une
+//! (le phénix de Fawkes), à la place de leur glyphe.
 
 use eframe::egui::{self, Color32, IntoAtoms as _};
 use suite_sdk::ModuleInfo;
 
-const COLORS: [[u8; 3]; 4] = [[0x5b, 0x8d, 0xef], [0xe0, 0x8a, 0x5c], [0x4c, 0xb8, 0x72], [0xb0, 0x5c, 0xc9]];
+use crate::nest::render;
 
-pub fn render(size: usize) -> Vec<u8> {
-    let mut rgba = vec![0u8; size * size * 4];
-    let s = size as f32;
-    let gap = (s * 0.06).max(1.0);
-    let half = (s - gap) / 2.0;
-    let radius = s * 0.12;
-    for y in 0..size {
-        for x in 0..size {
-            let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
-            let col = if fx < half {
-                0
-            } else if fx > half + gap {
-                1
-            } else {
-                continue;
-            };
-            let row = if fy < half {
-                0
-            } else if fy > half + gap {
-                1
-            } else {
-                continue;
-            };
-            // Coin arrondi de chaque case.
-            let (x0, y0) = (col as f32 * (half + gap), row as f32 * (half + gap));
-            let (lx, ly) = (fx - x0, fy - y0);
-            let dx = (radius - lx).max(lx - (half - radius)).max(0.0);
-            let dy = (radius - ly).max(ly - (half - radius)).max(0.0);
-            let alpha = (radius + 0.5 - (dx * dx + dy * dy).sqrt()).clamp(0.0, 1.0);
-            if alpha <= 0.0 {
-                continue;
-            }
-            let c = COLORS[row * 2 + col];
-            let i = (y * size + x) * 4;
-            rgba[i..i + 4].copy_from_slice(&[c[0], c[1], c[2], (alpha * 255.0) as u8]);
-        }
-    }
-    rgba
-}
-
-pub fn window_icon() -> egui::IconData {
-    let size = 64;
-    egui::IconData { rgba: render(size), width: size as u32, height: size as u32 }
+/// L'icône des fenêtres, dessinée une fois : les fenêtres détachées la redonnent à chaque image.
+pub fn window_icon() -> std::sync::Arc<egui::IconData> {
+    static ICON: std::sync::OnceLock<std::sync::Arc<egui::IconData>> = std::sync::OnceLock::new();
+    ICON.get_or_init(|| {
+        let size = 64;
+        std::sync::Arc::new(egui::IconData { rgba: render(size), width: size as u32, height: size as u32 })
+    })
+    .clone()
 }
 
 /// L'icône de la suite, pour sa barre de titre.
@@ -120,12 +85,58 @@ pub fn paint_logo(painter: &egui::Painter, t: &egui::TextureHandle, rect: egui::
 #[cfg(test)]
 mod tests {
     #[test]
-    fn icon_has_four_opaque_tiles_and_a_transparent_gap() {
+    fn icon_is_the_nest_with_its_eggs_and_golden_heart() {
         let size = 64;
         let px = super::render(size);
-        let alpha = |x: usize, y: usize| px[(y * size + x) * 4 + 3];
-        assert_eq!(alpha(16, 16), 255);
-        assert_eq!(alpha(48, 48), 255);
-        assert_eq!(alpha(32, 16), 0, "l'interstice entre les cases reste transparent");
+        let at = |x: usize, y: usize| <[u8; 4]>::try_from(&px[(y * size + x) * 4..][..4]).unwrap();
+        assert_eq!(at(0, 0)[3], 0, "hors de la tuile, transparent");
+        assert_eq!(at(4, 31), [0x1b, 0x1d, 0x22, 255], "la tuile");
+        assert_eq!(at(31, 31), [0xe8, 0xb8, 0x4a, 255], "le cœur doré");
+        assert_eq!(at(31, 22), [0xf2, 0x6d, 0x3b, 255], "l'œuf du haut, aux couleurs de Fawkes");
+    }
+
+    #[cfg(windows)]
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain([0]).collect()
+    }
+
+    /// L'exécutable porte l'icône (Explorateur, raccourcis, barre des tâches épinglée) : `build.rs`.
+    #[cfg(windows)]
+    #[test]
+    fn exe_has_icon() {
+        use windows_sys::Win32::UI::Shell::ExtractIconExW;
+        let path = wide(&std::env::current_exe().unwrap().to_string_lossy());
+        // SAFETY : chemin terminé par zéro ; -1 demande seulement le nombre d'icônes.
+        let count = unsafe { ExtractIconExW(path.as_ptr(), -1, std::ptr::null_mut(), std::ptr::null_mut(), 0) };
+        assert!(count >= 1, "aucune icône dans l'exécutable");
+    }
+
+    /// Et ses informations de version (Propriétés > Détails, Gestionnaire des tâches).
+    #[cfg(windows)]
+    #[test]
+    fn exe_has_version_info() {
+        use windows_sys::Win32::Storage::FileSystem::{GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW};
+        let path = wide(&std::env::current_exe().unwrap().to_string_lossy());
+        // Français (France), Unicode : la table écrite par `build.rs`.
+        let read = |key: &str| -> Option<String> {
+            // SAFETY : tampon de la taille annoncée ; la valeur lue pointe dans ce tampon, encore vivant.
+            unsafe {
+                let size = GetFileVersionInfoSizeW(path.as_ptr(), std::ptr::null_mut());
+                let mut data = vec![0u8; size as usize];
+                if size == 0 || GetFileVersionInfoW(path.as_ptr(), 0, size, data.as_mut_ptr().cast()) == 0 {
+                    return None;
+                }
+                let (mut p, mut len) = (std::ptr::null_mut(), 0u32);
+                let q = wide(&format!(r"\StringFileInfo\040C04B0\{key}"));
+                if VerQueryValueW(data.as_ptr().cast(), q.as_ptr(), &mut p, &mut len) == 0 || len == 0 {
+                    return None;
+                }
+                let s = std::slice::from_raw_parts(p.cast::<u16>(), len as usize);
+                Some(String::from_utf16_lossy(s).trim_end_matches('\0').to_string())
+            }
+        };
+        assert_eq!(read("ProductName").as_deref(), Some("Eyrie"));
+        assert_eq!(read("OriginalFilename").as_deref(), Some("eyrie.exe"));
+        assert_eq!(read("ProductVersion").as_deref(), Some(env!("CARGO_PKG_VERSION")));
     }
 }

@@ -14,6 +14,7 @@ mod i18n;
 mod icon;
 mod layout;
 mod migrate;
+mod nest;
 mod palette;
 mod persist;
 mod popups;
@@ -146,7 +147,7 @@ fn main() -> eframe::Result {
         .with_maximized(geom.maximized)
         // Sans la barre de titre de Windows, Eyrie dessine la sienne, menus compris (`suite_titlebar`).
         .with_decorations(loaded.value.native_title_bar)
-        .with_icon(std::sync::Arc::new(icon::window_icon()));
+        .with_icon(icon::window_icon());
     let pos = geom.pos.filter(|p| screens::on_some_monitor(*p));
     if let Some(p) = pos {
         viewport = viewport.with_position(p);
