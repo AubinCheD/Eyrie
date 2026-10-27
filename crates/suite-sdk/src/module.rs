@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use eframe::egui;
 
 use crate::host::{Event, Host, Request, Tone};
+use crate::mobile;
 use crate::shortcut::Shortcut;
 
 /// D'où vient le module.
@@ -187,6 +188,36 @@ pub trait Module {
     }
 
     fn on_exit(&mut self) {}
+
+    // --- Le téléphone (voir `docs/mobile.md`) ---
+
+    /// L'écran `path` du module sur le téléphone (`""` : son accueil). `None` : pas d'écran mobile, l'hôte en montre
+    /// un générique (état, ce qui attend, commandes).
+    fn mobile_screen(&mut self, _path: &str, _cx: &mut Cx) -> Option<mobile::ui::Screen> {
+        None
+    }
+
+    /// Une action d'un écran mobile. L'hôte ne l'appelle que pour une action que le dernier écran `path` envoyé au
+    /// téléphone proposait. `Ok(Some(texte))` : un message à montrer au téléphone.
+    fn mobile_action(
+        &mut self,
+        _path: &str,
+        _action: &str,
+        _input: Option<&str>,
+        _cx: &mut Cx,
+    ) -> Result<Option<String>, String> {
+        Err("action inconnue".into())
+    }
+
+    /// Le terminal `id` suivi depuis le téléphone : l'écran et au plus `history` lignes d'historique.
+    fn mobile_term(&mut self, _id: &str, _history: usize) -> Option<mobile::term::TermView> {
+        None
+    }
+
+    /// Une saisie du téléphone dans le terminal `id`.
+    fn mobile_term_input(&mut self, _id: &str, _input: &mobile::term::TermInput, _cx: &mut Cx) -> Result<(), String> {
+        Err("pas de terminal".into())
+    }
 }
 
 /// Où un module embarqué range son état dans la suite.

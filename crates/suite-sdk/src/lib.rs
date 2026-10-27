@@ -7,7 +7,8 @@
 //! - [`embed`] : l'adaptateur qui fait d'une application eframe existante un module, sans toucher
 //!   à son code ;
 //! - [`theme`], [`fonts`], [`i18n`], [`shortcut`] : le design commun ;
-//! - [`state`], [`instance`] : fichiers d'état robustes et instance unique.
+//! - [`state`], [`instance`] : fichiers d'état robustes et instance unique ;
+//! - [`mobile`] : ce qu'un module montre au téléphone (le protocole `suite-mobile`).
 
 pub mod embed;
 pub mod fonts;
@@ -21,6 +22,8 @@ pub mod theme;
 
 pub use eframe;
 pub use egui;
+/// Le protocole du téléphone : écrans, terminal (voir `docs/mobile.md`).
+pub use suite_mobile as mobile;
 
 pub use host::{Event, Host, Notification, Request, Tone};
 pub use module::{

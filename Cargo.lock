@@ -4265,6 +4265,7 @@ dependencies = [
  "epaint",
  "serde",
  "serde_json",
+ "suite-mobile",
  "windows-sys 0.61.2",
 ]
 

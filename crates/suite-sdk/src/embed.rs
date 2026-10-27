@@ -16,6 +16,7 @@ use std::any::Any;
 use eframe::egui;
 
 use crate::host::{Host, Request};
+use crate::mobile;
 use crate::module::{Badge, CloseCheck, CommandInfo, Cx, Module, ModuleInfo, ModuleStatus, ViewInfo};
 use crate::shortcut::Shortcut;
 
@@ -42,6 +43,10 @@ type TitleParser = fn(&str) -> Option<Badge>;
 type EventHook<A> = Box<dyn FnMut(&mut A, &crate::host::Event, &mut Cx)>;
 type PanelHook<A> = Box<dyn FnMut(&mut A, &mut egui::Ui)>;
 type LeftHook<A> = Box<dyn FnMut(&mut A)>;
+type ScreenHook<A> = Box<dyn FnMut(&mut A, &str, &mut Cx) -> Option<mobile::ui::Screen>>;
+type ActionHook<A> = Box<dyn FnMut(&mut A, &str, &str, Option<&str>, &mut Cx) -> Result<Option<String>, String>>;
+type TermHook<A> = Box<dyn FnMut(&mut A, &str, usize) -> Option<mobile::term::TermView>>;
+type TermInputHook<A> = Box<dyn FnMut(&mut A, &str, &mobile::term::TermInput, &mut Cx) -> Result<(), String>>;
 
 /// Une application eframe vue comme un module.
 pub struct Embedded<A: eframe::App> {
@@ -66,6 +71,10 @@ pub struct Embedded<A: eframe::App> {
     request_hook: Option<RequestHook<A>>,
     settings_panel: Option<PanelHook<A>>,
     settings_left: Option<LeftHook<A>>,
+    mobile_screen: Option<ScreenHook<A>>,
+    mobile_action: Option<ActionHook<A>>,
+    mobile_term: Option<TermHook<A>>,
+    mobile_term_input: Option<TermInputHook<A>>,
     keep: Vec<Box<dyn Any>>,
 }
 
@@ -91,6 +100,10 @@ impl<A: eframe::App> Embedded<A> {
             request_hook: None,
             settings_panel: None,
             settings_left: None,
+            mobile_screen: None,
+            mobile_action: None,
+            mobile_term: None,
+            mobile_term_input: None,
             keep: Vec::new(),
         }
     }
@@ -171,6 +184,42 @@ impl<A: eframe::App> Embedded<A> {
         f: impl FnMut(&mut A, &Request, &mut Cx) -> Result<serde_json::Value, String> + 'static,
     ) -> Self {
         self.request_hook = Some(Box::new(f));
+        self
+    }
+
+    /// Ses écrans sur le téléphone (`Module::mobile_screen`).
+    pub fn mobile_screens(
+        mut self,
+        f: impl FnMut(&mut A, &str, &mut Cx) -> Option<mobile::ui::Screen> + 'static,
+    ) -> Self {
+        self.mobile_screen = Some(Box::new(f));
+        self
+    }
+
+    /// Les actions de ses écrans sur le téléphone (`Module::mobile_action`).
+    pub fn mobile_actions(
+        mut self,
+        f: impl FnMut(&mut A, &str, &str, Option<&str>, &mut Cx) -> Result<Option<String>, String> + 'static,
+    ) -> Self {
+        self.mobile_action = Some(Box::new(f));
+        self
+    }
+
+    /// Un terminal suivi depuis le téléphone (`Module::mobile_term`).
+    pub fn mobile_terminals(
+        mut self,
+        f: impl FnMut(&mut A, &str, usize) -> Option<mobile::term::TermView> + 'static,
+    ) -> Self {
+        self.mobile_term = Some(Box::new(f));
+        self
+    }
+
+    /// Une saisie du téléphone dans un terminal (`Module::mobile_term_input`).
+    pub fn mobile_terminal_input(
+        mut self,
+        f: impl FnMut(&mut A, &str, &mobile::term::TermInput, &mut Cx) -> Result<(), String> + 'static,
+    ) -> Self {
+        self.mobile_term_input = Some(Box::new(f));
         self
     }
 
@@ -307,6 +356,34 @@ impl<A: eframe::App> Module for Embedded<A> {
         self.app.on_exit(None);
         self.keep.clear();
     }
+
+    fn mobile_screen(&mut self, path: &str, cx: &mut Cx) -> Option<mobile::ui::Screen> {
+        self.mobile_screen.as_mut().and_then(|h| h(&mut self.app, path, cx))
+    }
+
+    fn mobile_action(
+        &mut self,
+        path: &str,
+        action: &str,
+        input: Option<&str>,
+        cx: &mut Cx,
+    ) -> Result<Option<String>, String> {
+        match &mut self.mobile_action {
+            Some(h) => h(&mut self.app, path, action, input, cx),
+            None => Err(format!("{} n'a pas d'action sur le téléphone", self.info.name)),
+        }
+    }
+
+    fn mobile_term(&mut self, id: &str, history: usize) -> Option<mobile::term::TermView> {
+        self.mobile_term.as_mut().and_then(|h| h(&mut self.app, id, history))
+    }
+
+    fn mobile_term_input(&mut self, id: &str, input: &mobile::term::TermInput, cx: &mut Cx) -> Result<(), String> {
+        match &mut self.mobile_term_input {
+            Some(h) => h(&mut self.app, id, input, cx),
+            None => Err(format!("{} n'a pas de terminal", self.info.name)),
+        }
+    }
 }
 
 /// « Nom (3) » → 3 ; pour [`Embedded::title_badge`].
@@ -371,6 +448,25 @@ mod tests {
         tuned.settings_left();
         assert_eq!(plain.app.drawn, 0);
         assert_eq!(tuned.app.drawn, 0, "le module a oublié ce que sa page avait en cours");
+    }
+
+    #[test]
+    fn mobile_hooks_reach_the_app() {
+        let host = Host::new(egui::Context::default(), std::env::temp_dir(), crate::theme::ThemeChoice::Graphite);
+        let mut plain = Embedded::new(info(), host.clone(), Dummy { drawn: 0 });
+        let mut tuned = Embedded::new(info(), host.clone(), Dummy { drawn: 2 })
+            .mobile_screens(|app, path, _| Some(mobile::ui::Screen::new(format!("{path}:{}", app.drawn))))
+            .mobile_actions(|app, _, action, _, _| {
+                app.drawn += 1;
+                Ok(Some(action.to_string()))
+            });
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut cx = Cx { host: &host, frame: &mut frame, active: false, visible: false };
+        assert_eq!(Module::mobile_screen(&mut plain, "", &mut cx), None);
+        assert!(Module::mobile_action(&mut plain, "", "x", None, &mut cx).is_err());
+        assert_eq!(Module::mobile_screen(&mut tuned, "t/1", &mut cx).map(|s| s.title), Some("t/1:2".into()));
+        assert_eq!(Module::mobile_action(&mut tuned, "", "lancer", None, &mut cx), Ok(Some("lancer".into())));
+        assert_eq!(tuned.app.drawn, 3);
     }
 
     #[test]
