@@ -3992,6 +3992,7 @@ dependencies = [
  "eframe",
  "egui_kittest",
  "grimoire",
+ "patronus-core",
  "serde",
  "serde_json",
  "suite-accounts",

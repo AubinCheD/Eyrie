@@ -205,6 +205,9 @@ impl Gringotts {
 
     fn install(&mut self, profile: &Profile) {
         let result = std::env::current_exe().map_err(|e| e.to_string()).and_then(|exe| {
+            // Claude Code lancera cet exécutable dans chaque session : pas s'il peut être remplacé par un autre compte du
+            // poste (la vérification est celle des tâches planifiées de Patronus).
+            patronus_core::exeplace::check(&exe)?;
             // Le relais de Grimoire garde ce qu'il rejoue dans son dossier local (`grimoire-statusline.exe`).
             relay::install(&profile.paths(), &relay::command(&exe), &self.dir, &grimoire::state::local_data_dir())
         });
