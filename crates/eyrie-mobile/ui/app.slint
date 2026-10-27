@@ -1,0 +1,494 @@
+// La fenêtre de l'application : accueil et appairage, puis l'application connectée (barre du haut, un module à la
+// fois, barre du bas), et ce qui passe par-dessus (feuilles d'actions, confirmations, saisies, bulles).
+
+import "fonts/Hack-Regular.ttf";
+import { Theme } from "theme.slint";
+import {
+    UiAct, UiRow, ModuleItem, WaitItem, NoteItem, CommandItem, PcItem, NavItem, TopBar, BottomNav, ActionSheet,
+    ConfirmDialog, Toast, ActButton, Icon
+} from "widgets.slint";
+import { ScreenPage, OverviewPage, MorePage, NotesPage, CommandsPage, SettingsPage } from "pages.slint";
+import { TermView, TermRow } from "term.slint";
+import { Onboarding, CodeEntry, Pairing, Scanner } from "onboarding.slint";
+
+export { Theme, UiAct, UiRow, ModuleItem, WaitItem, NoteItem, CommandItem, PcItem, NavItem, TermRow }
+export { TermSeg } from "term.slint";
+
+export component AppWindow inherits Window {
+    title: "Eyrie";
+    background: Theme.bg;
+    preferred-width: 412px;
+    preferred-height: 892px;
+    default-font-size: 15px;
+    forward-focus: focus;
+
+    // --- Où l'on est ---
+    // 0 accueil, 1 code saisi, 2 appairage, 3 lecteur de QR code, 4 application connectée.
+    in property <int> page;
+    // `ensemble`, l'identifiant d'un module, `plus`, `notes`, `commandes`, `reglages`.
+    in property <string> tab: "ensemble";
+    in property <string> screen-title: "Ensemble";
+    in property <string> subtitle;
+    in property <bool> can-back;
+    in property <[UiAct]> screen-acts;
+    in property <bool> show-pc;
+    in property <bool> terminal-mode;
+
+    // --- Le lien avec le PC : 0 connexion, 1 en ligne, 2 hors ligne, 3 refusé ---
+    in property <int> link-state;
+    in property <string> link-text;
+    in property <string> pc-name;
+
+    // --- Données ---
+    in property <[NavItem]> nav;
+    in property <[ModuleItem]> modules;
+    in property <[WaitItem]> waiting;
+    in property <[NoteItem]> notes;
+    in property <[NoteItem]> recent-notes;
+    in property <int> unread;
+    in property <[CommandItem]> commands;
+    in-out property <string> command-filter;
+    in property <[UiRow]> rows;
+    in property <bool> loading;
+    in property <string> missing;
+
+    // --- Terminal ---
+    in property <[TermRow]> term-rows;
+    in property <int> term-cols: 80;
+    in property <int> term-cursor-row: -1;
+    in property <int> term-cursor-col;
+    in property <float> term-zoom: 1;
+    in property <bool> term-ended;
+    in property <bool> term-waiting;
+    in property <[string]> term-replies;
+    in property <bool> term-can-type: true;
+    in-out property <string> term-draft;
+    out property <bool> term-at-bottom: term.at-bottom;
+
+    // --- Accueil et appairage ---
+    in property <image> logo;
+    in property <bool> can-scan;
+    in property <bool> has-pc;
+    in-out property <string> code-host;
+    in-out property <string> code-code;
+    in-out property <string> code-link;
+    in property <string> code-error;
+    in property <string> pairing-pc;
+    in property <string> pairing-sas;
+    in property <int> pairing-stage;
+    in property <string> pairing-error;
+    in property <image> scanner-frame;
+    in property <string> scanner-hint: "Visez le QR code affiché par Eyrie, sur le PC.";
+
+    // --- Réglages ---
+    in property <string> pc-host;
+    in property <string> eyrie-version;
+    in property <string> rights-text;
+    in property <string> app-version;
+    in property <string> fingerprint;
+    in property <[PcItem]> pcs;
+    in-out property <string> device-name;
+    in property <int> text-size;
+
+    // --- Bulle ---
+    in property <string> toast-text;
+    in property <int> toast-tone;
+    in-out property <bool> toast-visible;
+
+    // --- Vers le code ---
+    callback nav-select(string);
+    callback open-path(string);
+    callback back-requested() -> bool;
+    callback run-act(UiAct, string);
+    callback open-url(string);
+    callback haptic();
+    callback toggle-pin(string);
+    callback open-extra(string);
+    callback notes-read();
+    callback run-command(CommandItem);
+    callback filter-edited(string);
+    callback set-theme(int);
+    callback set-text-size(int);
+    callback rename-device(string);
+    callback switch-pc(string);
+    callback pair-another();
+    callback forget-pc();
+    callback retry-link();
+    callback start-scan();
+    callback enter-code();
+    callback submit-code();
+    callback cancel-pairing();
+    callback retry-pairing();
+    callback pairing-done();
+    callback onboarding-back();
+    callback term-send-line(string);
+    callback term-key(string);
+    callback term-reply(int);
+    callback term-zoom-by(float);
+
+    public function term-scroll-to-end() {
+        term.scroll-to-end();
+    }
+
+    // --- Ce qui passe par-dessus ---
+    property <bool> sheet-visible;
+    property <string> sheet-title;
+    property <[UiAct]> sheet-acts;
+    property <UiAct> pending;
+    property <bool> confirm-visible;
+    property <bool> forget-visible;
+    property <bool> input-visible;
+    property <string> input-text;
+
+    property <bool> kb-visible: root.virtual-keyboard-size.width > 0px && root.virtual-keyboard-size.height > 0px;
+    property <length> bottom-inset: root.kb-visible ? max(root.safe-area-insets.bottom, root.height - root.virtual-keyboard-position.y) : root.safe-area-insets.bottom;
+
+    // Une action : lien local, sinon confirmation, saisie, puis envoi.
+    function start-act(a: UiAct) {
+        root.sheet-visible = false;
+        if a.url != "" {
+            root.open-url(a.url);
+            return;
+        }
+        root.pending = a;
+        if a.confirm != "" {
+            root.confirm-visible = true;
+            return;
+        }
+        if a.has-input {
+            root.input-text = a.input-value;
+            root.input-visible = true;
+            return;
+        }
+        root.run-act(a, "");
+    }
+
+    function show-sheet(title: string, acts: [UiAct]) {
+        root.sheet-title = title;
+        root.sheet-acts = acts;
+        root.sheet-visible = true;
+        root.haptic();
+    }
+
+    focus := FocusScope {
+        key-pressed(e) => {
+            if e.text == Key.Back || e.text == Key.Escape {
+                if root.sheet-visible || root.confirm-visible || root.input-visible || root.forget-visible {
+                    root.sheet-visible = false;
+                    root.confirm-visible = false;
+                    root.input-visible = false;
+                    root.forget-visible = false;
+                    return accept;
+                }
+                if root.back-requested() {
+                    return accept;
+                }
+            }
+            reject
+        }
+
+        Rectangle {
+            x: root.safe-area-insets.left;
+            y: root.safe-area-insets.top;
+            width: root.width - root.safe-area-insets.left - root.safe-area-insets.right;
+            height: root.height - root.safe-area-insets.top - root.bottom-inset;
+
+            if root.page == 0: Onboarding {
+                logo: root.logo;
+                can-scan: root.can-scan;
+                back-possible: root.has-pc;
+                scan => { root.start-scan(); }
+                enter-code => { root.enter-code(); }
+                back => { root.onboarding-back(); }
+            }
+            if root.page == 1: CodeEntry {
+                host <=> root.code-host;
+                code <=> root.code-code;
+                link <=> root.code-link;
+                error: root.code-error;
+                submit => { root.submit-code(); }
+                cancel => { root.cancel-pairing(); }
+            }
+            if root.page == 2: Pairing {
+                pc: root.pairing-pc;
+                sas: root.pairing-sas;
+                stage: root.pairing-stage;
+                error: root.pairing-error;
+                cancel => { root.cancel-pairing(); }
+                retry => { root.retry-pairing(); }
+                done => { root.pairing-done(); }
+            }
+            if root.page == 3: Scanner {
+                frame: root.scanner-frame;
+                hint: root.scanner-hint;
+                cancel => { root.cancel-pairing(); }
+                enter-code => { root.enter-code(); }
+            }
+            VerticalLayout {
+                visible: root.page == 4;
+                TopBar {
+                    title: root.screen-title;
+                    subtitle: root.subtitle;
+                    can-back: root.can-back;
+                    acts: root.screen-acts;
+                    show-pc: root.show-pc;
+                    pc => {
+                        root.haptic();
+                        root.run-act({ id: "@pc", label: "Montrer sur le PC" }, "");
+                    }
+                    back => { root.back-requested(); }
+                    act(a) => { root.start-act(a); }
+                    more => { root.show-sheet(root.screen-title, root.screen-acts); }
+                }
+                // Hors ligne : les dernières données restent, un bandeau le dit.
+                if root.link-state != 1: Rectangle {
+                    height: 40px;
+                    background: root.link-state == 3 ? Theme.danger.with-alpha(0.16) : Theme.warn.with-alpha(0.16);
+                    HorizontalLayout {
+                        padding-left: Theme.pad;
+                        padding-right: Theme.pad;
+                        spacing: 8px;
+                        Text {
+                            text: root.link-text;
+                            color: Theme.text;
+                            font-size: 13.5px;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                        }
+                        if root.link-state != 0: Text {
+                            text: "Réessayer";
+                            color: Theme.accent;
+                            font-size: 13.5px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                            TouchArea {
+                                clicked => { root.retry-link(); }
+                            }
+                        }
+                    }
+                }
+                Rectangle {
+                    vertical-stretch: 1;
+                    if root.tab == "ensemble": OverviewPage {
+                        pc-name: root.pc-name;
+                        link-text: root.link-text;
+                        link-tone: root.link-state == 1 ? 2 : root.link-state == 3 ? 4 : 3;
+                        waiting: root.waiting;
+                        modules: root.modules;
+                        notes: root.recent-notes;
+                        unread: root.unread;
+                        open-module(id) => { root.nav-select(id); }
+                        open-notes => { root.open-extra("notes"); }
+                    }
+                    if root.tab == "plus": MorePage {
+                        modules: root.modules;
+                        unread: root.unread;
+                        open-module(id) => { root.nav-select(id); }
+                        toggle-pin(id) => {
+                            root.haptic();
+                            root.toggle-pin(id);
+                        }
+                        open(what) => { root.open-extra(what); }
+                    }
+                    if root.tab == "notes": NotesPage {
+                        notes: root.notes;
+                    }
+                    if root.tab == "commandes": CommandsPage {
+                        commands: root.commands;
+                        filter <=> root.command-filter;
+                        run(c) => {
+                            root.pending = { id: c.id, label: c.title, confirm: "Exécuter « " + c.title + " » sur le PC ?" };
+                            root.confirm-visible = true;
+                            root.selected-command = c;
+                        }
+                        filter-edited(t) => { root.filter-edited(t); }
+                    }
+                    if root.tab == "reglages": SettingsPage {
+                        pc-name: root.pc-name;
+                        pc-host: root.pc-host;
+                        link-text: root.link-text;
+                        eyrie-version: root.eyrie-version;
+                        rights-text: root.rights-text;
+                        app-version: root.app-version;
+                        fingerprint: root.fingerprint;
+                        pcs: root.pcs;
+                        device-name <=> root.device-name;
+                        theme-choice: Theme.choice;
+                        text-size: root.text-size;
+                        set-theme(i) => { root.set-theme(i); }
+                        set-text-size(i) => { root.set-text-size(i); }
+                        rename-device(n) => { root.rename-device(n); }
+                        switch-pc(id) => { root.switch-pc(id); }
+                        pair-another => { root.pair-another(); }
+                        forget-pc => { root.forget-visible = true; }
+                    }
+                    if !root.terminal-mode && root.tab != "ensemble" && root.tab != "plus" && root.tab != "notes" && root.tab != "commandes" && root.tab != "reglages": ScreenPage {
+                        rows: root.rows;
+                        loading: root.loading;
+                        missing: root.missing;
+                        open-path(p) => { root.open-path(p); }
+                        act(a) => { root.start-act(a); }
+                        menu(r) => { root.show-sheet(r.title, r.acts); }
+                        haptic => { root.haptic(); }
+                    }
+                    term := TermView {
+                        visible: root.terminal-mode;
+                        rows: root.term-rows;
+                        cols: root.term-cols;
+                        cursor-row: root.term-cursor-row;
+                        cursor-col: root.term-cursor-col;
+                        zoom: root.term-zoom;
+                        ended: root.term-ended;
+                        waiting: root.term-waiting;
+                        replies: root.term-replies;
+                        can-type: root.term-can-type;
+                        draft <=> root.term-draft;
+                        send-line(t) => { root.term-send-line(t); }
+                        key(k) => { root.term-key(k); }
+                        reply(i) => { root.term-reply(i); }
+                        zoom-by(f) => { root.term-zoom-by(f); }
+                        haptic => { root.haptic(); }
+                    }
+                }
+                if !root.kb-visible && !root.terminal-mode: BottomNav {
+                    items: root.nav;
+                    current: root.tab == "notes" || root.tab == "commandes" || root.tab == "reglages" ? "plus" : root.tab;
+                    select(k) => {
+                        root.haptic();
+                        root.nav-select(k);
+                    }
+                }
+            }
+        }
+    }
+
+    property <CommandItem> selected-command;
+
+    // --- Par-dessus ---
+    if root.sheet-visible: ActionSheet {
+        title: root.sheet-title;
+        acts: root.sheet-acts;
+        bottom-inset: root.safe-area-insets.bottom;
+        chosen(a) => { root.start-act(a); }
+        dismissed => { root.sheet-visible = false; }
+    }
+    if root.confirm-visible: ConfirmDialog {
+        text: root.pending.confirm;
+        ok-text: root.pending.style == 2 ? root.pending.label : "Confirmer";
+        danger: root.pending.style == 2;
+        answered(yes) => {
+            root.confirm-visible = false;
+            if !yes {
+                return;
+            }
+            if root.tab == "commandes" {
+                root.run-command(root.selected-command);
+                return;
+            }
+            if root.pending.has-input {
+                root.input-text = root.pending.input-value;
+                root.input-visible = true;
+                return;
+            }
+            root.run-act(root.pending, "");
+        }
+    }
+    if root.forget-visible: ConfirmDialog {
+        text: "Oublier « " + root.pc-name + " » ? Il faudra l'appairer de nouveau pour le piloter.";
+        ok-text: "Oublier";
+        danger: true;
+        answered(yes) => {
+            root.forget-visible = false;
+            if yes {
+                root.forget-pc();
+            }
+        }
+    }
+    if root.input-visible: Rectangle {
+        background: Theme.scrim;
+        TouchArea {
+            clicked => { root.input-visible = false; }
+        }
+        Rectangle {
+            y: max(24px, (parent.height - root.bottom-inset - self.height) / 2);
+            width: min(parent.width - 32px, 420px);
+            height: input-col.preferred-height;
+            border-radius: 22px;
+            background: Theme.surface;
+            TouchArea { }
+            input-col := VerticalLayout {
+                padding: 22px;
+                spacing: 14px;
+                Text {
+                    text: root.pending.input-label != "" ? root.pending.input-label : root.pending.label;
+                    color: Theme.text;
+                    font-size: 17px;
+                    font-weight: 600;
+                    wrap: word-wrap;
+                }
+                Rectangle {
+                    height: root.pending.multiline ? 120px : 48px;
+                    border-radius: 12px;
+                    background: Theme.surface-2;
+                    border-width: field.has-focus ? 2px : 0;
+                    border-color: Theme.accent;
+                    field := TextInput {
+                        x: 12px;
+                        y: root.pending.multiline ? 10px : 0;
+                        width: parent.width - 24px;
+                        height: root.pending.multiline ? parent.height - 20px : parent.height;
+                        text <=> root.input-text;
+                        color: Theme.text;
+                        font-size: 16px;
+                        vertical-alignment: root.pending.multiline ? TextVerticalAlignment.top : TextVerticalAlignment.center;
+                        single-line: !root.pending.multiline;
+                        wrap: root.pending.multiline ? TextWrap.word-wrap : TextWrap.no-wrap;
+                        accepted => {
+                            root.input-visible = false;
+                            root.run-act(root.pending, root.input-text);
+                        }
+                        init => { self.focus(); }
+                    }
+                    if root.input-text == "": Text {
+                        x: 12px;
+                        y: root.pending.multiline ? 10px : 0;
+                        height: root.pending.multiline ? 24px : parent.height;
+                        text: root.pending.input-placeholder;
+                        color: Theme.text-faint;
+                        font-size: 16px;
+                        vertical-alignment: center;
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 10px;
+                    alignment: end;
+                    ActButton {
+                        text: "Annuler";
+                        clicked => { root.input-visible = false; }
+                    }
+                    ActButton {
+                        text: root.pending.label;
+                        style: 1;
+                        clicked => {
+                            root.input-visible = false;
+                            root.run-act(root.pending, root.input-text);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if root.toast-visible: Toast {
+        x: 16px;
+        width: parent.width - 32px;
+        y: parent.height - root.bottom-inset - (root.terminal-mode ? 170px : 84px) - self.height;
+        text: root.toast-text;
+        tone: root.toast-tone;
+    }
+    Timer {
+        interval: 3200ms;
+        running: root.toast-visible;
+        triggered => { root.toast-visible = false; }
+    }
+}

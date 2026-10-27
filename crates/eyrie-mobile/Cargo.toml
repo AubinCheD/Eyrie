@@ -1,0 +1,35 @@
+[package]
+name = "eyrie-mobile"
+description = "Eyrie sur le téléphone : piloter le PC par Tailscale"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+name = "eyrie_mobile"
+crate-type = ["rlib", "cdylib"]
+
+[[bin]]
+name = "eyrie-mobile"
+path = "src/main.rs"
+
+[dependencies]
+suite-mobile.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+slint = { version = "1.18", default-features = false, features = ["std", "compat-1-2", "renderer-femtovg"] }
+image.workspace = true
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+slint = { version = "1.18", default-features = false, features = ["backend-winit", "renderer-software", "accessibility"] }
+dirs.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+slint = { version = "1.18", default-features = false, features = ["backend-android-activity-06"] }
+jni = "0.21"
+ndk-sys = "0.6"
+rqrr = "0.10"
+
+[build-dependencies]
+slint-build = "1.18"

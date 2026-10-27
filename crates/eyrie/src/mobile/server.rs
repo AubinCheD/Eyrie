@@ -336,8 +336,10 @@ fn serve(mut stream: TcpStream, shared: Arc<Shared>) {
                 if tx.send(&welcome).is_err() {
                     return;
                 }
-                let _ = stream.set_read_timeout(Some(IDLE));
-                let _ = stream.set_write_timeout(Some(IDLE));
+                // Sous Windows, les délais sont propres à chaque descripteur : ceux des copies de lecture et d'écriture
+                // (faites avant la poignée de main) sont réglés elles-mêmes.
+                let _ = rx.get_ref().set_read_timeout(Some(IDLE));
+                let _ = tx.get_mut().set_write_timeout(Some(IDLE));
                 let (out, queue) = mpsc::channel::<ToPhone>();
                 let closer = stream.try_clone();
                 let _ = std::thread::Builder::new().name("mobile-envoi".into()).spawn(move || {
@@ -399,14 +401,13 @@ fn serve(mut stream: TcpStream, shared: Arc<Shared>) {
                     at: Instant::now(),
                     reply,
                 }));
-                let _ = stream.set_read_timeout(Some(DECISION + Duration::from_secs(5)));
+
                 match decision.recv_timeout(DECISION) {
                     Ok(true) => {
                         if tx.send(&ToPhone::Paired { pc: shared.pc_name.clone() }).is_err() {
                             return;
                         }
-                        // Le téléphone enchaîne avec `Hello` sur la même connexion.
-                        let _ = stream.set_read_timeout(Some(OPENING));
+                        // Le téléphone enchaîne avec `Hello` sur la même connexion (ou se reconnecte).
                     }
                     _ => {
                         refuse(&mut tx, "Appairage refusé sur le PC.");
@@ -487,13 +488,39 @@ mod tests {
         assert!(!s.has_ticket(), "ticket consommé");
     }
 
+    /// Les copies de lecture gardent le délai d'ouverture sous Windows s'il n'est pas changé sur elles : une session
+    /// calme (le téléphone envoie `Ping` toutes les 15 s) ne doit pas tomber au bout de 10 s.
+    #[test]
+    fn an_idle_session_outlives_the_opening_delay() {
+        let s = shared(None);
+        let server = Server::start(s.clone(), 0).unwrap();
+        let phone = Keypair::generate();
+        s.set_devices(vec![DeviceAuth {
+            id: "a1".into(),
+            name: "Pixel".into(),
+            key: phone.public,
+            login: String::new(),
+            rights: Rights::default(),
+        }]);
+        let mut c = open(&server, &phone);
+        client::hello(&mut c, &s.key.public, "x", "y").unwrap();
+        std::thread::sleep(OPENING + Duration::from_secs(2));
+        c.tx.send(&ToPc::Ping).unwrap();
+        let Inbound::Message { msg, .. } =
+            wait_inbox(&s, |i| matches!(i, Inbound::Message { .. } | Inbound::Disconnected { .. }))
+        else {
+            panic!("session fermée pendant qu'elle était calme");
+        };
+        assert_eq!(msg, ToPc::Ping);
+    }
+
     #[test]
     fn a_wrong_or_expired_code_is_refused() {
         let s = shared(None);
         let server = Server::start(s.clone(), 0).unwrap();
         s.add_ticket(&[pairing::new_secret()], Duration::from_secs(60));
         let mut c = open(&server, &Keypair::generate());
-        let err = client::pair(&mut c, &pairing::new_secret(), None, "x", "y").unwrap_err();
+        let err = client::pair(&mut c, &pairing::new_secret(), None, "x", "y").unwrap_err().to_string();
         assert!(err.contains("Code faux"), "{err}");
         let secret = pairing::new_secret();
         s.add_ticket(std::slice::from_ref(&secret), Duration::from_millis(1));
@@ -531,7 +558,7 @@ mod tests {
         });
         let mut c = open(&server, &Keypair::generate());
         client::pair(&mut c, &secret, None, "x", "y").unwrap();
-        assert!(client::wait_paired(&mut c).unwrap_err().contains("refusé"));
+        assert!(client::wait_paired(&mut c).unwrap_err().to_string().contains("refusé"));
     }
 
     #[test]
@@ -548,7 +575,7 @@ mod tests {
             client::Connection { rx, tx, peer }
         };
         let mut c = with_header("aubin@exemple.org");
-        let err = client::hello(&mut c, &s.key.public, "x", "y").unwrap_err();
+        let err = client::hello(&mut c, &s.key.public, "x", "y").unwrap_err().to_string();
         assert!(err.contains("pas appairé"), "{err}");
         s.set_devices(vec![DeviceAuth {
             id: "a1".into(),
@@ -558,7 +585,7 @@ mod tests {
             rights: Rights::default(),
         }]);
         let mut c = with_header("intrus@exemple.org");
-        assert!(client::hello(&mut c, &s.key.public, "x", "y").unwrap_err().contains("autre compte"));
+        assert!(client::hello(&mut c, &s.key.public, "x", "y").unwrap_err().to_string().contains("autre compte"));
         let mut c = with_header("aubin@exemple.org");
         assert!(client::hello(&mut c, &s.key.public, "x", "y").is_ok());
     }
@@ -583,7 +610,9 @@ mod tests {
         s.add_ticket(std::slice::from_ref(&secret), Duration::from_secs(60));
         let mut c = open(&server, &Keypair::generate());
         let other_pc = Keypair::generate().public;
-        assert!(client::pair(&mut c, &secret, Some(&other_pc), "x", "y").unwrap_err().contains("clé du PC"));
+        assert!(
+            client::pair(&mut c, &secret, Some(&other_pc), "x", "y").unwrap_err().to_string().contains("clé du PC")
+        );
         assert!(s.has_ticket(), "rien n'a été envoyé : le ticket reste");
     }
 }

@@ -5,6 +5,7 @@ members = [
     "crates/suite-accounts",
     "crates/suite-titlebar",
     "crates/suite-mobile",
+    "crates/eyrie-mobile",
     "crates/eyrie",
     "crates/modules/*",
 ]
@@ -35,6 +36,7 @@ fawkes = { path = "../Fawkes" }
 dragontree-app = { path = "../DragonTree/crates/dragontree-app" }
 dragontree-i18n = { path = "../DragonTree/crates/dragontree-i18n" }
 dragontree-forges = { path = "../DragonTree/crates/dragontree-forges" }
+dragontree-git = { path = "../DragonTree/crates/dragontree-git" }
 patronus-app = { path = "../Patronus/crates/patronus-app" }
 patronus-core = { path = "../Patronus/crates/patronus-core" }
 owlery = { path = "../Owlery" }

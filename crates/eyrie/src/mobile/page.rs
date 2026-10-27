@@ -77,7 +77,14 @@ pub fn page(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui) {
     } else if suite.core.st.mobile.enabled {
         let tailnet = suite.core.tailnet.state();
         let line = match (&tailnet, mobile.local()) {
-            (_, true) => (format!("{} {:?}", tr("Écoute directe (essais) :"), mobile.listening_on()), p.warn),
+            (_, true) => (
+                format!(
+                    "{} {}",
+                    tr("Écoute directe (essais) :"),
+                    mobile.listening_on().map(|a| a.to_string()).unwrap_or_default()
+                ),
+                p.warn,
+            ),
             (Some(suite_fawkes::tailnet::TailnetState::Running { name, .. }), _) if suite.core.tailnet.relays() => {
                 (format!("{} {name}:{}", tr("Joignable sur le tailnet :"), suite_mobile::PORT), p.ok)
             }

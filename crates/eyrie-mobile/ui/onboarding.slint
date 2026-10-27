@@ -1,0 +1,348 @@
+// Avant d'être appairé : l'accueil, le code saisi à la main, l'appairage en cours, le lecteur de QR code.
+
+import { Spinner } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Icon, IconButton, ActButton } from "widgets.slint";
+
+component Step inherits HorizontalLayout {
+    in property <string> n;
+    in property <string> text;
+    spacing: 12px;
+    Rectangle {
+        width: 26px;
+        height: 26px;
+        border-radius: 13px;
+        background: Theme.accent-soft;
+        Text {
+            text: root.n;
+            color: Theme.accent;
+            font-size: 13px;
+            font-weight: 700;
+        }
+    }
+    Text {
+        text: root.text;
+        color: Theme.text-dim;
+        font-size: 14px;
+        wrap: word-wrap;
+        vertical-alignment: center;
+    }
+}
+
+export component Onboarding inherits Rectangle {
+    in property <image> logo;
+    in property <bool> can-scan;
+    in property <bool> back-possible;
+    callback scan();
+    callback enter-code();
+    callback back();
+    Flickable {
+        content-height: max(self.height, col.preferred-height);
+        col := VerticalLayout {
+            alignment: center;
+            padding: 28px;
+            spacing: 18px;
+            Image {
+                source: root.logo;
+                height: 112px;
+                image-fit: contain;
+            }
+            Text {
+                text: "Eyrie, dans la poche";
+                color: Theme.text;
+                font-size: Theme.font-big;
+                font-weight: 800;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+            Text {
+                text: "Suivez vos terminaux, répondez à Claude, lancez vos tâches : tout se fait sur votre PC, en direct.";
+                color: Theme.text-dim;
+                font-size: 15px;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+            Rectangle {
+                border-radius: Theme.radius;
+                background: Theme.surface;
+                height: steps.preferred-height;
+                steps := VerticalLayout {
+                    padding: 16px;
+                    spacing: 12px;
+                    Step {
+                        n: "1";
+                        text: "Ouvrez Tailscale sur ce téléphone, avec le même compte que le PC.";
+                    }
+                    Step {
+                        n: "2";
+                        text: "Sur le PC : Eyrie › Réglages › Téléphones › Afficher le code d'appairage.";
+                    }
+                    Step {
+                        n: "3";
+                        text: "Scannez le QR code, ou saisissez le code, puis confirmez sur le PC.";
+                    }
+                }
+            }
+            if root.can-scan: ActButton {
+                text: "Scanner le QR code";
+                style: 1;
+                clicked => { root.scan(); }
+            }
+            ActButton {
+                text: root.can-scan ? "Saisir le code" : "Saisir le code ou coller le lien";
+                style: root.can-scan ? 0 : 1;
+                clicked => { root.enter-code(); }
+            }
+            if root.back-possible: ActButton {
+                text: "Revenir";
+                clicked => { root.back(); }
+            }
+        }
+    }
+}
+
+component Field inherits Rectangle {
+    in property <string> label;
+    in property <string> placeholder;
+    in-out property <string> text;
+    in property <bool> mono;
+    callback accepted();
+    height: 74px;
+    VerticalLayout {
+        spacing: 6px;
+        Text {
+            text: root.label;
+            color: Theme.text-dim;
+            font-size: 13px;
+            font-weight: 600;
+        }
+        Rectangle {
+            height: 48px;
+            border-radius: 12px;
+            background: Theme.surface;
+            border-width: input.has-focus ? 2px : 1px;
+            border-color: input.has-focus ? Theme.accent : Theme.border;
+            input := TextInput {
+                x: 14px;
+                width: parent.width - 28px;
+                text <=> root.text;
+                color: Theme.text;
+                font-size: 17px;
+                font-family: root.mono ? "Hack" : "";
+                vertical-alignment: center;
+                single-line: true;
+                accepted => { root.accepted(); }
+            }
+            if root.text == "": Text {
+                x: 14px;
+                text: root.placeholder;
+                color: Theme.text-faint;
+                font-size: 17px;
+                vertical-alignment: center;
+                height: parent.height;
+            }
+        }
+    }
+}
+
+export component CodeEntry inherits Rectangle {
+    in-out property <string> host;
+    in-out property <string> code;
+    in-out property <string> link;
+    in property <string> error;
+    callback submit();
+    callback cancel();
+    VerticalLayout {
+        HorizontalLayout {
+            height: 60px;
+            padding-left: 4px;
+            IconButton {
+                icon: "back";
+                clicked => { root.cancel(); }
+            }
+            Text {
+                text: "Saisir le code";
+                color: Theme.text;
+                font-size: 20px;
+                font-weight: 700;
+                vertical-alignment: center;
+            }
+        }
+        Flickable {
+            content-height: col.preferred-height;
+            col := VerticalLayout {
+                alignment: start;
+                padding: 20px;
+                spacing: 14px;
+                Text {
+                    text: "Le PC affiche son nom sur le tailnet et un code de dix caractères, valable cinq minutes.";
+                    color: Theme.text-dim;
+                    font-size: 14px;
+                    wrap: word-wrap;
+                }
+                Field {
+                    label: "PC (nom sur Tailscale)";
+                    placeholder: "suite-mon-pc";
+                    text <=> root.host;
+                }
+                Field {
+                    label: "Code";
+                    placeholder: "K7QF2-M9XP4";
+                    text <=> root.code;
+                    mono: true;
+                    accepted => { root.submit(); }
+                }
+                Text {
+                    text: "Ou collez le lien d'appairage (eyrie://…) :";
+                    color: Theme.text-faint;
+                    font-size: 13px;
+                }
+                Field {
+                    label: "Lien";
+                    placeholder: "eyrie://appairer?…";
+                    text <=> root.link;
+                    accepted => { root.submit(); }
+                }
+                if root.error != "": Text {
+                    text: root.error;
+                    color: Theme.danger;
+                    font-size: 14px;
+                    wrap: word-wrap;
+                }
+                ActButton {
+                    text: "Appairer";
+                    style: 1;
+                    enabled: root.link != "" || (root.host != "" && root.code != "");
+                    clicked => { root.submit(); }
+                }
+            }
+        }
+    }
+}
+
+// L'appairage en cours. `stage` : 0 connexion, 1 code à comparer (attente du PC), 2 réussi, 3 échec.
+export component Pairing inherits Rectangle {
+    in property <string> pc;
+    in property <string> sas;
+    in property <int> stage;
+    in property <string> error;
+    callback cancel();
+    callback retry();
+    callback done();
+    VerticalLayout {
+        alignment: center;
+        padding: 28px;
+        spacing: 20px;
+        if root.stage == 0: Spinner {
+            indeterminate: true;
+            height: 48px;
+        }
+        Text {
+            text: root.stage == 0 ? "Connexion à " + root.pc + "…"
+                : root.stage == 1 ? "Confirmez sur le PC"
+                : root.stage == 2 ? "Appairé"
+                : "Appairage impossible";
+            color: Theme.text;
+            font-size: 22px;
+            font-weight: 700;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+        if root.stage == 1: Text {
+            text: "Le PC affiche le même code. S'il est identique, cliquez sur « Appairer » dans Eyrie.";
+            color: Theme.text-dim;
+            font-size: 15px;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+        if root.stage == 1: Rectangle {
+            height: 96px;
+            border-radius: Theme.radius;
+            background: Theme.surface;
+            Text {
+                text: root.sas;
+                color: Theme.accent;
+                font-size: 44px;
+                font-weight: 800;
+                font-family: "Hack";
+                letter-spacing: 4px;
+            }
+        }
+        if root.stage == 1: Spinner {
+            indeterminate: true;
+            height: 28px;
+        }
+        if root.stage == 2: Icon {
+            kind: "check";
+            tint: Theme.ok;
+            size: 64px;
+        }
+        if root.stage == 3: Text {
+            text: root.error;
+            color: Theme.danger;
+            font-size: 15px;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+        if root.stage == 3: ActButton {
+            text: "Réessayer";
+            style: 1;
+            clicked => { root.retry(); }
+        }
+        if root.stage == 2: ActButton {
+            text: "Continuer";
+            style: 1;
+            clicked => { root.done(); }
+        }
+        if root.stage != 2: ActButton {
+            text: "Annuler";
+            clicked => { root.cancel(); }
+        }
+    }
+}
+
+// Le lecteur de QR code (caméra du téléphone).
+export component Scanner inherits Rectangle {
+    in property <image> frame;
+    in property <string> hint;
+    callback cancel();
+    callback enter-code();
+    background: #000000;
+    Image {
+        source: root.frame;
+        width: parent.width;
+        height: parent.height;
+        image-fit: cover;
+    }
+    // Le viseur.
+    Rectangle {
+        width: min(parent.width, parent.height) * 0.68;
+        height: self.width;
+        border-radius: 24px;
+        border-width: 3px;
+        border-color: #ffffffdd;
+    }
+    VerticalLayout {
+        alignment: end;
+        padding: 24px;
+        spacing: 12px;
+        Text {
+            text: root.hint;
+            color: #ffffff;
+            font-size: 15px;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+        ActButton {
+            text: "Saisir le code à la place";
+            clicked => { root.enter-code(); }
+        }
+    }
+    IconButton {
+        x: 8px;
+        y: 8px;
+        icon: "close";
+        tint: #ffffff;
+        clicked => { root.cancel(); }
+    }
+}

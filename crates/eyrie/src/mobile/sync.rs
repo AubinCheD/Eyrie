@@ -549,7 +549,7 @@ fn generic_screen(core: &Core, module: &str) -> Option<Screen> {
             if !cmds.is_empty() {
                 s.section("Sur le PC", "");
                 for c in cmds {
-                    let act = Act::new(format!("cmd:{}", c.id), c.title.clone()).glyph("▶");
+                    let act = Act::new(format!("cmd:{}", c.id), c.title.clone()).glyph("▶️");
                     s.row(Row::new(c.title).subtitle("S'exécute dans Eyrie, sur le PC").tap(act));
                 }
             }
@@ -591,7 +591,7 @@ fn push_screens(core: &mut Core, frame: &mut eframe::Frame, ctx: &egui::Context)
             let built = match own {
                 Some(mut screen) => {
                     if path.is_empty() {
-                        screen.acts.push(Act::new("@pc", "Montrer sur le PC").glyph("🖥"));
+                        screen.acts.push(Act::new("@pc", "Montrer sur le PC").glyph("🖥️"));
                     }
                     Some((screen, false))
                 }

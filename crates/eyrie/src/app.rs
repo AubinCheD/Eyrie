@@ -423,6 +423,24 @@ impl Suite {
                 "modules" => self.core.act(Action::OpenSettings(settings::Page::Modules)),
                 "raccourcis" => self.core.act(Action::OpenSettings(settings::Page::Shortcuts)),
                 "comptes" => self.core.act(Action::OpenSettings(settings::Page::Accounts)),
+                "telephones" => self.core.act(Action::OpenSettings(settings::Page::Phones)),
+                // Un ticket d'appairage tout de suite ; `EYRIE_CAPTURE_TICKET` : son lien, écrit pour un essai de bout en
+                // bout avec l'application (qui le lit par `EYRIE_MOBILE_PAIR`). Le PC doit quand même confirmer.
+                "appairer" => {
+                    self.core.st.mobile.enabled = true;
+                    self.core.mobile.ensure(true);
+                    let node = match self.core.tailnet.state() {
+                        Some(suite_fawkes::tailnet::TailnetState::Running { name, ip }) => Some((name, ip)),
+                        _ => None,
+                    };
+                    if self.core.mobile.new_ticket(node).is_ok()
+                        && let (Some(path), Some(t)) =
+                            (std::env::var_os("EYRIE_CAPTURE_TICKET"), &self.core.mobile.ticket)
+                    {
+                        let _ = std::fs::write(path, &t.uri);
+                    }
+                    self.core.act(Action::OpenSettings(settings::Page::Phones));
+                }
                 s if s.starts_with("reglages:") => {
                     let id = s.trim_start_matches("reglages:").to_string();
                     self.core.act(Action::OpenSettings(settings::Page::Module(id)));

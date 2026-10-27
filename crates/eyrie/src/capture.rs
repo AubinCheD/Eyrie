@@ -1,6 +1,6 @@
 //! Capture d'écran d'essai : `EYRIE_CAPTURE=<fichier.png>` enregistre la fenêtre principale après
 //! `EYRIE_CAPTURE_AFTER_MS` (4 s par défaut), puis ferme la suite. `EYRIE_CAPTURE_SCENE`
-//! prépare la scène : `palette`, `reglages`, `detacher`, `ensemble`, `concentration`.
+//! prépare la scène : `palette`, `reglages`, `detacher`, `ensemble`, `concentration`, `telephones`, `appairer`.
 
 use std::path::PathBuf;
 use std::sync::Arc;

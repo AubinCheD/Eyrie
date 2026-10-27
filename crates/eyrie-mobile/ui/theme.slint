@@ -1,0 +1,44 @@
+// Les couleurs et mesures de l'application : celles de la suite (Graphite en sombre, Fluent en clair), suivant le
+// thème du téléphone sauf choix contraire dans les réglages.
+
+import { Palette } from "std-widgets.slint";
+
+export global Theme {
+    // 0 : comme le téléphone ; 1 : clair ; 2 : sombre.
+    in-out property <int> choice: 0;
+    out property <bool> dark: choice == 0 ? Palette.color-scheme != ColorScheme.light : choice == 2;
+
+    out property <color> bg: dark ? #16171b : #eef1f6;
+    out property <color> surface: dark ? #1f2127 : #ffffff;
+    out property <color> surface-2: dark ? #272a31 : #e6eaf0;
+    out property <color> pressed: dark ? #30343d : #dce2ea;
+    out property <color> border: dark ? #343842 : #d6dce5;
+    out property <color> text: dark ? #e3e5ea : #1b1d22;
+    out property <color> text-dim: dark ? #9aa0ac : #5c6370;
+    out property <color> text-faint: dark ? #6f7582 : #8a919d;
+    out property <color> accent: dark ? #5b8def : #0067c0;
+    out property <color> on-accent: #ffffff;
+    out property <color> accent-soft: dark ? #5b8def33 : #0067c01f;
+    out property <color> ok: dark ? #4cb872 : #1d7a41;
+    out property <color> warn: dark ? #f2a93b : #b56900;
+    out property <color> danger: dark ? #e5677a : #c42b1c;
+    out property <color> scrim: #00000099;
+    out property <color> term-bg: dark ? #121316 : #fbfcfd;
+    out property <color> term-fg: dark ? #d6d9df : #1b1d22;
+
+    out property <length> radius: 14px;
+    out property <length> radius-small: 9px;
+    out property <length> pad: 16px;
+    out property <length> font-small: 12.5px;
+    out property <length> font-body: 15px;
+    out property <length> font-title: 20px;
+    out property <length> font-big: 28px;
+
+    // Ton : 0 aucun, 1 info, 2 ok, 3 attention, 4 danger.
+    public pure function tone(t: int) -> color {
+        if (t == 2) { return ok; }
+        if (t == 3) { return warn; }
+        if (t == 4) { return danger; }
+        return accent;
+    }
+}

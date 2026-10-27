@@ -15,6 +15,25 @@ pub struct Connection {
     pub peer: Peer,
 }
 
+/// Pourquoi une étape a échoué : le PC a refusé (inutile de réessayer tel quel), ou la connexion s'est rompue.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Failure {
+    Refused(String),
+    Broken(String),
+}
+
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Failure::Refused(s) | Failure::Broken(s) => f.write_str(s),
+        }
+    }
+}
+
+fn broken(e: impl std::fmt::Display) -> Failure {
+    Failure::Broken(e.to_string())
+}
+
 /// Ce que dit le PC à un appareil appairé.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Welcome {
@@ -55,9 +74,9 @@ pub fn open(addrs: &[String], me: &Keypair, timeout: Duration) -> Result<Connect
 }
 
 /// Salue un PC appairé : sa clé doit être celle gardée à l'appairage.
-pub fn hello(conn: &mut Connection, pc_key: &[u8; 32], device: &str, model: &str) -> Result<Welcome, String> {
+pub fn hello(conn: &mut Connection, pc_key: &[u8; 32], device: &str, model: &str) -> Result<Welcome, Failure> {
     if &conn.peer.key != pc_key {
-        return Err("ce n'est pas le PC appairé (clé différente) : connexion refusée".into());
+        return Err(Failure::Refused("ce n'est pas le PC appairé (clé différente) : connexion refusée".into()));
     }
     conn.tx
         .send(&ToPc::Hello {
@@ -66,12 +85,14 @@ pub fn hello(conn: &mut Connection, pc_key: &[u8; 32], device: &str, model: &str
             device: device.into(),
             model: model.into(),
         })
-        .map_err(|e| e.to_string())?;
-    match conn.rx.recv::<ToPhone>().map_err(|e| e.to_string())? {
+        .map_err(broken)?;
+    match conn.rx.recv::<ToPhone>().map_err(broken)? {
         ToPhone::Welcome { protocol, pc, eyrie, rights } if protocol == PROTOCOL => Ok(Welcome { pc, eyrie, rights }),
-        ToPhone::Welcome { .. } => Err("Eyrie et l'application n'ont pas la même version du protocole".into()),
-        ToPhone::Refused { reason } | ToPhone::Bye { reason } => Err(reason),
-        other => Err(format!("réponse inattendue : {other:?}")),
+        ToPhone::Welcome { .. } => {
+            Err(Failure::Refused("Eyrie et l'application n'ont pas la même version du protocole".into()))
+        }
+        ToPhone::Refused { reason } | ToPhone::Bye { reason } => Err(Failure::Refused(reason)),
+        other => Err(broken(format!("réponse inattendue : {other:?}"))),
     }
 }
 
@@ -83,36 +104,36 @@ pub fn pair(
     pc_key: Option<&[u8; 32]>,
     device: &str,
     model: &str,
-) -> Result<String, String> {
+) -> Result<String, Failure> {
     if let Some(k) = pc_key
         && &conn.peer.key != k
     {
-        return Err("la clé du PC ne correspond pas au QR code : appairage arrêté".into());
+        return Err(Failure::Refused("la clé du PC ne correspond pas au QR code : appairage arrêté".into()));
     }
     let proof = pairing::proof(secret, &conn.peer.hash, Role::Phone).to_vec();
     conn.tx
         .send(&ToPc::Pair { protocol: PROTOCOL, proof, device: device.into(), model: model.into() })
-        .map_err(|e| e.to_string())?;
-    match conn.rx.recv::<ToPhone>().map_err(|e| e.to_string())? {
+        .map_err(broken)?;
+    match conn.rx.recv::<ToPhone>().map_err(broken)? {
         ToPhone::PairPending { proof, sas } => {
             if !pairing::verify(secret, &conn.peer.hash, Role::Pc, &proof) {
-                return Err("le PC n'a pas prouvé qu'il connaît le code : appairage arrêté".into());
+                return Err(Failure::Refused("le PC n'a pas prouvé qu'il connaît le code : appairage arrêté".into()));
             }
             if sas != pairing::sas(&conn.peer.hash) {
-                return Err("codes de vérification différents : appairage arrêté".into());
+                return Err(Failure::Refused("codes de vérification différents : appairage arrêté".into()));
             }
             Ok(sas)
         }
-        ToPhone::Refused { reason } | ToPhone::Bye { reason } => Err(reason),
-        other => Err(format!("réponse inattendue : {other:?}")),
+        ToPhone::Refused { reason } | ToPhone::Bye { reason } => Err(Failure::Refused(reason)),
+        other => Err(broken(format!("réponse inattendue : {other:?}"))),
     }
 }
 
 /// Attend la décision de l'utilisateur sur le PC.
-pub fn wait_paired(conn: &mut Connection) -> Result<String, String> {
-    match conn.rx.recv::<ToPhone>().map_err(|e| e.to_string())? {
+pub fn wait_paired(conn: &mut Connection) -> Result<String, Failure> {
+    match conn.rx.recv::<ToPhone>().map_err(broken)? {
         ToPhone::Paired { pc } => Ok(pc),
-        ToPhone::Refused { reason } | ToPhone::Bye { reason } => Err(reason),
-        other => Err(format!("réponse inattendue : {other:?}")),
+        ToPhone::Refused { reason } | ToPhone::Bye { reason } => Err(Failure::Refused(reason)),
+        other => Err(broken(format!("réponse inattendue : {other:?}"))),
     }
 }

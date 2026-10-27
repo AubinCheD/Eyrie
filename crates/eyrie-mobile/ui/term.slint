@@ -1,0 +1,268 @@
+// Un terminal du PC, en direct : la grille (couleurs résolues dans le thème du téléphone), ajustée à la largeur de
+// l'écran et zoomable ; réponses rapides quand Claude attend ; barre de touches ; champ de saisie.
+
+import { ListView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Icon, IconButton } from "widgets.slint";
+
+export struct TermSeg {
+    col: int,
+    len: int,
+    text: string,
+    fg: color,
+    bg: color,
+    has-bg: bool,
+    bold: bool,
+    italic: bool,
+    underline: bool,
+}
+
+export struct TermRow {
+    segs: [TermSeg],
+}
+
+export struct TermKey {
+    label: string,
+    key: string,
+}
+
+component KeyChip inherits Rectangle {
+    in property <string> text;
+    in property <bool> accent;
+    callback clicked();
+    height: 36px;
+    width: max(44px, t.preferred-width + 22px);
+    border-radius: 10px;
+    background: ta.pressed ? Theme.pressed : (accent ? Theme.accent-soft : Theme.surface-2);
+    animate background { duration: 80ms; }
+    t := Text {
+        text: root.text;
+        color: root.accent ? Theme.accent : Theme.text;
+        font-size: 14px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+export component TermView inherits Rectangle {
+    in property <[TermRow]> rows;
+    in property <int> cols: 80;
+    in property <int> cursor-row: -1;
+    in property <int> cursor-col;
+    in property <float> zoom: 1.0;
+    in property <bool> ended;
+    in property <bool> waiting;
+    in property <[string]> replies;
+    in property <bool> can-type: true;
+    in-out property <string> draft;
+    // Le bas de la liste est visible : la sortie qui arrive y reste collée.
+    out property <bool> at-bottom: list.content-y <= list.visible-height - list.content-height + 2 * root.ch;
+    callback send-line(string);
+    callback key(string);
+    callback reply(int);
+    callback zoom-by(float);
+    callback haptic();
+
+    // Ajusté à la largeur : la police mono (Hack) avance de 0,602 em par caractère.
+    property <length> fit-font: (root.width - 30px) / (max(root.cols, 20) * 0.602);
+    property <length> fs: max(5px, min(30px, root.fit-font * root.zoom));
+    out property <length> cw: root.fs * 0.602;
+    out property <length> ch: ceil(root.fs * 1.22 / 1px) * 1px;
+
+    public function scroll-to-end() {
+        list.content-y = min(0px, list.visible-height - list.content-height);
+    }
+
+    background: Theme.term-bg;
+
+    VerticalLayout {
+        Rectangle {
+            vertical-stretch: 1;
+            list := ListView {
+                content-width: root.cols * root.cw + 12px > self.visible-width + 1px ? root.cols * root.cw + 12px : self.visible-width;
+                for row[i] in root.rows: Rectangle {
+                    height: root.ch;
+                    for seg in row.segs: Rectangle {
+                        x: 6px + seg.col * root.cw;
+                        width: seg.len * root.cw;
+                        height: root.ch;
+                        background: seg.has-bg ? seg.bg : transparent;
+                        Text {
+                            x: 0;
+                            text: seg.text;
+                            color: seg.fg;
+                            font-family: "Hack";
+                            font-size: root.fs;
+                            font-weight: seg.bold ? 700 : 400;
+                            font-italic: seg.italic;
+                            vertical-alignment: center;
+                        }
+                        if seg.underline: Rectangle {
+                            y: root.ch - 2px;
+                            height: 1px;
+                            background: seg.fg;
+                        }
+                    }
+                    if i == root.cursor-row: Rectangle {
+                        x: 6px + root.cursor-col * root.cw;
+                        width: max(2px, root.cw);
+                        height: root.ch;
+                        background: Theme.accent.with-alpha(0.55);
+                    }
+                }
+            }
+            // Revenir en bas, quand on a remonté l'historique.
+            if !root.at-bottom: Rectangle {
+                x: parent.width - 60px;
+                y: parent.height - 60px;
+                width: 44px;
+                height: 44px;
+                border-radius: 22px;
+                background: Theme.surface;
+                drop-shadow-blur: 8px;
+                drop-shadow-color: #00000044;
+                Icon {
+                    kind: "down";
+                    tint: Theme.accent;
+                }
+                TouchArea {
+                    clicked => { root.scroll-to-end(); }
+                }
+            }
+        }
+
+        if root.waiting && root.replies.length > 0: Rectangle {
+            height: 52px;
+            background: Theme.warn.with-alpha(0.12);
+            Flickable {
+                content-width: replies-row.preferred-width;
+                replies-row := HorizontalLayout {
+                    padding: 8px;
+                    spacing: 8px;
+                    for r[i] in root.replies: KeyChip {
+                        text: r;
+                        accent: true;
+                        clicked => {
+                            root.haptic();
+                            root.reply(i);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Touches que le clavier du téléphone n'a pas.
+        Rectangle {
+            height: 48px;
+            background: Theme.surface;
+            Flickable {
+                content-width: keys-row.preferred-width;
+                keys-row := HorizontalLayout {
+                    padding: 6px;
+                    spacing: 6px;
+                    KeyChip {
+                        text: "A−";
+                        clicked => { root.zoom-by(1 / 1.15); }
+                    }
+                    KeyChip {
+                        text: "A+";
+                        clicked => { root.zoom-by(1.15); }
+                    }
+                    for k in [
+                        { label: "Échap", key: "escape" },
+                        { label: "Tab", key: "tab" },
+                        { label: "↑", key: "up" },
+                        { label: "↓", key: "down" },
+                        { label: "←", key: "left" },
+                        { label: "→", key: "right" },
+                        { label: "Entrée", key: "enter" },
+                        { label: "Ctrl+C", key: "ctrl-c" },
+                        { label: "Maj+Tab", key: "backtab" },
+                        { label: "Maj+Entrée", key: "shift-enter" },
+                        { label: "Effacer", key: "backspace" },
+                        { label: "Ctrl+D", key: "ctrl-d" },
+                        { label: "Ctrl+R", key: "ctrl-r" },
+                        { label: "Ctrl+L", key: "ctrl-l" },
+                        { label: "Ctrl+Z", key: "ctrl-z" },
+                        { label: "Début", key: "home" },
+                        { label: "Fin", key: "end" },
+                        { label: "Page ↑", key: "pageup" },
+                        { label: "Page ↓", key: "pagedown" },
+                    ]: KeyChip {
+                        text: k.label;
+                        clicked => {
+                            root.haptic();
+                            root.key(k.key);
+                        }
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            height: 58px;
+            background: Theme.surface;
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 6px;
+                padding-top: 8px;
+                padding-bottom: 8px;
+                spacing: 6px;
+                Rectangle {
+                    horizontal-stretch: 1;
+                    border-radius: 21px;
+                    background: Theme.surface-2;
+                    border-width: input.has-focus ? 1.5px : 0;
+                    border-color: Theme.accent;
+                    input := TextInput {
+                        x: 16px;
+                        width: parent.width - 28px;
+                        height: parent.height;
+                        vertical-alignment: center;
+                        text <=> root.draft;
+                        enabled: root.can-type && !root.ended;
+                        color: Theme.text;
+                        font-size: 15px;
+                        single-line: true;
+                        accepted => {
+                            root.send-line(self.text);
+                            self.text = "";
+                        }
+                    }
+                    if root.draft == "": Text {
+                        x: 16px;
+                        text: root.ended ? "Terminal arrêté" : root.can-type ? "Écrire dans le terminal…" : "Saisie non autorisée sur ce PC";
+                        color: Theme.text-faint;
+                        font-size: 15px;
+                        vertical-alignment: center;
+                        height: parent.height;
+                    }
+                }
+                Rectangle {
+                    width: 42px;
+                    height: 42px;
+                    border-radius: 21px;
+                    background: send-ta.pressed ? Theme.accent.darker(0.2) : Theme.accent;
+                    opacity: root.can-type && !root.ended ? 1 : 0.4;
+                    Icon {
+                        kind: "send";
+                        tint: Theme.on-accent;
+                        size: 20px;
+                    }
+                    send-ta := TouchArea {
+                        enabled: root.can-type && !root.ended;
+                        clicked => {
+                            root.haptic();
+                            root.send-line(input.text);
+                            input.text = "";
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
