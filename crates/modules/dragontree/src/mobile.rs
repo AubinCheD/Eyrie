@@ -201,6 +201,15 @@ pub fn home(entries: &[Entry], sweeping: bool) -> Screen {
     s
 }
 
+/// Annuler l'opération en cours, comme le bouton Annuler de sa barre de progression (une fenêtre d'identification
+/// restée ouverte sur le PC, un fetch qui ne répond pas…).
+fn stop_act() -> Act {
+    Act::new("stopper", "Annuler l'opération")
+        .glyph("⏹️")
+        .danger()
+        .confirm("Annuler l'opération en cours dans DragonTree ?")
+}
+
 // --- Ce que DragonTree sait ---
 
 fn short_error(e: &str) -> String {
@@ -692,11 +701,16 @@ impl Phone {
         let view = self.view(key, t, &parts);
         let job = self.job(key, Some(t));
         let busy = job.as_ref().is_some_and(|j| j.tone == Tone::Info);
+        let stoppable = t.running.iter().any(|o| !o.silent);
         let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
         let mut screen = match parts.as_slice() {
             [""] => {
                 let j = job.as_ref().map(|j| (j.text.as_str(), j.tone));
-                return Some(depot::overview(&repo_name(&repo), &repo.display().to_string(), &view, j, busy));
+                let mut s = depot::overview(&repo_name(&repo), &repo.display().to_string(), &view, j, busy);
+                if stoppable {
+                    s.acts.push(stop_act());
+                }
+                return Some(s);
             }
             ["modifs"] => depot::changes(&view, busy),
             ["fichier", f] => depot::file(&view, f, busy)?,
@@ -712,6 +726,9 @@ impl Phone {
         // Ce que fait DragonTree, ou ce qu'a donné sa dernière opération, en tête de chaque écran du dépôt.
         if let Some(j) = job {
             screen.blocks.insert(0, Block::Note { text: j.text, tone: j.tone });
+        }
+        if stoppable {
+            screen.acts.push(stop_act());
         }
         Some(screen)
     }
@@ -756,6 +773,12 @@ impl Phone {
         if verb == "pc" {
             app.show_repo(&repo);
             return Ok((format!("{name} affiché dans DragonTree sur le PC"), true));
+        }
+        if verb == "stopper" {
+            let running = app.repo_tab(&repo).and_then(|t| t.running.iter().find(|o| !o.silent).map(|o| o.id));
+            let id = running.ok_or("Plus rien ne tourne sur ce dépôt.")?;
+            app.cancel_operation(&repo, id);
+            return Ok(("Annulation demandée à DragonTree".into(), false));
         }
         if verb == "actualiser" {
             if app.repo_tab(&repo).is_none() {
@@ -953,6 +976,7 @@ mod tests {
         assert!(h.state().repo_tab(&repo).is_some(), "ouvert dans un onglet de DragonTree");
         assert!(h.state().active_repo_dir().is_none(), "en fond");
         assert!(phone.action(h.state_mut(), "", &format!("fetch:{key}"), None).is_err(), "une seule en attente");
+        assert!(phone.action(h.state_mut(), &format!("depot/{key}"), "stopper", None).is_err(), "rien ne tourne");
         let s = wait_screen(&mut h, &mut phone, &format!("depot/{key}"), "tone: Danger");
         assert!(
             s.blocks
