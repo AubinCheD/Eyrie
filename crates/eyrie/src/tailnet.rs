@@ -27,9 +27,33 @@ pub fn find_companion() -> Option<PathBuf> {
     }
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../Fawkes/target");
     for profile in ["release", "debug"] {
-        candidates.push(repo.join(profile).join(fawkes_tailnet::COMPANION));
+        let built = repo.join(profile).join(fawkes_tailnet::COMPANION);
+        // Le dépôt voisin, à son chemin de compilation, seulement s'il est dans le profil de l'utilisateur : ailleurs
+        // (`D:\build\…`, `C:\agent\…`), un autre compte du poste pourrait créer ce chemin et y déposer un faux
+        // compagnon, qu'Eyrie lancerait sous le compte de l'utilisateur.
+        if dirs::home_dir().is_some_and(|home| inside(&built, &home)) {
+            candidates.push(built);
+        }
     }
     candidates.into_iter().find(|p| p.is_file())
+}
+
+/// `path` est-il dans `dir` (sans `..`, casse ignorée comme sous Windows) ?
+fn inside(path: &Path, dir: &Path) -> bool {
+    let norm = |p: &Path| {
+        let mut out = Vec::new();
+        for c in p.components() {
+            match c {
+                std::path::Component::ParentDir => {
+                    out.pop();
+                }
+                std::path::Component::CurDir => {}
+                c => out.push(c.as_os_str().to_string_lossy().to_lowercase()),
+            }
+        }
+        out
+    };
+    norm(path).starts_with(&norm(dir))
 }
 
 pub fn hostname(settings: &TailnetSettings) -> String {
@@ -97,5 +121,15 @@ mod tests {
         let h = hostname(&TailnetSettings { enabled: true, hostname: String::new() });
         assert!(h.starts_with("suite"), "{h}");
         assert_eq!(hostname(&TailnetSettings { enabled: true, hostname: "Mon Poste".into() }), "mon-poste");
+    }
+
+    /// Le compagnon compilé dans le dépôt voisin n'est cherché que dans le profil de l'utilisateur.
+    #[test]
+    fn the_built_companion_is_looked_for_in_the_profile_only() {
+        let home = Path::new(r"C:\Users\aubin");
+        assert!(inside(Path::new(r"C:\Users\Aubin\DEV\Eyrie\crates\eyrie\../../../Fawkes/target/release/x.exe"), home));
+        assert!(!inside(Path::new(r"D:\build\Eyrie\crates\eyrie\../../../Fawkes/target/release/x.exe"), home));
+        assert!(!inside(Path::new(r"C:\Users\aubin\..\autre\Fawkes\x.exe"), home));
+        assert!(!inside(Path::new(r"C:\Users\aubinette\x.exe"), home));
     }
 }

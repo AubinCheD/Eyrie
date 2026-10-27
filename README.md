@@ -90,7 +90,7 @@ Variables utiles :
 | `EYRIE_CAPTURE=<png>` | capture de la fenêtre principale puis fermeture (essais) |
 | `EYRIE_CAPTURE_AFTER_MS` | délai avant la capture (4000 par défaut) |
 | `EYRIE_CAPTURE_SCENE` | scène : `palette`, `reglages`, `modules`, `raccourcis`, `ensemble`, `journal`, `ressources`, `grille`, `colonnes`, `detacher`, `concentration`, `terminal`, `module:<id>`, `theme:<graphite\|fluent\|nuit>` (séparées par des virgules) |
-| `FAWKES_TAILNET_EXE` | compagnon Tailscale (sinon cherché à côté de l'exe ou dans `../Fawkes/target`) |
+| `FAWKES_TAILNET_EXE` | compagnon Tailscale (sinon cherché à côté de l'exe, ou dans `../Fawkes/target` si ce dépôt est dans le profil de l'utilisateur) |
 | `SUITE_FAWKES_DIR` | autre emplacement des sources de Fawkes |
 
 `eyrie.exe` comprend aussi ce que les modules demandent à leur propre exécutable quand ils
