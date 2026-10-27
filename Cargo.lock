@@ -6193,6 +6193,7 @@ dependencies = [
  "dragontree-git",
  "dragontree-i18n",
  "eframe",
+ "egui_kittest",
  "serde_json",
  "suite-accounts",
  "suite-sdk",

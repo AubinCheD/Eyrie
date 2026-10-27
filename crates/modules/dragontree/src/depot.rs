@@ -1,10 +1,10 @@
-//! Un dépôt sur le téléphone : un client git presque complet, par `dragontree-git` (le même git que DragonTree).
+//! Un dépôt sur le téléphone : un client git presque complet, mené par DragonTree sur le PC.
 //!
 //! Les écrans, tous sous `depot/<clé>` :
 //! - l'accueil du dépôt : branche, suivi, opération en cours (fusion, rebase…) à poursuivre ou abandonner, fetch,
 //!   pull, push, et les rubriques ;
-//! - `modifs` : conflits, indexé, non indexé ; indexer, désindexer, annuler, valider (ou corriger le dernier
-//!   commit), mettre de côté ; `fichier/<f>` : le diff d'un fichier ;
+//! - `modifs` : conflits (garder une version, marquer résolu), indexé, non indexé ; indexer, désindexer, annuler,
+//!   valider (ou corriger le dernier commit), mettre de côté ; `fichier/<f>` : le diff d'un fichier ;
 //! - `historique` : les derniers commits ; `commit/<id>` : message, fichiers, cherry-pick, revert, branche ou
 //!   étiquette ici, reset, sortir ce commit ; `commit/<id>/<f>` : le diff d'un fichier du commit ;
 //! - `branches` : basculer, fusionner, rebaser, pousser, renommer, supprimer, nouvelle branche, suivre une branche
@@ -12,18 +12,18 @@
 //! - `remises` (stash) : appliquer, appliquer et retirer, jeter ; `etiquettes` : pousser, supprimer, créer ;
 //!   `worktrees` : supprimer, élaguer.
 //!
-//! Ce module ne fait qu'écrire les écrans à partir de ce qui a été relevé ([`RepoView`]) et traduire une action en
-//! [`Op`] ; `mobile.rs` relève et exécute dans des fils (git est lent). Un fichier est désigné par une empreinte de
-//! son chemin, un commit par son identifiant, une branche ou une étiquette par son nom (git interdit `:` dans un nom
-//! de référence).
+//! Ce module ne fait qu'écrire les écrans à partir de ce que DragonTree sait du dépôt ([`RepoView`]) et traduire une
+//! action en opération de DragonTree ([`RemoteOp`]) ; `mobile.rs` la lui confie. Un fichier est désigné par une
+//! empreinte de son chemin, un commit par son identifiant, une branche ou une étiquette par son nom (git interdit `:`
+//! dans un nom de référence).
 
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::path::PathBuf;
 
+use dragontree_app::repo::RemoteOp;
 use dragontree_git::{
-    ChangeKind, Commit, CommitInfo, FileChange, FileDiff, FileState, LineKind, OpState, RefsSnapshot, StashEntry,
-    StatusEntry, StatusSnapshot, Worktree,
+    ChangeKind, Commit, CommitInfo, FileChange, FileDiff, FileState, LineKind, Oid, OpState, RefsSnapshot, ResetMode,
+    StashEntry, StatusEntry, StatusSnapshot, Worktree,
 };
 use suite_sdk::mobile::ui::{Act, DIFF_ADDED, DIFF_CONTEXT, DIFF_HEADER, DIFF_REMOVED, Row, Screen, Tone};
 
@@ -39,7 +39,7 @@ pub fn file_key(path: &str) -> String {
     format!("{:x}", h.finish() & 0xffff_ffff)
 }
 
-/// Ce qu'on sait d'un dépôt, relevé par git.
+/// Ce qu'on sait d'un dépôt : ce que DragonTree en a lu, et ce qui a été lu à part pour l'écran (diff, commit).
 #[derive(Clone, Debug, Default)]
 pub struct RepoView {
     pub status: Option<Result<StatusSnapshot, String>>,
@@ -79,56 +79,6 @@ impl RepoView {
         from_upstream
             .or_else(|| self.remotes.iter().find(|r| *r == "origin").cloned())
             .or(self.remotes.first().cloned())
-    }
-}
-
-/// Une opération git demandée depuis le téléphone.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Op {
-    Fetch,
-    Pull { rebase: bool },
-    Push { force: bool },
-    Stage(Vec<String>),
-    Unstage(Vec<String>),
-    Discard { tracked: Vec<String>, untracked: Vec<String> },
-    Commit { message: String, amend: bool },
-    StashSave(Option<String>),
-    StashApply(String),
-    StashPop(String),
-    StashDrop(String),
-    Checkout(String),
-    CheckoutDetached(String),
-    Track { remote_branch: String, local: String },
-    CreateBranch { name: String, start: String },
-    RenameBranch { old: String, new: String },
-    DeleteBranch { name: String, force: bool },
-    PushBranch { name: String, remote: String },
-    Merge(String),
-    Rebase(String),
-    CherryPick(String),
-    Revert(String),
-    Reset { rev: String, mode: Reset },
-    Continue,
-    Abort,
-    Skip,
-    CreateTag { name: String, rev: String },
-    DeleteTag(String),
-    PushTag { name: String, remote: String },
-    RemoveWorktree(PathBuf),
-    PruneWorktrees,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Reset {
-    Soft,
-    Mixed,
-    Hard,
-}
-
-impl Op {
-    /// Les opérations qui passent par le réseau (fetch, pull, push…).
-    pub fn is_network(&self) -> bool {
-        matches!(self, Op::Fetch | Op::Pull { .. } | Op::Push { .. } | Op::PushBranch { .. } | Op::PushTag { .. })
     }
 }
 
@@ -220,17 +170,28 @@ pub fn render_diff(d: &FileDiff) -> Vec<(u8, String)> {
     out
 }
 
-/// Le bandeau d'une opération en cours, et ses boutons.
+/// Le bandeau d'une opération en cours, et ses boutons (comme celui de DragonTree : continuer une fois les conflits
+/// résolus).
 fn op_block(s: &mut Screen, v: &RepoView) {
     let Some(op) = v.op.filter(|o| *o != OpState::None) else { return };
     let conflicts = v.status().map_or(0, |st| st.conflicted().len());
     let text = if conflicts > 0 {
-        format!("{} en cours : {conflicts} conflit(s) à résoudre (sur le PC), puis continuer.", op_name(&op))
+        format!(
+            "{} en cours : {conflicts} conflit(s) à résoudre (Modifications, ou dans DragonTree sur le PC), puis              continuer.",
+            op_name(&op)
+        )
     } else {
         format!("{} en cours : continuer ou abandonner.", op_name(&op))
     };
     s.note(text, Tone::Warn);
-    let mut acts = vec![Act::new("continuer", "Continuer").primary()];
+    let mut acts = Vec::new();
+    if conflicts > 0 {
+        s.row(
+            Row::new("Voir les conflits").detail(conflicts.to_string()).glyph("⚠️").tone(Tone::Danger).open("modifs"),
+        );
+    } else {
+        acts.push(Act::new("continuer", "Continuer").primary());
+    }
     if matches!(op, OpState::Rebase { .. }) {
         acts.push(Act::new("passer", "Passer ce commit").confirm("Passer le commit en cours du rebase ?"));
     }
@@ -271,9 +232,13 @@ pub fn overview(name: &str, path: &str, v: &RepoView, job: Option<(&str, Tone)>,
         let mut acts = vec![Act::new("fetch", "Fetch").glyph("⬇️")];
         if st.ahead > 0 && st.behind > 0 {
             acts.push(
+                Act::new("pull-fusion", "Pull (fusion)")
+                    .confirm("Fusionner la branche distante dans la vôtre (un commit de fusion) ?"),
+            );
+            acts.push(
                 Act::new("pull-rebase", "Pull (rebase)").confirm("Rejouer vos commits sur la branche distante ?"),
             );
-        } else {
+        } else if st.upstream.is_some() {
             acts.push(Act::new("pull", "Pull"));
         }
         if st.upstream.is_some() && st.behind > 0 && st.ahead > 0 {
@@ -323,17 +288,39 @@ pub fn overview(name: &str, path: &str, v: &RepoView, job: Option<(&str, Tone)>,
     s
 }
 
-fn file_row(e: &StatusEntry, staged: bool) -> Row {
+/// Les gestes d'un fichier en conflit : garder une version (puis marqué résolu), ou le marquer résolu tel quel. Dans
+/// un rebase, « notre » version est celle de la base, et la version qui arrive, le commit rejoué.
+fn conflict_acts(v: &RepoView, e: &StatusEntry) -> Vec<Act> {
+    let key = file_key(&e.path);
+    let (ours, theirs) = if matches!(v.op, Some(OpState::Rebase { .. })) {
+        ("Garder la version de la base", "Garder la version du commit rejoué")
+    } else {
+        ("Garder notre version", "Garder la version qui arrive")
+    };
+    let name = e.path.rsplit('/').next().unwrap_or(&e.path);
+    vec![
+        Act::new(format!("garder-local:{key}"), ours)
+            .glyph("⬅️")
+            .confirm(format!("{ours} pour {name} et le marquer résolu ?")),
+        Act::new(format!("garder-entrant:{key}"), theirs)
+            .glyph("➡️")
+            .confirm(format!("{theirs} pour {name} et le marquer résolu ?")),
+        Act::new(format!("indexer:{key}"), "Marquer résolu tel quel")
+            .glyph("✅")
+            .confirm(format!("{name} est-il bien résolu (plus de marques de conflit) ?")),
+    ]
+}
+
+fn file_row(v: &RepoView, e: &StatusEntry, staged: bool) -> Row {
     let key = file_key(&e.path);
     let mut row = Row::new(&e.path).glyph(letter(e, staged).to_string()).open(format!("fichier/{key}"));
     if let Some(old) = &e.orig_path {
         row = row.subtitle(format!("renommé depuis {old}"));
     }
     if e.conflict.is_some() {
-        return row
-            .tone(Tone::Danger)
-            .badge("conflit")
-            .act(Act::new(format!("indexer:{key}"), "Marquer résolu (indexer)"));
+        let mut row = row.tone(Tone::Danger).badge("conflit");
+        row.acts = conflict_acts(v, e);
+        return row;
     }
     if staged {
         row.act(Act::new(format!("desindexer:{key}"), "Désindexer").glyph("➖"))
@@ -411,19 +398,19 @@ pub fn changes(v: &RepoView, busy: bool) -> Screen {
     if !conflicts.is_empty() {
         s.section("Conflits", conflicts.len().to_string());
         for e in conflicts {
-            s.row(quiet(file_row(e, false), busy));
+            s.row(quiet(file_row(v, e, false), busy));
         }
     }
     if !staged.is_empty() {
         s.section("Indexé", staged.len().to_string());
         for e in staged {
-            s.row(quiet(file_row(e, true), busy));
+            s.row(quiet(file_row(v, e, true), busy));
         }
     }
     if !unstaged.is_empty() {
         s.section("Non indexé", unstaged.len().to_string());
         for e in unstaged {
-            s.row(quiet(file_row(e, false), busy));
+            s.row(quiet(file_row(v, e, false), busy));
         }
     }
     if !busy && !st.staged().is_empty() {
@@ -444,7 +431,10 @@ pub fn file(v: &RepoView, key: &str, busy: bool) -> Option<Screen> {
     let unstaged = !matches!(e.worktree, FileState::Unmodified | FileState::Ignored);
     if busy {
         // Pendant une opération : le diff seulement.
-    } else if unstaged || e.conflict.is_some() {
+    } else if e.conflict.is_some() {
+        s.note("Conflit : gardez une version, ou corrigez le fichier sur le PC puis marquez-le résolu.", Tone::Danger);
+        s.acts.extend(conflict_acts(v, e));
+    } else if unstaged {
         s.acts.push(Act::new(format!("indexer:{key}"), "Indexer").glyph("➕"));
     }
     if staged && !busy {
@@ -787,42 +777,59 @@ pub fn worktrees(v: &RepoView, busy: bool) -> Screen {
     s
 }
 
-/// Une action d'un écran du dépôt en opération, avec son libellé pour le journal. `input` : la saisie demandée.
-pub fn parse(v: &RepoView, action: &str, input: Option<&str>) -> Result<(Op, String), String> {
+fn oid(hex: &str) -> Result<Oid, String> {
+    Oid::from_hex(hex).ok_or_else(|| "identifiant de commit illisible".into())
+}
+
+/// Une action d'un écran du dépôt en opération de DragonTree, avec son libellé. `input` : la saisie demandée.
+pub fn parse(v: &RepoView, action: &str, input: Option<&str>) -> Result<(RemoteOp, String), String> {
     let text = || input.map(str::trim).filter(|t| !t.is_empty()).map(str::to_string);
     let needed = || text().ok_or_else(|| "Saisie vide.".to_string());
     let (verb, arg) = action.split_once(':').unwrap_or((action, ""));
     let arg = arg.to_string();
     let st = v.status();
     let file = |key: &str| v.entry(key).ok_or_else(|| "Ce fichier n'est plus dans les modifications.".to_string());
+    let stash = |hex: &str| {
+        let s = v.stashes.iter().find(|s| s.oid.to_hex() == hex).ok_or("Cette remise n'existe plus.")?;
+        Ok::<_, String>((s.oid, s.message.clone()))
+    };
     let op = match verb {
-        "fetch" => (Op::Fetch, "Fetch".into()),
-        "pull" => (Op::Pull { rebase: false }, "Pull".into()),
-        "pull-rebase" => (Op::Pull { rebase: true }, "Pull (rebase)".into()),
-        "push" => (Op::Push { force: false }, "Push".into()),
-        "push-force" => (Op::Push { force: true }, "Push forcé".into()),
+        "fetch" => (RemoteOp::Fetch, "Fetch".into()),
+        "pull" => (RemoteOp::Pull { rebase: None }, "Pull".into()),
+        "pull-fusion" => (RemoteOp::Pull { rebase: Some(false) }, "Pull (fusion)".into()),
+        "pull-rebase" => (RemoteOp::Pull { rebase: Some(true) }, "Pull (rebase)".into()),
+        "push" => (RemoteOp::Push { force: false }, "Push".into()),
+        "push-force" => (RemoteOp::Push { force: true }, "Push forcé".into()),
         "indexer" => {
             let e = file(&arg)?;
-            (Op::Stage(vec![e.path.clone()]), format!("Indexer {}", e.path))
+            (RemoteOp::Stage(vec![e.path.clone()]), format!("Indexer {}", e.path))
         }
         "desindexer" => {
             let e = file(&arg)?;
-            (Op::Unstage(vec![e.path.clone()]), format!("Désindexer {}", e.path))
+            (RemoteOp::Unstage(vec![e.path.clone()]), format!("Désindexer {}", e.path))
+        }
+        "garder-local" | "garder-entrant" => {
+            let e = file(&arg)?;
+            if e.conflict.is_none() {
+                return Err("Ce fichier n'est plus en conflit.".into());
+            }
+            let op = RemoteOp::Resolve { paths: vec![e.path.clone()], ours: verb == "garder-local" };
+            (op, format!("Résoudre {}", e.path))
         }
         "annuler" => {
             let e = file(&arg)?;
             let untracked = e.worktree == FileState::Untracked;
             let (tracked, untracked) =
                 if untracked { (vec![], vec![e.path.clone()]) } else { (vec![e.path.clone()], vec![]) };
-            (Op::Discard { tracked, untracked }, format!("Annuler {}", e.path))
+            (RemoteOp::Discard { tracked, untracked }, format!("Annuler {}", e.path))
         }
         "tout-indexer" => {
             let paths = st.map(|s| s.unstaged().iter().map(|e| e.path.clone()).collect()).unwrap_or_default();
-            (Op::Stage(paths), "Tout indexer".into())
+            (RemoteOp::Stage(paths), "Tout indexer".into())
         }
         "tout-desindexer" => {
             let paths = st.map(|s| s.staged().iter().map(|e| e.path.clone()).collect()).unwrap_or_default();
-            (Op::Unstage(paths), "Tout désindexer".into())
+            (RemoteOp::Unstage(paths), "Tout désindexer".into())
         }
         "tout-annuler" => {
             let (mut tracked, mut untracked) = (Vec::new(), Vec::new());
@@ -833,65 +840,77 @@ pub fn parse(v: &RepoView, action: &str, input: Option<&str>) -> Result<(Op, Str
                     _ => tracked.push(e.path.clone()),
                 }
             }
-            (Op::Discard { tracked, untracked }, "Tout annuler".into())
+            (RemoteOp::Discard { tracked, untracked }, "Tout annuler".into())
         }
         "valider" => {
             if st.is_none_or(|s| s.staged().is_empty()) {
                 return Err("Rien d'indexé : indexez d'abord des modifications.".into());
             }
-            (Op::Commit { message: needed()?, amend: false }, "Valider".into())
+            (RemoteOp::Commit { message: needed()?, amend: false }, "Valider".into())
         }
-        "corriger" => (Op::Commit { message: needed()?, amend: true }, "Corriger le dernier commit".into()),
-        "mettre-de-cote" => (Op::StashSave(text()), "Mettre de côté".into()),
-        "appliquer" => (Op::StashApply(arg), "Appliquer la remise".into()),
-        "depiler" => (Op::StashPop(arg), "Appliquer et retirer la remise".into()),
-        "jeter" => (Op::StashDrop(arg), "Jeter la remise".into()),
-        "basculer" => (Op::Checkout(arg.clone()), format!("Basculer sur {arg}")),
-        "detacher" => (Op::CheckoutDetached(arg.clone()), "Sortir le commit".into()),
+        "corriger" => (RemoteOp::Commit { message: needed()?, amend: true }, "Corriger le dernier commit".into()),
+        "mettre-de-cote" => (RemoteOp::StashSave { message: text().unwrap_or_default() }, "Mettre de côté".into()),
+        "appliquer" => {
+            let (oid, label) = stash(&arg)?;
+            (RemoteOp::StashApply { oid, label }, "Appliquer la remise".into())
+        }
+        "depiler" => {
+            let (oid, label) = stash(&arg)?;
+            (RemoteOp::StashPop { oid, label }, "Appliquer et retirer la remise".into())
+        }
+        "jeter" => {
+            let (oid, label) = stash(&arg)?;
+            (RemoteOp::StashDrop { oid, label }, "Jeter la remise".into())
+        }
+        "basculer" => (RemoteOp::Checkout(arg.clone()), format!("Basculer sur {arg}")),
+        "detacher" => (RemoteOp::Checkout(oid(&arg)?.to_hex()), "Sortir le commit".into()),
         "suivre" => {
             let local = needed()?;
-            (Op::Track { remote_branch: arg.clone(), local: local.clone() }, format!("Suivre {arg} dans {local}"))
+            let op = RemoteOp::Track { remote_branch: arg.clone(), local: local.clone() };
+            (op, format!("Suivre {arg} dans {local}"))
         }
         "nouvelle-branche" => {
             let name = needed()?;
-            (Op::CreateBranch { name: name.clone(), start: "HEAD".into() }, format!("Nouvelle branche {name}"))
+            (RemoteOp::CreateBranch { name: name.clone(), start: "HEAD".into() }, format!("Nouvelle branche {name}"))
         }
         "branche-ici" => {
             let name = needed()?;
-            (Op::CreateBranch { name: name.clone(), start: arg }, format!("Nouvelle branche {name}"))
+            (RemoteOp::CreateBranch { name: name.clone(), start: arg }, format!("Nouvelle branche {name}"))
         }
         "renommer" => {
             let new = needed()?;
-            (Op::RenameBranch { old: arg.clone(), new: new.clone() }, format!("Renommer {arg} en {new}"))
+            (RemoteOp::RenameBranch { old: arg.clone(), new: new.clone() }, format!("Renommer {arg} en {new}"))
         }
-        "supprimer-branche" => (Op::DeleteBranch { name: arg.clone(), force: false }, format!("Supprimer {arg}")),
-        "supprimer-branche-force" => (Op::DeleteBranch { name: arg.clone(), force: true }, format!("Supprimer {arg}")),
+        "supprimer-branche" => (RemoteOp::DeleteBranch { name: arg.clone(), force: false }, format!("Supprimer {arg}")),
+        "supprimer-branche-force" => {
+            (RemoteOp::DeleteBranch { name: arg.clone(), force: true }, format!("Supprimer {arg}"))
+        }
         "publier" => {
             let remote = v.default_remote().ok_or("Aucun remote : ajoutez-en un sur le PC.")?;
-            (Op::PushBranch { name: arg.clone(), remote }, format!("Pousser {arg}"))
+            (RemoteOp::PushBranch { name: arg.clone(), remote }, format!("Pousser {arg}"))
         }
-        "fusionner" => (Op::Merge(arg.clone()), format!("Fusionner {arg}")),
-        "rebaser" => (Op::Rebase(arg.clone()), format!("Rebaser sur {arg}")),
-        "cherry-pick" => (Op::CherryPick(arg), "Cherry-pick".into()),
-        "revert" => (Op::Revert(arg), "Revert".into()),
-        "reset-soft" => (Op::Reset { rev: arg, mode: Reset::Soft }, "Reset (soft)".into()),
-        "reset-mixed" => (Op::Reset { rev: arg, mode: Reset::Mixed }, "Reset (mixed)".into()),
-        "reset-hard" => (Op::Reset { rev: arg, mode: Reset::Hard }, "Reset (hard)".into()),
-        "continuer" => (Op::Continue, "Continuer".into()),
-        "abandonner" => (Op::Abort, "Abandonner".into()),
-        "passer" => (Op::Skip, "Passer le commit".into()),
+        "fusionner" => (RemoteOp::Merge(arg.clone()), format!("Fusionner {arg}")),
+        "rebaser" => (RemoteOp::Rebase(arg.clone()), format!("Rebaser sur {arg}")),
+        "cherry-pick" => (RemoteOp::CherryPick(oid(&arg)?), "Cherry-pick".into()),
+        "revert" => (RemoteOp::Revert(oid(&arg)?), "Revert".into()),
+        "reset-soft" => (RemoteOp::Reset { rev: arg, mode: ResetMode::Soft }, "Reset (soft)".into()),
+        "reset-mixed" => (RemoteOp::Reset { rev: arg, mode: ResetMode::Mixed }, "Reset (mixed)".into()),
+        "reset-hard" => (RemoteOp::Reset { rev: arg, mode: ResetMode::Hard }, "Reset (hard)".into()),
+        "continuer" => (RemoteOp::Continue, "Continuer".into()),
+        "abandonner" => (RemoteOp::Abort, "Abandonner".into()),
+        "passer" => (RemoteOp::Skip, "Passer le commit".into()),
         "nouvelle-etiquette" => {
             let name = needed()?;
-            (Op::CreateTag { name: name.clone(), rev: "HEAD".into() }, format!("Étiquette {name}"))
+            (RemoteOp::CreateTag { name: name.clone(), rev: "HEAD".into() }, format!("Étiquette {name}"))
         }
         "etiquette-ici" => {
             let name = needed()?;
-            (Op::CreateTag { name: name.clone(), rev: arg }, format!("Étiquette {name}"))
+            (RemoteOp::CreateTag { name: name.clone(), rev: arg }, format!("Étiquette {name}"))
         }
-        "supprimer-etiquette" => (Op::DeleteTag(arg.clone()), format!("Supprimer l'étiquette {arg}")),
+        "supprimer-etiquette" => (RemoteOp::DeleteTag(arg.clone()), format!("Supprimer l'étiquette {arg}")),
         "pousser-etiquette" => {
             let remote = v.default_remote().ok_or("Aucun remote : ajoutez-en un sur le PC.")?;
-            (Op::PushTag { name: arg.clone(), remote }, format!("Pousser l'étiquette {arg}"))
+            (RemoteOp::PushTag { name: arg.clone(), remote }, format!("Pousser l'étiquette {arg}"))
         }
         "supprimer-worktree" => {
             let w = v
@@ -899,12 +918,12 @@ pub fn parse(v: &RepoView, action: &str, input: Option<&str>) -> Result<(Op, Str
                 .iter()
                 .find(|w| file_key(&w.path.to_string_lossy()) == arg)
                 .ok_or("Ce worktree n'existe plus.")?;
-            (Op::RemoveWorktree(w.path.clone()), format!("Supprimer le worktree {}", w.path.display()))
+            (RemoteOp::RemoveWorktree(w.path.clone()), format!("Supprimer le worktree {}", w.path.display()))
         }
-        "elaguer" => (Op::PruneWorktrees, "Élaguer les worktrees".into()),
+        "elaguer" => (RemoteOp::PruneWorktrees, "Élaguer les worktrees".into()),
         _ => return Err("action inconnue".into()),
     };
-    if let Op::Stage(p) | Op::Unstage(p) = &op.0
+    if let RemoteOp::Stage(p) | RemoteOp::Unstage(p) = &op.0
         && p.is_empty()
     {
         return Err("Aucun fichier concerné.".into());
@@ -1010,24 +1029,24 @@ mod tests {
         let v = view();
         let b = file_key("src/b.rs");
         let n = file_key("neuf.txt");
-        assert_eq!(parse(&v, &format!("indexer:{b}"), None).unwrap().0, Op::Stage(vec!["src/b.rs".into()]));
+        assert_eq!(parse(&v, &format!("indexer:{b}"), None).unwrap().0, RemoteOp::Stage(vec!["src/b.rs".into()]));
         assert_eq!(
             parse(&v, &format!("annuler:{n}"), None).unwrap().0,
-            Op::Discard { tracked: vec![], untracked: vec!["neuf.txt".into()] },
+            RemoteOp::Discard { tracked: vec![], untracked: vec!["neuf.txt".into()] },
             "un fichier non suivi est supprimé, pas restauré"
         );
         assert_eq!(
             parse(&v, "valider", Some("  Corrige l'export  ")).unwrap().0,
-            Op::Commit { message: "Corrige l'export".into(), amend: false }
+            RemoteOp::Commit { message: "Corrige l'export".into(), amend: false }
         );
         assert!(parse(&v, "valider", Some("   ")).is_err(), "message vide");
         assert_eq!(
             parse(&v, "publier:feature/x", None).unwrap().0,
-            Op::PushBranch { name: "feature/x".into(), remote: "origin".into() }
+            RemoteOp::PushBranch { name: "feature/x".into(), remote: "origin".into() }
         );
         assert_eq!(
             parse(&v, "suivre:origin/autre", Some("autre")).unwrap().0,
-            Op::Track { remote_branch: "origin/autre".into(), local: "autre".into() }
+            RemoteOp::Track { remote_branch: "origin/autre".into(), local: "autre".into() }
         );
         assert!(parse(&v, "indexer:inconnu", None).is_err());
         assert!(parse(&v, "rm -rf", None).is_err());
@@ -1056,9 +1075,35 @@ mod tests {
         v.op = Some(OpState::Rebase { interactive: false });
         let s = overview("ozmo", r"C:\dev\ozmo", &v, None, false);
         let ids = s.action_ids();
-        assert!(ids.contains("continuer") && ids.contains("abandonner") && ids.contains("passer"));
+        // Un conflit reste : comme dans DragonTree, pas de « Continuer » avant sa résolution.
+        assert!(!ids.contains("continuer") && ids.contains("abandonner") && ids.contains("passer"));
+        assert!(s.opens().contains("modifs"), "les conflits à voir");
         assert!(s.blocks.iter().any(|b| matches!(b, Block::Note { text, .. } if text.contains("1 conflit"))));
         assert!(ids.contains("push"), "en avance seulement : push simple");
+        if let Some(Ok(st)) = &mut v.status {
+            st.entries.retain(|e| e.conflict.is_none());
+        }
+        assert!(overview("ozmo", "", &v, None, false).action_ids().contains("continuer"), "résolu : continuer");
+    }
+
+    #[test]
+    fn a_conflict_is_resolved_by_keeping_one_side() {
+        let mut v = view();
+        v.op = Some(OpState::Merge);
+        let c = file_key("conflit.rs");
+        let ids = changes(&v, false).action_ids();
+        assert!(ids.contains(&format!("garder-local:{c}")) && ids.contains(&format!("garder-entrant:{c}")));
+        assert_eq!(
+            parse(&v, &format!("garder-entrant:{c}"), None).unwrap().0,
+            RemoteOp::Resolve { paths: vec!["conflit.rs".into()], ours: false }
+        );
+        assert!(parse(&v, &format!("garder-local:{}", file_key("src/b.rs")), None).is_err(), "pas en conflit");
+        let s = file(&v, &c, false).unwrap();
+        assert!(s.action_ids().contains(&format!("garder-local:{c}")));
+        // Dans un rebase, « notre » version est celle de la base.
+        v.op = Some(OpState::Rebase { interactive: false });
+        let s = changes(&v, false);
+        assert!(s.all_acts().iter().any(|a| a.label == "Garder la version de la base"));
     }
 
     #[test]

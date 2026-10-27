@@ -12,7 +12,8 @@
 //! - **comptes** : ceux de toute la suite, que DragonTree lit lui-même ; « Comptes… » ouvre la page Comptes d'Eyrie,
 //!   et Thème et Langue disparaissent de ses réglages et de ses menus (`set_hosted`) ;
 //! - le titre « <dépôt> — DragonTree » devient le titre du module ;
-//! - **téléphone** (`mobile`) : ses dépôts et leur état (git, dans un fil), fetch, pull, push, ouvrir sur le PC.
+//! - **téléphone** (`mobile`) : ses dépôts et un client git presque complet, menés par DragonTree lui-même (ses
+//!   onglets, sa file d'opérations, ses comptes, ses notifications et son bandeau de conflits sur le PC).
 
 pub mod depot;
 pub mod mobile;
@@ -121,10 +122,10 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
     };
     let profile = profile_dir.unwrap_or_else(dragontree_app::settings::config_dir);
     let key = single_instance::profile_key(&profile);
-    // Le téléphone lit le même fichier de réglages que DragonTree (`StartOptions::profile_dir`, sinon le profil par
-    // défaut), et lui transmet « ouvrir sur le PC » par son canal d'instance.
-    let phone = Rc::new(RefCell::new(mobile::Phone::new(profile.join("settings.json"), key.clone())));
-    let phone_actions = phone.clone();
+    // Le téléphone lit la liste des dépôts dans le même fichier de réglages que DragonTree (`StartOptions::profile_dir`,
+    // sinon le profil par défaut) ; le reste, il le demande à DragonTree.
+    let phone = Rc::new(RefCell::new(mobile::Phone::new(profile.join("settings.json"))));
+    let (phone_actions, phone_logic) = (phone.clone(), phone.clone());
     let instance = match single_instance::start(&key, &Forwarded { open: Vec::new() }, Duration::from_secs(3)) {
         Startup::Primary(i) => Some(i),
         // Une autre instance tient ce profil : elle a reçu la demande et passe au premier plan.
@@ -147,15 +148,17 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
         .key_commands(commands())
         .settings_panel(|app, ui| app.settings_ui(ui))
         .on_settings_left(|app| app.settings_left())
-        .mobile_screens(move |app, path, _| phone.borrow_mut().screen(path, app.active_repo_dir()))
+        .mobile_screens(move |app, path, _| phone.borrow_mut().screen(app, path))
         .mobile_actions(move |app, path, action, input, cx| {
-            let (text, opened) = phone_actions.borrow_mut().action(path, action, input, app.active_repo_dir())?;
-            if opened.is_some() {
+            let (text, show) = phone_actions.borrow_mut().action(app, path, action, input)?;
+            if show {
                 cx.host.show(ID);
             }
+            cx.host.repaint();
             Ok(Some(text))
         })
         .after_logic(move |app, cx| {
+            phone_logic.borrow_mut().after_logic(app);
             let now = app.active_repo_dir().map(|p| p.to_path_buf());
             if now != published {
                 if let Some(dir) = &now {

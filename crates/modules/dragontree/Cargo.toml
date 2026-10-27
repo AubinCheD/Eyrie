@@ -15,3 +15,6 @@ dragontree-i18n.workspace = true
 suite-accounts.workspace = true
 eframe.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+egui_kittest = { version = "0.37", features = ["eframe"] }

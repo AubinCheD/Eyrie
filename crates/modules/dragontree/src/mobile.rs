@@ -1,14 +1,20 @@
 //! DragonTree sur le téléphone : les dépôts de ses réglages (onglets ouverts, favoris, récents), leur branche, leur
 //! avance ou retard et leurs modifications ; fetch, pull, push et « ouvrir sur le PC » depuis la liste ; et, dans un
 //! dépôt, un client git presque complet (`depot.rs` : modifications et diff, indexer, valider, historique, branches,
-//! fusion, rebase, remises, étiquettes, worktrees, opération en cours).
+//! fusion, rebase, conflits, remises, étiquettes, worktrees, opération en cours).
 //!
-//! L'état de l'application n'est pas public : le téléphone lit les réglages de DragonTree (le fichier, sans le
-//! réécrire) et interroge git lui-même par `dragontree-git`, toujours dans un fil (git est lent) : l'état des dépôts
-//! est gardé et relu toutes les 30 s tant que le téléphone regarde, ou sur demande. Un dépôt est désigné par une
-//! empreinte de son chemin (`depot/<clé>`) : pas de chemin Windows dans un chemin d'écran, et la même clé quand la
-//! liste change d'ordre. « Ouvrir sur le PC » passe par le canal d'instance de DragonTree, comme `dragontree.exe
-//! <dépôt>` lancé pendant que la suite tourne.
+//! **Tout passe par DragonTree, sur le PC.** Un dépôt regardé depuis le téléphone est ouvert dans un onglet de
+//! DragonTree (en fond : l'onglet affiché ne change pas). Ce que montre le téléphone est ce que DragonTree en a lu
+//! (état, branches, historique, remises, worktrees, opération en cours), et chaque opération est lancée par DragonTree
+//! comme son bouton (`DragonTreeApp::queue_operation`) : sa file d'opérations, le compte associé au dépôt, sa
+//! progression et ses notifications sur le PC ; une fusion arrêtée sur un conflit s'affiche dans son bandeau et se
+//! résout ici ou là-bas. Ce qui tourne dans DragonTree, lancé d'ici ou du PC, et ce qu'il a donné, est montré ici. Le
+//! téléphone ne voit jamais git ni les identifiants.
+//!
+//! Lu à part, dans un fil, avec le dépôt ouvert par DragonTree : ce qu'il ne garde pas (le diff d'un fichier, le
+//! détail d'un commit, le dernier message pour corriger le commit) ; et l'état rapide des dépôts de la liste qui ne
+//! sont pas ouverts dans un onglet (lecture seule). Un dépôt est désigné par une empreinte de son chemin
+//! (`depot/<clé>`) : pas de chemin Windows dans un chemin d'écran, et la même clé quand la liste change d'ordre.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -16,27 +22,31 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
+use dragontree_app::DragonTreeApp;
+use dragontree_app::repo::{Refresh, RemoteOp, RepoTab};
 use dragontree_app::settings::{Settings, path_key};
-use dragontree_app::single_instance::{self, Forwarded};
-use dragontree_git::{
-    CancelToken, DiffOptions, FileState, Git, LogOptions, LogScope, MergeMode, NetOptions, Oid, Repo, ResetMode,
-    StatusSnapshot,
-};
+use dragontree_git::{CommitInfo, DiffOptions, FileChange, FileState, Git, Oid, Repo, StatusEntry, StatusSnapshot};
 use suite_sdk::mobile::ui::{Act, Block, Row, Screen, Tone};
 
-use crate::depot::{self, Op, RepoView, file_key};
+use crate::depot::{self, RepoView, file_key};
 
 /// Dépôts montrés.
 const MAX_REPOS: usize = 20;
-/// L'état des dépôts est relu au plus toutes les 30 s tant que le téléphone regarde.
+/// L'état des dépôts qui ne sont pas ouverts dans DragonTree est relu au plus toutes les 30 s tant que le téléphone
+/// regarde la liste.
 const SWEEP_EVERY: Duration = Duration::from_secs(30);
 const SETTINGS_EVERY: Duration = Duration::from_secs(5);
 /// Le résultat d'une opération reste affiché une minute.
 const JOB_SHOWN: Duration = Duration::from_secs(60);
-/// Ce qu'un écran du dépôt relit tant qu'il est regardé : l'état, l'historique, un diff.
-const OVERVIEW_EVERY: Duration = Duration::from_secs(20);
-const LOG_EVERY: Duration = Duration::from_secs(60);
+/// DragonTree ne suit les changements sur disque que dans l'onglet affiché : un dépôt regardé depuis le téléphone lui
+/// est fait relire au plus toutes les 20 s.
+const REFRESH_EVERY: Duration = Duration::from_secs(20);
+/// Le diff d'un fichier du dossier de travail est relu au plus toutes les 15 s tant qu'il est regardé.
 const DIFF_EVERY: Duration = Duration::from_secs(15);
+/// Une opération attend au plus 30 s que DragonTree ait ouvert son dépôt.
+const OPEN_WAIT: Duration = Duration::from_secs(30);
+/// Une erreur de git montrée est coupée au-delà (caractères).
+const ERROR_MAX: usize = 400;
 
 /// D'où vient un dépôt de la liste.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,7 +66,7 @@ impl Origin {
     }
 }
 
-/// L'état d'un dépôt, relevé par git.
+/// L'état d'un dépôt : celui que DragonTree a lu, ou relevé ici pour un dépôt qu'il n'a pas ouvert.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RepoState {
     /// `None` : HEAD détachée.
@@ -68,11 +78,10 @@ pub struct RepoState {
     pub error: Option<String>,
 }
 
-/// Ce qu'a donné (ou fait en ce moment) un fetch, un pull ou un push.
+/// Ce que fait DragonTree sur un dépôt (`Info` : en cours), ou ce qu'a donné sa dernière opération.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Job {
     pub text: String,
-    /// `Info` : en cours.
     pub tone: Tone,
     pub at: Instant,
 }
@@ -147,7 +156,8 @@ fn net_acts(key: &str) -> Vec<Act> {
     ]
 }
 
-/// L'accueil : les dépôts par origine ; `sweeping` : leur état est en cours de relevé.
+/// L'accueil : les dépôts par origine ; `sweeping` : l'état de ceux que DragonTree n'a pas ouverts est en cours de
+/// relevé.
 pub fn home(entries: &[Entry], sweeping: bool) -> Screen {
     let mut s = Screen::new("DragonTree").act(Act::new("actualiser", "Actualiser").glyph("🔄"));
     if sweeping {
@@ -184,84 +194,105 @@ pub fn home(entries: &[Entry], sweeping: bool) -> Screen {
                 row = row.badge("actif");
             }
             row.acts = net_acts(&key);
-            row = row.act(Act::new(format!("pc:{key}"), "Ouvrir sur le PC").glyph("🖥️"));
+            row = row.act(Act::new(format!("pc:{key}"), "Afficher dans DragonTree sur le PC").glyph("🖥️"));
             s.row(row);
         }
     }
     s
 }
 
-// --- Le travail de fond ---
+// --- Ce que DragonTree sait ---
 
-/// Ce que les fils de git ont relevé ou fait, lu par l'interface.
-#[derive(Default)]
-struct Work {
-    states: HashMap<String, RepoState>,
-    /// Ce qui est relevé de chaque dépôt ouvert sur le téléphone.
-    views: HashMap<String, RepoView>,
-    /// (dépôt, relevé) → quand il a été fait ; en cours : absent de `loaded`, présent dans `loading`.
-    loaded: HashMap<(String, String), Instant>,
-    loading: HashSet<(String, String)>,
-    jobs: HashMap<String, Job>,
-    sweep_at: Option<Instant>,
-    sweeping: bool,
+fn short_error(e: &str) -> String {
+    let e = e.trim();
+    if e.chars().count() <= ERROR_MAX {
+        return e.to_string();
+    }
+    let cut: String = e.chars().take(ERROR_MAX).collect();
+    format!("{cut}…")
 }
 
-type Shared = Arc<Mutex<Work>>;
-
-fn lock(w: &Shared) -> MutexGuard<'_, Work> {
-    w.lock().unwrap_or_else(|e| e.into_inner())
+fn state_of(s: &StatusSnapshot) -> RepoState {
+    RepoState {
+        branch: s.branch.clone(),
+        upstream: s.upstream.clone(),
+        ahead: s.ahead,
+        behind: s.behind,
+        changes: s.entries.iter().filter(|e| e.worktree != FileState::Ignored).count(),
+        error: None,
+    }
 }
 
-/// L'exécutable git, cherché une fois (celui des réglages de DragonTree d'abord).
-type GitCell = Arc<OnceLock<Result<Git, String>>>;
+/// L'état du dépôt tel que DragonTree l'a lu ; `None` : pas encore lu.
+fn tab_state(t: &RepoTab) -> Option<RepoState> {
+    if let Some(e) = &t.open_error {
+        return Some(RepoState { error: Some(e.to_string()), ..Default::default() });
+    }
+    t.status.as_deref().map(state_of)
+}
 
-fn git(cell: &GitCell, configured: Option<PathBuf>) -> Result<Git, String> {
-    cell.get_or_init(|| {
-        configured
-            .map(Git::with_exe)
-            .filter(|g| g.version().is_ok())
-            .map(Ok)
-            .unwrap_or_else(|| Git::discover().map_err(|e| e.to_string()))
+/// L'opération visible en cours dans l'onglet (lancée d'ici ou du PC), sinon ce qu'a donné la dernière dans la minute.
+fn tab_job(t: &RepoTab) -> Option<Job> {
+    if let Some(op) = t.running.iter().find(|o| !o.silent) {
+        let text = if op.waiting {
+            format!("{} : attend la fin du fetch automatique…", op.title)
+        } else if let Some(p) = op.progress.as_ref().and_then(|p| p.percent) {
+            format!("{} en cours… {p} %", op.title)
+        } else {
+            format!("{} en cours…", op.title)
+        };
+        return Some(Job { text, tone: Tone::Info, at: Instant::now() });
+    }
+    let o = t.outcomes().last().filter(|o| o.at.elapsed() < JOB_SHOWN)?;
+    Some(match &o.result {
+        Ok(Some(msg)) => Job { text: msg.clone(), tone: Tone::Ok, at: o.at },
+        Ok(None) => Job { text: format!("{} : terminé", o.title), tone: Tone::Ok, at: o.at },
+        Err(e) => Job { text: format!("{} a échoué : {}", o.title, short_error(e)), tone: Tone::Danger, at: o.at },
     })
-    .clone()
 }
 
-fn open(git: &Git, path: &Path) -> Result<Repo, String> {
-    if !path.is_dir() {
-        return Err("dossier introuvable".into());
+/// L'historique tel que DragonTree l'affiche ; `None` : en cours de lecture.
+fn log_of(t: &RepoTab) -> Option<Result<Vec<dragontree_git::Commit>, String>> {
+    if let Some(e) = &t.history.error {
+        return Some(Err(e.to_string()));
     }
-    Repo::open(git, path).map_err(|e| e.to_string())
-}
-
-fn state_of(status: Result<&StatusSnapshot, String>) -> RepoState {
-    match status {
-        Ok(s) => RepoState {
-            branch: s.branch.clone(),
-            upstream: s.upstream.clone(),
-            ahead: s.ahead,
-            behind: s.behind,
-            changes: s.entries.len(),
-            error: None,
-        },
-        Err(e) => RepoState { error: Some(e), ..Default::default() },
+    if t.history.commits.is_empty() && (t.history.loading || t.refs.is_none()) {
+        return None;
     }
+    Some(Ok(t.history.commits.iter().take(depot::LOG_COUNT).cloned().collect()))
 }
 
-fn read_state(git: &Result<Git, String>, path: &Path) -> RepoState {
-    let status = git.clone().and_then(|g| open(&g, path)).and_then(|r| r.status().map_err(|e| e.to_string()));
-    state_of(status.as_ref().map_err(String::clone))
+// --- Ce qui est lu à part ---
+
+/// Ce qui a été lu à part pour un dépôt, avec le dépôt ouvert par DragonTree.
+#[derive(Default)]
+struct Reads {
+    /// Le relevé d'état de DragonTree sur lequel le dernier message et les diffs du dossier de travail ont été lus.
+    status_seen: usize,
+    last_message: Option<String>,
+    /// Commit (identifiant complet) → ses informations et ses fichiers.
+    commits: HashMap<String, Result<(CommitInfo, Vec<FileChange>), String>>,
+    /// Diff rendu : `w:<fichier>` (dossier de travail) ou `c:<commit>:<fichier>`.
+    diffs: HashMap<String, Result<Vec<(u8, String)>, String>>,
+    /// Lecture → quand elle a été faite ; en cours : absente de `loaded`, présente dans `loading`.
+    loaded: HashMap<String, Instant>,
+    loading: HashSet<String>,
 }
 
-/// Ce qu'un écran du dépôt a besoin de relever.
-#[derive(Clone, Debug, PartialEq)]
+/// Par dépôt (clé).
+type SharedReads = Arc<Mutex<HashMap<String, Reads>>>;
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Ce qu'un écran du dépôt a besoin de lire à part.
+#[derive(Clone, Debug)]
 enum Load {
-    /// État, branches, remises, worktrees, remotes, opération en cours, dernier message.
-    Overview,
-    Log,
+    LastMessage,
     Commit(String),
     /// Diff d'un fichier du dossier de travail (indexé et non indexé).
-    WorkDiff(String),
+    WorkDiff(String, StatusEntry),
     /// Diff d'un fichier d'un commit.
     CommitDiff(String, String),
 }
@@ -269,58 +300,40 @@ enum Load {
 impl Load {
     fn key(&self) -> String {
         match self {
-            Load::Overview => "etat".into(),
-            Load::Log => "historique".into(),
+            Load::LastMessage => "message".into(),
             Load::Commit(id) => format!("commit:{id}"),
-            Load::WorkDiff(f) => format!("w:{f}"),
+            Load::WorkDiff(f, _) => format!("w:{f}"),
             Load::CommitDiff(id, f) => format!("c:{id}:{f}"),
         }
     }
 
     fn every(&self) -> Option<Duration> {
         match self {
-            Load::Overview => Some(OVERVIEW_EVERY),
-            Load::Log => Some(LOG_EVERY),
-            Load::WorkDiff(_) => Some(DIFF_EVERY),
-            // Un commit ne change pas.
-            Load::Commit(_) | Load::CommitDiff(..) => None,
+            Load::WorkDiff(..) => Some(DIFF_EVERY),
+            // Relus quand l'état lu par DragonTree change ; un commit ne change pas.
+            Load::LastMessage | Load::Commit(_) | Load::CommitDiff(..) => None,
         }
     }
-}
-
-fn read_overview(repo: &Repo, v: &mut RepoView) {
-    v.status = Some(repo.status().map_err(|e| e.to_string()));
-    v.refs = repo.refs().ok();
-    v.stashes = repo.stashes().unwrap_or_default();
-    v.worktrees = repo.worktrees().unwrap_or_default();
-    v.remotes = repo.remotes().map(|r| r.into_iter().map(|r| r.name).collect()).unwrap_or_default();
-    v.op = Some(repo.operation_state());
-    v.last_message = repo.last_commit_message().unwrap_or_default();
 }
 
 fn oid(hex: &str) -> Result<Oid, String> {
     Oid::from_hex(hex).ok_or_else(|| "identifiant de commit illisible".into())
 }
 
-/// Relève `what` dans `v` (une copie de ce qu'on sait : les fichiers d'un commit, les modifications).
-fn read(repo: &Repo, what: &Load, v: &mut RepoView) {
+/// Lit `what` (dans un fil) et le range dans `r`.
+fn read(repo: &Repo, what: &Load, known: Option<&(CommitInfo, Vec<FileChange>)>, r: &mut Reads) {
     let opts = DiffOptions::default();
     match what {
-        Load::Overview => read_overview(repo, v),
-        Load::Log => {
-            let o = LogOptions { scope: LogScope::Head, max_count: Some(depot::LOG_COUNT), ..Default::default() };
-            v.log = Some(repo.log(&o, &CancelToken::new()).map_err(|e| e.to_string()));
-        }
+        Load::LastMessage => r.last_message = Some(repo.last_commit_message().unwrap_or_default()),
         Load::Commit(id) => {
-            let r = oid(id).and_then(|o| {
+            let res = oid(id).and_then(|o| {
                 let info = repo.commit_info(o).map_err(|e| e.to_string())?;
                 let files = repo.commit_files(o, info.parents.first().copied()).map_err(|e| e.to_string())?;
                 Ok((info, files))
             });
-            v.commits.insert(id.clone(), r);
+            r.commits.insert(id.clone(), res);
         }
-        Load::WorkDiff(f) => {
-            let Some(e) = v.entry(f).cloned() else { return };
+        Load::WorkDiff(f, e) => {
             let staged = e.conflict.is_none() && !matches!(e.index, FileState::Unmodified | FileState::Untracked);
             let unstaged = !matches!(e.worktree, FileState::Unmodified | FileState::Ignored);
             let untracked = e.worktree == FileState::Untracked;
@@ -338,139 +351,60 @@ fn read(repo: &Repo, what: &Load, v: &mut RepoView) {
                     Err(err) => error = Some(err.to_string()),
                 }
             }
-            let r = match (parts.is_empty(), error) {
+            let res = match (parts.is_empty(), error) {
                 (true, Some(e)) => Err(e),
                 _ => Ok(parts),
             };
-            v.diffs.insert(format!("w:{f}"), r);
+            r.diffs.insert(format!("w:{f}"), res);
         }
         Load::CommitDiff(id, f) => {
-            let Some(Ok((info, files))) = v.commits.get(id) else { return };
-            let Some(change) = files.iter().find(|c| file_key(&c.path) == *f).cloned() else { return };
-            let parent = info.parents.first().copied();
-            let r = oid(id).and_then(|o| {
-                repo.diff_commit_file(o, parent, &change, &opts)
+            let Some((info, files)) = known else { return };
+            let Some(change) = files.iter().find(|c| file_key(&c.path) == *f) else { return };
+            let res = oid(id).and_then(|o| {
+                repo.diff_commit_file(o, info.parents.first().copied(), change, &opts)
                     .map(|d| depot::render_diff(&d))
                     .map_err(|e| e.to_string())
             });
-            v.diffs.insert(format!("c:{id}:{f}"), r);
+            r.diffs.insert(format!("c:{id}:{f}"), res);
         }
     }
 }
 
-/// Fetch, pull (avance rapide, ou rebase) ou push (forcé avec bail) de la branche courante, sans fenêtre
-/// d'authentification.
-fn net(repo: &Repo, op: &str) -> Result<String, String> {
-    let n = NetOptions { non_interactive: true, ..Default::default() };
-    let err = |e: dragontree_git::GitError| e.to_string();
-    if op == "fetch" {
-        repo.fetch(None, false, &n, &mut |_| {}).map_err(err)?;
-        return Ok("fetch terminé".into());
-    }
-    let s = repo.status().map_err(err)?;
-    let branch = s.branch.ok_or("HEAD détachée : rien à tirer ni à pousser.")?;
-    let upstream = s.upstream.ok_or("Pas de branche distante suivie : publiez-la depuis le PC.")?;
-    // `origin/feature/x` : le remote est le plus long nom de remote qui préfixe la branche suivie.
-    let remotes = repo.remotes().map_err(err)?;
-    let remote = remotes
-        .iter()
-        .filter(|r| upstream.starts_with(&format!("{}/", r.name)))
-        .max_by_key(|r| r.name.len())
-        .ok_or("Remote de la branche suivie introuvable.")?;
-    let remote_branch = &upstream[remote.name.len() + 1..];
-    match op {
-        "pull" | "pull-rebase" => {
-            let rebase = op == "pull-rebase";
-            if s.ahead > 0 && s.behind > 0 && !rebase {
-                return Err("Branches divergentes : faites un pull avec rebase, ou réglez-le sur le PC.".into());
-            }
-            if s.behind == 0 {
-                return Ok("déjà à jour".into());
-            }
-            repo.pull(&remote.name, remote_branch, rebase, &n, &mut |_| {}).map_err(err)?;
-            Ok(format!("pull terminé ({} commit(s))", s.behind))
-        }
-        "push" | "push-force" => {
-            let force = op == "push-force";
-            if s.behind > 0 && !force {
-                return Err("En retard sur la branche distante : faites d'abord un pull.".into());
-            }
-            if s.ahead == 0 {
-                return Ok("rien à pousser".into());
-            }
-            repo.push(&remote.name, &branch, remote_branch, false, force, &n, &mut |_| {}).map_err(err)?;
-            Ok(format!("push terminé ({} commit(s))", s.ahead))
-        }
-        _ => Err("action inconnue".into()),
-    }
+// --- Les dépôts que DragonTree n'a pas ouverts ---
+
+/// L'état rapide des dépôts de la liste qui ne sont pas dans un onglet de DragonTree.
+#[derive(Default)]
+struct Sweep {
+    states: HashMap<String, RepoState>,
+    at: Option<Instant>,
+    running: bool,
 }
 
-/// Exécute une opération du dépôt ; le texte dit ce qui s'est passé.
-fn run(repo: &Repo, op: &Op) -> Result<String, String> {
-    let e = |e: dragontree_git::GitError| e.to_string();
-    let n = NetOptions { non_interactive: true, ..Default::default() };
-    let branch_name = |name: &str| {
-        if repo.is_valid_branch_name(name) {
-            Ok(())
-        } else {
-            Err(format!("« {name} » n'est pas un nom de branche valide."))
-        }
-    };
-    match op {
-        Op::Fetch => net(repo, "fetch"),
-        Op::Pull { rebase } => net(repo, if *rebase { "pull-rebase" } else { "pull" }),
-        Op::Push { force } => net(repo, if *force { "push-force" } else { "push" }),
-        Op::Stage(p) => repo.stage(p).map(|_| "indexé".into()).map_err(e),
-        Op::Unstage(p) => repo.unstage(p).map(|_| "désindexé".into()).map_err(e),
-        Op::Discard { tracked, untracked } => repo.discard(tracked, untracked).map(|_| "annulé".into()).map_err(e),
-        Op::Commit { message, amend } => {
-            repo.commit(message, *amend).map(|_| if *amend { "commit corrigé" } else { "validé" }.into()).map_err(e)
-        }
-        Op::StashSave(m) => repo.stash_save(m.as_deref(), true, false).map(|_| "mis de côté".into()).map_err(e),
-        Op::StashApply(h) => repo.stash_apply_oid(oid(h)?).map(|_| "remise appliquée".into()).map_err(e),
-        Op::StashPop(h) => repo.stash_pop_oid(oid(h)?).map(|_| "remise appliquée et retirée".into()).map_err(e),
-        Op::StashDrop(h) => repo.stash_drop_oid(oid(h)?).map(|_| "remise jetée".into()).map_err(e),
-        Op::Checkout(b) => repo.checkout(b).map(|_| format!("sur {b}")).map_err(e),
-        Op::CheckoutDetached(id) => repo.checkout(id).map(|_| "HEAD détachée sur ce commit".into()).map_err(e),
-        Op::Track { remote_branch, local } => {
-            branch_name(local)?;
-            repo.checkout_new_tracking(remote_branch, local).map(|_| format!("sur {local}")).map_err(e)
-        }
-        Op::CreateBranch { name, start } => {
-            branch_name(name)?;
-            repo.create_branch(name, start, true).map(|_| "créée et sortie".into()).map_err(e)
-        }
-        Op::RenameBranch { old, new } => {
-            branch_name(new)?;
-            repo.rename_branch(old, new).map(|_| format!("renommée en {new}")).map_err(e)
-        }
-        Op::DeleteBranch { name, force } => repo.delete_branch(name, *force).map(|_| "supprimée".into()).map_err(e),
-        Op::PushBranch { name, remote } => repo
-            .push(remote, name, name, true, false, &n, &mut |_| {})
-            .map(|_| format!("poussée vers {remote}"))
-            .map_err(e),
-        Op::Merge(r) => repo.merge(r, MergeMode::Default).map(|_| "fusionné".into()).map_err(e),
-        Op::Rebase(r) => repo.rebase(r).map(|_| "rebasé".into()).map_err(e),
-        Op::CherryPick(h) => repo.cherry_pick(&[oid(h)?]).map(|_| "appliqué".into()).map_err(e),
-        Op::Revert(h) => repo.revert(oid(h)?).map(|_| "commit d'annulation créé".into()).map_err(e),
-        Op::Reset { rev, mode } => {
-            let mode = match mode {
-                depot::Reset::Soft => ResetMode::Soft,
-                depot::Reset::Mixed => ResetMode::Mixed,
-                depot::Reset::Hard => ResetMode::Hard,
-            };
-            repo.reset(rev, mode).map(|_| "branche ramenée".into()).map_err(e)
-        }
-        Op::Continue => repo.continue_op(repo.operation_state()).map(|_| "poursuivi".into()).map_err(e),
-        Op::Abort => repo.abort_op(repo.operation_state()).map(|_| "abandonné".into()).map_err(e),
-        Op::Skip => repo.skip_rebase_commit().map(|_| "commit passé".into()).map_err(e),
-        Op::CreateTag { name, rev } => repo.create_tag(name, rev, None).map(|_| "étiquette créée".into()).map_err(e),
-        Op::DeleteTag(name) => repo.delete_tag(name).map(|_| "étiquette supprimée".into()).map_err(e),
-        Op::PushTag { name, remote } => {
-            repo.push_tag(remote, name, &n, &mut |_| {}).map(|_| format!("poussée vers {remote}")).map_err(e)
-        }
-        Op::RemoveWorktree(p) => repo.remove_worktree(p, false).map(|_| "worktree supprimé".into()).map_err(e),
-        Op::PruneWorktrees => repo.prune_worktrees().map(|_| "élagués".into()).map_err(e),
+/// L'exécutable git, cherché une fois (celui des réglages de DragonTree d'abord).
+type GitCell = Arc<OnceLock<Result<Git, String>>>;
+
+fn git(cell: &GitCell, configured: Option<PathBuf>) -> Result<Git, String> {
+    cell.get_or_init(|| {
+        configured
+            .map(Git::with_exe)
+            .filter(|g| g.version().is_ok())
+            .map(Ok)
+            .unwrap_or_else(|| Git::discover().map_err(|e| e.to_string()))
+    })
+    .clone()
+}
+
+fn read_state(git: &Result<Git, String>, path: &Path) -> RepoState {
+    if !path.is_dir() {
+        return RepoState { error: Some("dossier introuvable".into()), ..Default::default() };
+    }
+    let status = git
+        .clone()
+        .and_then(|g| Repo::open(&g, path).map_err(|e| e.to_string()))
+        .and_then(|r| r.status().map_err(|e| e.to_string()));
+    match status {
+        Ok(s) => state_of(&s),
+        Err(e) => RepoState { error: Some(e), ..Default::default() },
     }
 }
 
@@ -505,28 +439,43 @@ fn repo_list(lists: &Lists, active: Option<&Path>) -> Vec<(PathBuf, Origin, bool
     out
 }
 
+/// Une opération du téléphone qui attend que DragonTree ait ouvert son dépôt.
+struct Waiting {
+    path: PathBuf,
+    op: RemoteOp,
+    label: String,
+    at: Instant,
+}
+
 /// Ce que le téléphone garde entre deux appels.
 pub struct Phone {
     settings_path: PathBuf,
-    /// Clé du profil de DragonTree : son canal d'instance (« ouvrir sur le PC »).
-    instance: String,
     checked: Option<Instant>,
     stamp: Option<SystemTime>,
     lists: Lists,
-    work: Shared,
+    sweep: Arc<Mutex<Sweep>>,
     git: GitCell,
+    reads: SharedReads,
+    /// Par dépôt : quand DragonTree l'a relu à la demande du téléphone.
+    refreshed: HashMap<String, Instant>,
+    waiting: HashMap<String, Waiting>,
+    /// Par dépôt : une opération qui n'a pas pu partir (dépôt impossible à ouvrir).
+    failed: HashMap<String, Job>,
 }
 
 impl Phone {
-    pub fn new(settings_path: PathBuf, instance: String) -> Phone {
+    pub fn new(settings_path: PathBuf) -> Phone {
         Phone {
             settings_path,
-            instance,
             checked: None,
             stamp: None,
             lists: Lists::default(),
-            work: Shared::default(),
+            sweep: Arc::default(),
             git: GitCell::default(),
+            reads: SharedReads::default(),
+            refreshed: HashMap::new(),
+            waiting: HashMap::new(),
+            failed: HashMap::new(),
         }
     }
 
@@ -554,117 +503,194 @@ impl Phone {
         repo_list(&self.lists, active)
     }
 
-    /// Relève l'état de `paths` dans un fil, s'il est dû (`force` : tout de suite).
+    /// Relève l'état de `paths` (dépôts que DragonTree n'a pas ouverts) dans un fil, s'il est dû (`force` : tout de
+    /// suite).
     fn sweep(&self, paths: Vec<PathBuf>, force: bool) {
-        let mut w = lock(&self.work);
-        if w.sweeping || (!force && w.sweep_at.is_some_and(|t| t.elapsed() < SWEEP_EVERY)) {
+        let mut s = lock(&self.sweep);
+        if paths.is_empty() || s.running || (!force && s.at.is_some_and(|t| t.elapsed() < SWEEP_EVERY)) {
             return;
         }
-        w.sweeping = true;
-        drop(w);
-        let (work, cell, configured) = (self.work.clone(), self.git.clone(), self.lists.git_path.clone());
+        s.running = true;
+        drop(s);
+        let (sweep, cell, configured) = (self.sweep.clone(), self.git.clone(), self.lists.git_path.clone());
         std::thread::spawn(move || {
             let git = git(&cell, configured);
             for p in paths {
                 let state = read_state(&git, &p);
-                lock(&work).states.insert(repo_key(&p), state);
+                lock(&sweep).states.insert(repo_key(&p), state);
             }
-            let mut w = lock(&work);
-            w.sweeping = false;
-            w.sweep_at = Some(Instant::now());
+            let mut s = lock(&sweep);
+            s.running = false;
+            s.at = Some(Instant::now());
         });
     }
 
-    /// Relève `what` pour le dépôt `path` dans un fil, s'il est dû (`force` : tout de suite).
-    fn want(&self, path: &Path, what: Load, force: bool) {
-        let key = (repo_key(path), what.key());
-        let mut w = lock(&self.work);
-        let fresh = w.loaded.get(&key).is_some_and(|t| what.every().is_none_or(|every| t.elapsed() < every));
-        if (fresh && !force) || !w.loading.insert(key.clone()) {
+    /// Ce qui se passe sur le dépôt `key` : une opération d'ici qui attend son ouverture, ou qui n'a pas pu partir ;
+    /// sinon ce que fait DragonTree, ou ce qu'il a donné.
+    fn job(&self, key: &str, tab: Option<&RepoTab>) -> Option<Job> {
+        if let Some(w) = self.waiting.get(key) {
+            let text = format!("{} : ouverture du dépôt dans DragonTree…", w.label);
+            return Some(Job { text, tone: Tone::Info, at: w.at });
+        }
+        let failed = self.failed.get(key).filter(|j| j.at.elapsed() < JOB_SHOWN).cloned();
+        let running = tab.and_then(tab_job);
+        match (failed, running) {
+            (Some(f), Some(r)) if r.tone == Tone::Info || r.at > f.at => Some(r),
+            (Some(f), _) => Some(f),
+            (None, r) => r,
+        }
+    }
+
+    fn entry(&self, app: &DragonTreeApp, (path, origin, active): (PathBuf, Origin, bool)) -> Entry {
+        let key = repo_key(&path);
+        let tab = app.repo_tab(&path);
+        let state = match tab {
+            Some(t) => tab_state(t),
+            None => lock(&self.sweep).states.get(&key).cloned(),
+        };
+        Entry { state, job: self.job(&key, tab), path, origin, active }
+    }
+
+    /// Le dépôt regardé est ouvert dans un onglet de DragonTree (en fond), et relu par lui au plus toutes les 20 s.
+    fn watch(&mut self, app: &mut DragonTreeApp, repo: &Path) {
+        let key = repo_key(repo);
+        if app.repo_tab(repo).is_none() {
+            // L'ouverture lit tout.
+            app.open_repo_tab(repo);
+            self.refreshed.insert(key, Instant::now());
             return;
         }
-        let mut view = w.views.get(&key.0).cloned().unwrap_or_default();
-        drop(w);
-        let (work, cell, configured, path) =
-            (self.work.clone(), self.git.clone(), self.lists.git_path.clone(), path.to_path_buf());
+        if self.refreshed.get(&key).is_none_or(|t| t.elapsed() >= REFRESH_EVERY) {
+            app.refresh_repo(repo, Refresh::REFS.with_extras());
+            self.refreshed.insert(key, Instant::now());
+        }
+    }
+
+    /// Lit `what` pour le dépôt `key` dans un fil, s'il est dû.
+    fn want(&self, key: &str, repo: &Arc<Repo>, what: Load) {
+        let k = what.key();
+        let mut all = lock(&self.reads);
+        let r = all.entry(key.to_string()).or_default();
+        let fresh = r.loaded.get(&k).is_some_and(|t| what.every().is_none_or(|every| t.elapsed() < every));
+        if fresh || !r.loading.insert(k.clone()) {
+            return;
+        }
+        let known = match &what {
+            Load::CommitDiff(id, _) => match r.commits.get(id) {
+                Some(Ok(c)) => Some(c.clone()),
+                _ => None,
+            },
+            _ => None,
+        };
+        drop(all);
+        let (reads, repo, key) = (self.reads.clone(), repo.clone(), key.to_string());
         std::thread::spawn(move || {
-            let repo = git(&cell, configured).and_then(|g| open(&g, &path));
-            match &repo {
-                Ok(r) => read(r, &what, &mut view),
-                Err(e) => view.status = Some(Err(e.clone())),
+            let mut fresh = Reads::default();
+            read(&repo, &what, known.as_ref(), &mut fresh);
+            let mut all = lock(&reads);
+            let r = all.entry(key).or_default();
+            r.loading.remove(&k);
+            r.loaded.insert(k, Instant::now());
+            if fresh.last_message.is_some() {
+                r.last_message = fresh.last_message;
             }
-            let mut w = lock(&work);
-            w.loading.remove(&key);
-            w.loaded.insert(key.clone(), Instant::now());
-            let current = w.views.entry(key.0.clone()).or_default();
-            // Seulement ce que ce relevé concerne : un autre relevé a pu écrire le reste entre-temps.
-            match &what {
-                Load::Overview => {
-                    current.status = view.status.clone();
-                    current.refs = view.refs;
-                    current.stashes = view.stashes;
-                    current.worktrees = view.worktrees;
-                    current.remotes = view.remotes;
-                    current.op = view.op;
-                    current.last_message = view.last_message;
-                }
-                Load::Log => current.log = view.log,
-                Load::Commit(id) => {
-                    if let Some(c) = view.commits.remove(id) {
-                        current.commits.insert(id.clone(), c);
-                    }
-                }
-                Load::WorkDiff(_) | Load::CommitDiff(..) => {
-                    let k = what.key();
-                    if let Some(d) = view.diffs.remove(&k) {
-                        current.diffs.insert(k, d);
-                    }
-                }
-            }
-            if let Load::Overview = what {
-                let state = state_of(
-                    view.status
-                        .as_ref()
-                        .map(|r| r.as_ref().map_err(String::clone))
-                        .unwrap_or(Err("dépôt illisible".into())),
-                );
-                w.states.insert(key.0, state);
-            }
+            r.commits.extend(fresh.commits);
+            r.diffs.extend(fresh.diffs);
         });
     }
 
-    fn entry(&self, w: &Work, (path, origin, active): (PathBuf, Origin, bool)) -> Entry {
-        let key = repo_key(&path);
-        Entry { state: w.states.get(&key).cloned(), job: w.jobs.get(&key).cloned(), path, origin, active }
+    /// Ce que DragonTree a relu de nouveau rend périmés le dernier message et les diffs du dossier de travail : ils
+    /// seront relus (les anciens restent montrés d'ici là).
+    fn follow(&self, key: &str, t: &RepoTab) {
+        let seen = t.status.as_ref().map_or(0, |s| Arc::as_ptr(s) as usize);
+        let mut all = lock(&self.reads);
+        let r = all.entry(key.to_string()).or_default();
+        if r.status_seen != seen {
+            r.status_seen = seen;
+            r.loaded.retain(|k, _| k != "message" && !k.starts_with("w:"));
+        }
     }
 
-    pub fn screen(&mut self, path: &str, active: Option<&Path>) -> Option<Screen> {
-        let repos = self.repos(active);
+    /// Ce que DragonTree sait du dépôt, et ce qui en a été lu à part pour l'écran `parts`.
+    fn view(&self, key: &str, t: &RepoTab, parts: &[&str]) -> RepoView {
+        let status = match (&t.open_error, &t.status) {
+            (Some(e), _) => Some(Err(e.to_string())),
+            (None, Some(s)) => {
+                // DragonTree lit aussi les fichiers ignorés ; le téléphone ne les montre pas.
+                let mut s = (**s).clone();
+                s.entries.retain(|e| e.worktree != FileState::Ignored);
+                Some(Ok(s))
+            }
+            (None, None) => None,
+        };
+        let mut v = RepoView {
+            status,
+            refs: t.refs.as_deref().cloned(),
+            stashes: t.stashes.to_vec(),
+            worktrees: t.worktrees.to_vec(),
+            remotes: t.remotes.iter().map(|r| r.name.clone()).collect(),
+            op: t.status.is_some().then_some(t.op_state),
+            ..Default::default()
+        };
+        if parts == ["historique"] {
+            v.log = log_of(t);
+        }
+        let all = lock(&self.reads);
+        let Some(r) = all.get(key) else { return v };
+        v.last_message = r.last_message.clone().unwrap_or_default();
+        let mut keep = |k: String| {
+            if let Some(d) = r.diffs.get(&k) {
+                v.diffs.insert(k, d.clone());
+            }
+        };
+        match parts {
+            ["fichier", f] => keep(format!("w:{f}")),
+            ["commit", id, f] => keep(format!("c:{id}:{f}")),
+            _ => {}
+        }
+        if let ["commit", id, ..] = parts
+            && let Some(c) = r.commits.get(*id)
+        {
+            v.commits.insert(id.to_string(), c.clone());
+        }
+        v
+    }
+
+    pub fn screen(&mut self, app: &mut DragonTreeApp, path: &str) -> Option<Screen> {
+        let repos = self.repos(app.active_repo_dir());
         if path.is_empty() {
-            self.sweep(repos.iter().map(|r| r.0.clone()).collect(), false);
-            let w = lock(&self.work);
-            let entries: Vec<Entry> = repos.into_iter().map(|r| self.entry(&w, r)).collect();
-            return Some(home(&entries, w.sweeping));
+            let closed = repos.iter().filter(|r| app.repo_tab(&r.0).is_none()).map(|r| r.0.clone()).collect();
+            self.sweep(closed, false);
+            let sweeping = lock(&self.sweep).running;
+            let entries: Vec<Entry> = repos.into_iter().map(|r| self.entry(app, r)).collect();
+            return Some(home(&entries, sweeping));
         }
         let rest = path.strip_prefix("depot/")?;
         let (key, sub) = rest.split_once('/').unwrap_or((rest, ""));
         let repo = repos.into_iter().find(|r| repo_key(&r.0) == key)?.0;
-        self.want(&repo, Load::Overview, false);
+        self.watch(app, &repo);
+        let t = app.repo_tab(&repo)?;
         let parts: Vec<&str> = sub.split('/').collect();
-        match parts.as_slice() {
-            ["fichier", f] => self.want(&repo, Load::WorkDiff(f.to_string()), false),
-            ["historique"] => self.want(&repo, Load::Log, false),
-            ["commit", id] => self.want(&repo, Load::Commit(id.to_string()), false),
-            ["commit", id, f] => {
-                self.want(&repo, Load::Commit(id.to_string()), false);
-                self.want(&repo, Load::CommitDiff(id.to_string(), f.to_string()), false);
+        self.follow(key, t);
+        if let Some(handle) = &t.repo {
+            match parts.as_slice() {
+                [""] | ["modifs"] => self.want(key, handle, Load::LastMessage),
+                ["fichier", f] => {
+                    let entry = t.status.as_ref().and_then(|s| s.entries.iter().find(|e| file_key(&e.path) == *f));
+                    if let Some(e) = entry {
+                        self.want(key, handle, Load::WorkDiff(f.to_string(), e.clone()));
+                    }
+                }
+                ["commit", id] => self.want(key, handle, Load::Commit(id.to_string())),
+                ["commit", id, f] => {
+                    self.want(key, handle, Load::Commit(id.to_string()));
+                    self.want(key, handle, Load::CommitDiff(id.to_string(), f.to_string()));
+                }
+                _ => {}
             }
-            _ => {}
         }
-        let w = lock(&self.work);
-        let view = w.views.get(key).cloned().unwrap_or_default();
-        let job = w.jobs.get(key).filter(|j| j.at.elapsed() < JOB_SHOWN || j.tone == Tone::Info).cloned();
-        drop(w);
+        let view = self.view(key, t, &parts);
+        let job = self.job(key, Some(t));
         let busy = job.as_ref().is_some_and(|j| j.tone == Tone::Info);
         let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
         let mut screen = match parts.as_slice() {
@@ -683,27 +709,35 @@ impl Phone {
             ["worktrees"] => depot::worktrees(&view, busy),
             _ => return None,
         };
-        // Ce qu'a donné la dernière opération, en tête de chaque écran du dépôt.
+        // Ce que fait DragonTree, ou ce qu'a donné sa dernière opération, en tête de chaque écran du dépôt.
         if let Some(j) = job {
             screen.blocks.insert(0, Block::Note { text: j.text, tone: j.tone });
         }
         Some(screen)
     }
 
-    /// Une action de la liste (`fetch:<clé>`…) ou d'un écran du dépôt (`depot/<clé>/…`). `Ok(Some(dépôt))` pour
-    /// « ouvrir sur le PC » : le dépôt transmis à DragonTree.
+    /// Une action de la liste (`fetch:<clé>`…) ou d'un écran du dépôt (`depot/<clé>/…`) ; vrai : DragonTree est à
+    /// montrer sur le PC (« afficher dans DragonTree »).
     pub fn action(
         &mut self,
+        app: &mut DragonTreeApp,
         path: &str,
         action: &str,
         input: Option<&str>,
-        active: Option<&Path>,
-    ) -> Result<(String, Option<PathBuf>), String> {
-        let repos = self.repos(active);
+    ) -> Result<(String, bool), String> {
+        let repos = self.repos(app.active_repo_dir());
         let in_repo = path.strip_prefix("depot/").map(|r| r.split_once('/').map_or(r, |(k, _)| k).to_string());
         if action == "actualiser" && in_repo.is_none() {
-            self.sweep(repos.into_iter().map(|r| r.0).collect(), true);
-            return Ok(("Actualisation lancée".into(), None));
+            let mut closed = Vec::new();
+            for (p, ..) in repos {
+                if app.repo_tab(&p).is_some() {
+                    app.refresh_repo(&p, Refresh::REFS.with_extras());
+                } else {
+                    closed.push(p);
+                }
+            }
+            self.sweep(closed, true);
+            return Ok(("Actualisation lancée".into(), false));
         }
         // Depuis la liste, l'action porte la clé du dépôt (`fetch:<clé>`) ; dans un écran du dépôt, le chemin.
         let (verb, key) = match &in_repo {
@@ -720,85 +754,75 @@ impl Phone {
             .ok_or("Ce dépôt n'est plus dans la liste.")?;
         let name = repo_name(&repo);
         if verb == "pc" {
-            let (instance, target) = (self.instance.clone(), repo.clone());
-            // Le canal d'instance est servi par un fil de DragonTree, dans ce même processus : jamais attendu ici.
-            std::thread::spawn(move || {
-                let _ = single_instance::send(&instance, &Forwarded { open: vec![target] }, Duration::from_secs(3));
-            });
-            return Ok((format!("{name} ouvert sur le PC"), Some(repo)));
+            app.show_repo(&repo);
+            return Ok((format!("{name} affiché dans DragonTree sur le PC"), true));
         }
         if verb == "actualiser" {
-            self.want(&repo, Load::Overview, true);
-            if lock(&self.work).loaded.contains_key(&(key.clone(), Load::Log.key())) {
-                self.want(&repo, Load::Log, true);
+            if app.repo_tab(&repo).is_none() {
+                app.open_repo_tab(&repo);
+            } else {
+                app.refresh_repo(&repo, Refresh::ALL.with_extras());
             }
-            return Ok(("Relecture du dépôt…".into(), None));
+            self.refreshed.insert(key.clone(), Instant::now());
+            lock(&self.reads).remove(&key);
+            return Ok(("DragonTree relit le dépôt…".into(), false));
         }
-        let view = lock(&self.work).views.get(&key).cloned().unwrap_or_default();
+        // Le geste vient du dernier écran du dépôt, fait de ce que DragonTree en savait (`view` : sans ce qui est lu
+        // à part, inutile ici).
+        let view = app.repo_tab(&repo).map(|t| self.view(&key, t, &[])).unwrap_or_default();
         let (op, label) = depot::parse(&view, &verb, input)?;
-        let mut w = lock(&self.work);
-        if w.jobs.get(&key).is_some_and(|j| j.tone == Tone::Info) {
-            return Err(format!("{name} : une opération est déjà en cours."));
+        self.failed.remove(&key);
+        app.open_repo_tab(&repo);
+        let opening = app.repo_tab(&repo).is_some_and(|t| t.repo.is_none() && t.open_error.is_none());
+        if opening {
+            if self.waiting.contains_key(&key) {
+                return Err(format!("{name} : une opération attend déjà l'ouverture du dépôt."));
+            }
+            self.waiting.insert(key, Waiting { path: repo, op, label: label.clone(), at: Instant::now() });
+            return Ok((format!("{label} : ouverture de {name} dans DragonTree…"), false));
         }
-        w.jobs.insert(key.clone(), Job { text: format!("{label} en cours…"), tone: Tone::Info, at: Instant::now() });
-        drop(w);
-        let (work, cell, configured) = (self.work.clone(), self.git.clone(), self.lists.git_path.clone());
-        let log_shown = lock(&self.work).loaded.contains_key(&(key.clone(), Load::Log.key()));
-        let reply = format!("{label} lancé : {name}");
-        std::thread::spawn(move || {
-            let repo = git(&cell, configured).and_then(|g| open(&g, &repo));
-            let done = repo.as_ref().map_err(String::clone).and_then(|r| run(r, &op));
-            // Après l'opération : l'état, l'historique s'il est montré ; les diffs du dossier de travail sont relus.
-            let mut fresh = RepoView::default();
-            if let Ok(r) = &repo {
-                read_overview(r, &mut fresh);
-                if log_shown {
-                    read(r, &Load::Log, &mut fresh);
-                }
-            }
-            let job = match done {
-                Ok(text) => Job { text: format!("{label} : {text}"), tone: Tone::Ok, at: Instant::now() },
-                Err(text) => Job { text: format!("{label} : {text}"), tone: Tone::Danger, at: Instant::now() },
+        app.queue_operation(&repo, op)?;
+        Ok((format!("{label} : lancé dans DragonTree"), false))
+    }
+
+    /// À chaque image : les opérations qui attendaient l'ouverture de leur dépôt partent quand DragonTree l'a ouvert
+    /// (ou sont abandonnées s'il n'y arrive pas).
+    pub fn after_logic(&mut self, app: &mut DragonTreeApp) {
+        if self.waiting.is_empty() {
+            return;
+        }
+        let keys: Vec<String> = self.waiting.keys().cloned().collect();
+        for key in keys {
+            let w = &self.waiting[&key];
+            let (ready, error) = match app.repo_tab(&w.path) {
+                None => (false, Some("l'onglet du dépôt a été fermé dans DragonTree.".to_string())),
+                Some(t) => (t.repo.is_some(), t.open_error.as_ref().map(|e| e.to_string())),
             };
-            let mut w = lock(&work);
-            w.jobs.insert(key.clone(), job);
-            if repo.is_ok() {
-                w.states.insert(
-                    key.clone(),
-                    state_of(
-                        fresh
-                            .status
-                            .as_ref()
-                            .map(|r| r.as_ref().map_err(String::clone))
-                            .unwrap_or(Err("dépôt illisible".into())),
-                    ),
-                );
-                let current = w.views.entry(key.clone()).or_default();
-                current.status = fresh.status;
-                current.refs = fresh.refs;
-                current.stashes = fresh.stashes;
-                current.worktrees = fresh.worktrees;
-                current.remotes = fresh.remotes;
-                current.op = fresh.op;
-                current.last_message = fresh.last_message;
-                if log_shown {
-                    current.log = fresh.log;
-                }
-                current.diffs.retain(|k, _| !k.starts_with("w:"));
-                let now = Instant::now();
-                w.loaded.insert((key.clone(), Load::Overview.key()), now);
-                w.loaded.retain(|(k, what), _| !(k == &key && what.starts_with("w:")));
+            let error = error.or_else(|| {
+                (!ready && w.at.elapsed() > OPEN_WAIT).then(|| "DragonTree n'a pas ouvert le dépôt.".into())
+            });
+            if !ready && error.is_none() {
+                continue;
             }
-        });
-        Ok((reply, None))
+            let Some(w) = self.waiting.remove(&key) else { continue };
+            let error = error.or_else(|| app.queue_operation(&w.path, w.op).err());
+            if let Some(e) = error {
+                let text = format!("{} : {}", w.label, short_error(&e));
+                self.failed.insert(key, Job { text, tone: Tone::Danger, at: Instant::now() });
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use dragontree_app::StartOptions;
+    use egui_kittest::Harness;
     use suite_sdk::mobile::ui::Block;
 
     use super::*;
+
+    type H = Harness<'static, DragonTreeApp>;
 
     fn state(branch: &str, ahead: u32, behind: u32, changes: usize) -> RepoState {
         RepoState {
@@ -872,53 +896,78 @@ mod tests {
         assert!(push.confirm.is_some(), "push confirmé");
     }
 
-    /// Attend la fin de l'opération en cours sur ce dépôt ; rend son ton.
-    fn wait_job(phone: &Phone, key: &str) -> Tone {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while lock(&phone.work).jobs.get(key).is_none_or(|j| j.tone == Tone::Info) && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        lock(&phone.work).jobs[key].tone
+    /// DragonTree dans un profil d'essai, sans le coffre de Windows.
+    fn dragontree(profile: &Path) -> H {
+        dragontree_forges::secrets::use_vaults(
+            Arc::new(suite_accounts::MemoryVault::default()),
+            Arc::new(suite_accounts::MemoryVault::default()),
+        );
+        let start = StartOptions {
+            profile_dir: Some(profile.to_path_buf()),
+            accounts_dir: Some(profile.join("comptes")),
+            screenshot_after: Duration::ZERO,
+            lang: Some(dragontree_i18n::Lang::Fr),
+            ..Default::default()
+        };
+        Harness::builder()
+            .with_size(eframe::egui::vec2(1200.0, 800.0))
+            .build_eframe(move |cc| DragonTreeApp::new(cc, start))
     }
 
-    /// Attend qu'un écran contienne `text`.
-    fn wait_screen(phone: &mut Phone, path: &str, text: &str) -> Screen {
-        let deadline = Instant::now() + Duration::from_secs(30);
+    /// Le profil de DragonTree avec `repo` dans ses récents, et le téléphone qui lit ses réglages.
+    fn phone_for(profile: &Path, repo: &Path) -> Phone {
+        std::fs::create_dir_all(profile).unwrap();
+        let settings = Settings { recent_repos: vec![repo.to_path_buf()], ..Default::default() };
+        let file = profile.join("settings.json");
+        std::fs::write(&file, serde_json::to_vec(&settings).unwrap()).unwrap();
+        Phone::new(file)
+    }
+
+    /// Fait tourner DragonTree jusqu'à ce que l'écran `path` contienne `text`.
+    fn wait_screen(h: &mut H, phone: &mut Phone, path: &str, text: &str) -> Screen {
+        let deadline = Instant::now() + Duration::from_secs(40);
         loop {
-            let s = phone.screen(path, None).expect("écran");
+            h.step();
+            phone.after_logic(h.state_mut());
+            let s = phone.screen(h.state_mut(), path).expect("écran");
             if format!("{s:?}").contains(text) || Instant::now() > deadline {
                 return s;
             }
-            std::thread::sleep(Duration::from_millis(30));
+            std::thread::sleep(Duration::from_millis(25));
         }
     }
 
-    fn phone_for(dir: &Path, repo: &Path) -> Phone {
-        let settings = Settings { recent_repos: vec![repo.to_path_buf()], ..Default::default() };
-        let file = dir.join("settings.json");
-        std::fs::write(&file, serde_json::to_vec(&settings).unwrap()).unwrap();
-        Phone::new(file, "essai".into())
-    }
-
     #[test]
-    fn an_operation_runs_in_a_thread_and_reports_its_result() {
+    fn an_operation_waits_for_dragontree_to_open_the_repo() {
         let dir = std::env::temp_dir().join(format!("suite-dragontree-telephone-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
         let repo = dir.join("pas-un-depot");
         std::fs::create_dir_all(&repo).unwrap();
-        let mut phone = phone_for(&dir, &repo);
+        let mut phone = phone_for(&dir.join("profil"), &repo);
+        let mut h = dragontree(&dir.join("profil"));
+        h.step();
         let key = repo_key(&repo);
-        assert!(phone.action("", "fetch:inconnu", None, None).is_err());
-        assert_eq!(phone.action("", &format!("fetch:{key}"), None, None).map(|r| r.1), Ok(None));
-        assert!(phone.action("", &format!("fetch:{key}"), None, None).is_err(), "une seule opération à la fois");
-        assert_eq!(wait_job(&phone, &key), Tone::Danger, "pas un dépôt git");
-        let s = phone.screen(&format!("depot/{key}"), None).unwrap();
-        assert!(s.blocks.iter().any(|b| matches!(b, Block::Note { tone: Tone::Danger, .. })));
+        assert!(phone.action(h.state_mut(), "", "fetch:inconnu", None).is_err());
+        let (text, show) = phone.action(h.state_mut(), "", &format!("fetch:{key}"), None).unwrap();
+        assert!(text.contains("ouverture") && !show, "{text}");
+        assert!(h.state().repo_tab(&repo).is_some(), "ouvert dans un onglet de DragonTree");
+        assert!(h.state().active_repo_dir().is_none(), "en fond");
+        assert!(phone.action(h.state_mut(), "", &format!("fetch:{key}"), None).is_err(), "une seule en attente");
+        let s = wait_screen(&mut h, &mut phone, &format!("depot/{key}"), "tone: Danger");
+        assert!(
+            s.blocks
+                .iter()
+                .any(|b| matches!(b, Block::Note { tone: Tone::Danger, text } if text.starts_with("Fetch : "))),
+            "pas un dépôt git : {s:?}"
+        );
+        drop(h);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Un vrai dépôt : modifier, voir le diff, indexer, valider, retrouver le commit, créer une branche.
+    /// Un vrai dépôt, mené par DragonTree : modifier, voir le diff, indexer, valider, retrouver le commit dans son
+    /// historique, créer une branche ; un nom refusé par git est dit.
     #[test]
-    fn a_change_is_staged_committed_and_found_in_the_history() {
+    fn a_change_is_staged_and_committed_by_dragontree() {
         let Ok(git) = Git::discover() else { return };
         let dir = std::env::temp_dir().join(format!("suite-dragontree-git-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -938,59 +987,39 @@ mod tests {
         sh(&["init", "-q", "-b", "main"]);
         sh(&["config", "user.name", "Essai"]);
         sh(&["config", "user.email", "essai@exemple.org"]);
-        std::fs::write(
-            repo.join("lisez-moi.txt"),
-            "un
-",
-        )
-        .unwrap();
+        sh(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(repo.join("lisez-moi.txt"), "un\n").unwrap();
         sh(&["add", "."]);
         sh(&["commit", "-q", "-m", "Premier commit"]);
-        std::fs::write(
-            repo.join("lisez-moi.txt"),
-            "un
-deux
-",
-        )
-        .unwrap();
+        std::fs::write(repo.join("lisez-moi.txt"), "un\ndeux\n").unwrap();
 
-        let mut phone = phone_for(&dir, &repo);
+        let profile = dir.join("profil");
+        let mut phone = phone_for(&profile, &repo);
+        let mut h = dragontree(&profile);
         let key = repo_key(&repo);
         let base = format!("depot/{key}");
-        let s = wait_screen(&mut phone, &base, "1 fichier(s), dont 0 indexé(s)");
+        let s = wait_screen(&mut h, &mut phone, &base, "1 fichier(s), dont 0 indexé(s)");
         assert!(format!("{s:?}").contains("1 fichier(s), dont 0 indexé(s)"), "{s:?}");
+        assert!(h.state().repo_tab(&repo).is_some() && h.state().active_repo_dir().is_none(), "onglet de fond");
         let f = file_key("lisez-moi.txt");
-        let diff = wait_screen(&mut phone, &format!("{base}/fichier/{f}"), "+deux");
+        let diff = wait_screen(&mut h, &mut phone, &format!("{base}/fichier/{f}"), "+deux");
         assert!(format!("{diff:?}").contains("+deux"), "{diff:?}");
 
-        phone.action(&format!("{base}/modifs"), &format!("indexer:{f}"), None, None).unwrap();
-        assert_eq!(wait_job(&phone, &key), Tone::Ok);
-        let s = phone.screen(&format!("{base}/modifs"), None).unwrap();
-        assert!(s.action_ids().contains("valider"), "indexé : on peut valider");
-        phone.action(&format!("{base}/modifs"), "valider", Some("Ajoute deux"), None).unwrap();
-        assert_eq!(wait_job(&phone, &key), Tone::Ok, "{:?}", lock(&phone.work).jobs[&key]);
-        let log = wait_screen(&mut phone, &format!("{base}/historique"), "Ajoute deux");
-        assert!(format!("{log:?}").contains("Ajoute deux") && format!("{log:?}").contains("Premier commit"));
+        phone.action(h.state_mut(), &format!("{base}/modifs"), &format!("indexer:{f}"), None).unwrap();
+        let s = wait_screen(&mut h, &mut phone, &format!("{base}/modifs"), "Valider…");
+        assert!(s.action_ids().contains("valider"), "indexé par DragonTree : on peut valider");
+        phone.action(h.state_mut(), &format!("{base}/modifs"), "valider", Some("Ajoute deux")).unwrap();
+        let log = wait_screen(&mut h, &mut phone, &format!("{base}/historique"), "Ajoute deux");
+        assert!(format!("{log:?}").contains("Ajoute deux") && format!("{log:?}").contains("Premier commit"), "{log:?}");
+        assert!(format!("{log:?}").contains("Commit créé"), "le résultat de DragonTree : {log:?}");
 
-        phone.action(&format!("{base}/branches"), "nouvelle-branche", Some("feature/essai"), None).unwrap();
-        assert_eq!(wait_job(&phone, &key), Tone::Ok);
-        let b = wait_screen(&mut phone, &format!("{base}/branches"), "Courante : feature/essai");
+        phone.action(h.state_mut(), &format!("{base}/branches"), "nouvelle-branche", Some("feature/essai")).unwrap();
+        let b = wait_screen(&mut h, &mut phone, &format!("{base}/branches"), "Courante : feature/essai");
+        assert!(b.action_ids().contains("basculer:main"), "{b:?}");
         if let Some(out) = std::env::var_os("SUITE_MOBILE_DUMP") {
-            std::fs::write(
-                repo.join("lisez-moi.txt"),
-                "un
-deux
-trois
-",
-            )
-            .unwrap();
-            std::fs::write(
-                repo.join("nouveau.rs"),
-                "fn main() {}
-",
-            )
-            .unwrap();
-            phone.action(&base, "actualiser", None, None).unwrap();
+            std::fs::write(repo.join("lisez-moi.txt"), "un\ndeux\ntrois\n").unwrap();
+            std::fs::write(repo.join("nouveau.rs"), "fn main() {}\n").unwrap();
+            phone.action(h.state_mut(), &base, "actualiser", None).unwrap();
             let out = Path::new(&out);
             for (name, path, wait) in [
                 ("depot", base.clone(), "fichier(s)"),
@@ -999,13 +1028,19 @@ trois
                 ("historique", format!("{base}/historique"), "Ajoute deux"),
                 ("branches", format!("{base}/branches"), "feature/essai"),
             ] {
-                let s = wait_screen(&mut phone, &path, wait);
+                let s = wait_screen(&mut h, &mut phone, &path, wait);
                 std::fs::write(out.join(format!("{name}.json")), serde_json::to_vec(&s).unwrap()).unwrap();
             }
         }
-        assert!(b.action_ids().contains("basculer:main"));
-        assert!(phone.action(&format!("{base}/branches"), "nouvelle-branche", Some("pas valide..nom"), None).is_ok());
-        assert_eq!(wait_job(&phone, &key), Tone::Danger, "nom de branche refusé");
+        phone.action(h.state_mut(), &format!("{base}/branches"), "nouvelle-branche", Some("pas valide..nom")).unwrap();
+        let s = wait_screen(&mut h, &mut phone, &format!("{base}/branches"), "a échoué");
+        assert!(s.blocks.iter().any(|b| matches!(b, Block::Note { tone: Tone::Danger, .. })), "nom refusé : {s:?}");
+
+        // « Afficher dans DragonTree » : l'onglet du dépôt devient celui du PC.
+        let (_, show) = phone.action(h.state_mut(), &base, "pc", None).unwrap();
+        assert!(show);
+        assert_eq!(h.state().active_repo_dir().map(path_key), Some(path_key(&repo)));
+        drop(h);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
