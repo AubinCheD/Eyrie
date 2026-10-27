@@ -111,7 +111,7 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
             .on_settings_left(|app| app.settings_left())
             .after_logic(move |app, _| mobile::after_logic(app, &done))
             .mobile_screens(move |app, path, _| mobile::screen(app, &screens, path))
-            .mobile_actions(move |app, path, action, _, cx| mobile::action(app, &acts, path, action, cx))
+            .mobile_actions(move |app, path, action, input, cx| mobile::action(app, &acts, path, action, input, cx))
             .keep(guard)
             .keep(tray),
     ))

@@ -158,6 +158,7 @@ export component CodeEntry inherits Rectangle {
             padding-left: 4px;
             IconButton {
                 icon: "back";
+                label: "Retour";
                 clicked => { root.cancel(); }
             }
             Text {
@@ -342,6 +343,7 @@ export component Scanner inherits Rectangle {
         x: 8px;
         y: 8px;
         icon: "close";
+        label: "Fermer";
         tint: #ffffff;
         clicked => { root.cancel(); }
     }

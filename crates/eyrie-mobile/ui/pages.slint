@@ -343,6 +343,7 @@ export component MorePage inherits Rectangle {
                             alignment: center;
                             IconButton {
                                 icon: m.pinned ? "star" : "star-outline";
+                                label: m.pinned ? "Retirer de la barre du bas" : "Mettre dans la barre du bas";
                                 tint: m.pinned ? Theme.warn : Theme.text-faint;
                                 clicked => { root.toggle-pin(m.id); }
                             }

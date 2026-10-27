@@ -127,12 +127,17 @@ export component Icon inherits Rectangle {
 // Un bouton rond, une icône dedans.
 export component IconButton inherits Rectangle {
     in property <string> icon;
+    // Ce que dit le lecteur d'écran.
+    in property <string> label;
     in property <color> tint: Theme.text;
     in property <length> size: 44px;
     callback clicked();
     width: size;
     height: size;
     border-radius: size / 2;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
     background: ta.pressed ? Theme.pressed : transparent;
     animate background { duration: 120ms; }
     Icon {
@@ -298,6 +303,7 @@ export component RowView inherits Rectangle {
             }
             if item.acts.length > 0: IconButton {
                 icon: "more";
+                label: "Plus d'actions";
                 size: 40px;
                 tint: Theme.text-dim;
                 clicked => { root.menu(); }
@@ -508,6 +514,7 @@ export component TopBar inherits Rectangle {
         spacing: 4px;
         if root.can-back: IconButton {
             icon: "back";
+            label: "Retour";
             clicked => { root.back(); }
         }
         VerticalLayout {
@@ -529,6 +536,7 @@ export component TopBar inherits Rectangle {
         }
         if root.show-pc: IconButton {
             icon: "pc";
+            label: "Montrer sur le PC";
             tint: Theme.text-dim;
             clicked => { root.pc(); }
         }
@@ -555,6 +563,7 @@ export component TopBar inherits Rectangle {
         }
         if root.acts.length > 1: IconButton {
             icon: "more";
+            label: "Plus d'actions";
             clicked => { root.more(); }
         }
     }

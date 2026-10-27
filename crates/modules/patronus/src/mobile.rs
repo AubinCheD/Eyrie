@@ -138,7 +138,14 @@ fn plural(n: usize, one: &str, many: &str) -> String {
 }
 
 fn task_acts(t: &TaskLine) -> Vec<Act> {
-    let mut acts = vec![Act::new(format!("lancer:{}", t.id), "Lancer").glyph("▶️").primary()];
+    let mut acts = vec![
+        Act::new(format!("lancer:{}", t.id), "Lancer").glyph("▶️").primary(),
+        // La note part dans le journal et à la fin de la consigne d'une session Claude (comme un déclencheur).
+        Act::new(format!("lancer-note:{}", t.id), "Lancer avec une consigne…")
+            .glyph("📝")
+            .input("Ajoutée à la consigne de la tâche", "Ex. : regarde surtout le module de facturation")
+            .multiline(),
+    ];
     if t.running || t.pending {
         acts.push(Act::new(format!("arreter:{}", t.id), "Arrêter").glyph("⏹️").danger());
     }
@@ -441,14 +448,32 @@ fn background(phone: &Shared, id: &str, busy: &str, work: impl FnOnce() -> Done 
     });
 }
 
-pub fn action(app: &mut App, phone: &Shared, path: &str, action: &str, cx: &mut Cx) -> Result<Option<String>, String> {
-    let result = act(&mut app.engine(), phone, path, action);
+pub fn action(
+    app: &mut App,
+    phone: &Shared,
+    path: &str,
+    action: &str,
+    input: Option<&str>,
+    cx: &mut Cx,
+) -> Result<Option<String>, String> {
+    let result = act_with(&mut app.engine(), phone, path, action, input);
     cx.host.repaint();
     result
 }
 
 /// Une action du téléphone, sous le verrou du moteur (git part dans un fil, hors du verrou).
+#[cfg(test)]
 fn act(e: &mut Engine, phone: &Shared, path: &str, action: &str) -> Result<Option<String>, String> {
+    act_with(e, phone, path, action, None)
+}
+
+fn act_with(
+    e: &mut Engine,
+    phone: &Shared,
+    path: &str,
+    action: &str,
+    input: Option<&str>,
+) -> Result<Option<String>, String> {
     if let Some(id) = path.strip_prefix("run/") {
         if e.runs.iter().all(|r| r.id != id) {
             return Err("Cette exécution n'existe plus.".into());
@@ -488,12 +513,14 @@ fn act(e: &mut Engine, phone: &Shared, path: &str, action: &str) -> Result<Optio
         };
     }
     match action.split_once(':') {
-        Some(("lancer", id)) => {
+        Some((verb @ ("lancer" | "lancer-note"), id)) => {
             if e.task(id).is_none() {
                 return Err("Cette tâche n'existe plus ou ne peut pas être lue.".into());
             }
             let queued = e.is_running(id);
-            e.launch(id, Context { trigger: "téléphone".into(), ..Default::default() }, now());
+            let notes =
+                if verb == "lancer-note" { input.unwrap_or_default().trim().to_string() } else { String::new() };
+            e.launch(id, Context { trigger: "téléphone".into(), notes, ..Default::default() }, now());
             Ok(Some(if queued { "Déjà en cours : relancée à la fin" } else { "Lancée" }.into()))
         }
         Some(("arreter", id)) => {
@@ -586,7 +613,18 @@ mod tests {
             tone: Tone::Warn,
         }));
         let ids: Vec<String> = s.action_ids().into_iter().collect();
-        assert_eq!(ids, ["arreter:build", "lancer:build", "lancer:casse", "reprendre", "tout_arreter"]);
+        assert_eq!(
+            ids,
+            [
+                "arreter:build",
+                "lancer-note:build",
+                "lancer-note:casse",
+                "lancer:build",
+                "lancer:casse",
+                "reprendre",
+                "tout_arreter"
+            ]
+        );
         assert_eq!(s.opens().into_iter().collect::<Vec<_>>(), ["run/r0", "run/r1", "tache/build", "tache/casse"]);
         let rows: Vec<&Row> = s
             .blocks
