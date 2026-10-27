@@ -56,6 +56,18 @@ fn inside(path: &Path, dir: &Path) -> bool {
     norm(path).starts_with(&norm(dir))
 }
 
+/// État du nœud (sa clé privée comprise) d'Eyrie dont le dossier est `dir` : dans `%LOCALAPPDATA%\EyrieSuite\Eyrie`,
+/// jamais dans le profil itinérant (`%APPDATA%`), qu'une synchronisation ou une sauvegarde copierait ailleurs — qui
+/// aurait la clé pourrait se faire passer pour ce poste sur le tailnet. L'ancien dossier y est déplacé. Un Eyrie sur
+/// un autre dossier (essais) garde le sien.
+fn node_dir(dir: &Path) -> PathBuf {
+    let old = dir.join("tailnet");
+    if dir != crate::persist::default_data_dir() {
+        return old;
+    }
+    suite_accounts::moved(&old, &suite_accounts::local_suite_dir().join("Eyrie").join("tailnet"))
+}
+
 pub fn hostname(settings: &TailnetSettings) -> String {
     let chosen = if settings.hostname.trim().is_empty() {
         format!("suite-{}", fawkes_tailnet::computer_name())
@@ -79,7 +91,7 @@ impl Tailnet {
         }
         self.stop();
         if let Some(h) = wanted {
-            let state_dir = dir.join("tailnet");
+            let state_dir = node_dir(dir);
             let _ = std::fs::create_dir_all(&state_dir);
             self.running = Some((fawkes_tailnet::Tailnet::start(&state_dir, &h, ctx.clone()), h));
         }
@@ -121,6 +133,12 @@ mod tests {
         let h = hostname(&TailnetSettings { enabled: true, hostname: String::new() });
         assert!(h.starts_with("suite"), "{h}");
         assert_eq!(hostname(&TailnetSettings { enabled: true, hostname: "Mon Poste".into() }), "mon-poste");
+    }
+
+    #[test]
+    fn an_eyrie_on_another_folder_keeps_its_node_there() {
+        let dir = Path::new(r"C:\Temp\eyrie-essai");
+        assert_eq!(node_dir(dir), dir.join("tailnet"));
     }
 
     /// Le compagnon compilé dans le dépôt voisin n'est cherché que dans le profil de l'utilisateur.

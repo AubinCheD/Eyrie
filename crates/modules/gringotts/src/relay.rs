@@ -29,10 +29,15 @@ const MAX_INPUT: u64 = 1024 * 1024;
 const MAX_OUTPUT: u64 = 1024 * 1024;
 const CHAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Dossier des données de Gringotts : celui de la suite (`EyrieSuite`, ou `EYRIESUITE_DIR`), le même pour Eyrie et
-/// pour le relais lancé par Claude Code.
+/// Dossier des données de Gringotts : celui de la suite qui ne quitte pas le poste (`%LOCALAPPDATA%\EyrieSuite`, ou
+/// `EYRIESUITE_DIR`), le même pour Eyrie et pour le relais lancé par Claude Code. Il garde des copies du
+/// `settings.json` de Claude Code (son bloc `env` peut contenir des secrets) et des relevés (compte, organisation,
+/// dossiers) : rien qui doive suivre un profil itinérant. L'ancien dossier, dans `%APPDATA%`, y est déplacé.
 pub fn data_dir() -> PathBuf {
-    suite_accounts::suite_dir().join("gringotts")
+    suite_accounts::moved(
+        &suite_accounts::suite_dir().join("gringotts"),
+        &suite_accounts::local_suite_dir().join("gringotts"),
+    )
 }
 
 fn now() -> i64 {

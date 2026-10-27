@@ -46,6 +46,28 @@ pub fn suite_dir() -> PathBuf {
     pick_dir(env_dir(), None, default_suite_dir())
 }
 
+/// Dossier commun de la suite qui ne quitte pas le poste : `EYRIESUITE_DIR`, sinon `%LOCALAPPDATA%\EyrieSuite`. Pour
+/// ce qui ne doit suivre ni un profil itinérant ni une sauvegarde du dossier Roaming : clé d'un nœud Tailscale, copies
+/// de réglages, relevés.
+pub fn local_suite_dir() -> PathBuf {
+    pick_dir(env_dir(), None, dirs::data_local_dir().unwrap_or_else(std::env::temp_dir).join(SUITE))
+}
+
+/// `new`, après y avoir déplacé `old` s'il existe encore (dossier rangé autrefois ailleurs, dans le profil itinérant
+/// par exemple) ; `old` tant que le déplacement échoue (fichier ouvert, autre volume) : rien n'est perdu, il sera
+/// retenté au prochain appel.
+pub fn moved(old: &Path, new: &Path) -> PathBuf {
+    if old != new && old.exists() && !new.exists() {
+        if let Some(parent) = new.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if std::fs::rename(old, new).is_err() {
+            return old.to_path_buf();
+        }
+    }
+    new.to_path_buf()
+}
+
 /// Dossier des comptes : `EYRIESUITE_DIR`, sinon `isolated` (profil d'essai ou de test de
 /// l'application, qui garde alors des comptes à part), sinon le dossier commun.
 pub fn accounts_dir(isolated: Option<&Path>) -> PathBuf {
@@ -227,5 +249,19 @@ mod tests {
         assert!(a.starts_with("EyrieSuite:") && a != SUITE, "{a}");
         assert_eq!(a, isolated_vault_service(Path::new(r"c:/temp/PROFIL-ESSAI/")), "même dossier, même service");
         assert_ne!(a, isolated_vault_service(Path::new(r"C:\Temp\autre")));
+    }
+
+    #[test]
+    fn a_folder_is_moved_once_and_kept_where_it_is() {
+        let root = tempfile::tempdir().unwrap();
+        let (old, new) = (root.path().join("Roaming").join("x"), root.path().join("Local").join("x"));
+        assert_eq!(moved(&old, &new), new, "rien à déplacer");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("relais.json"), "{}").unwrap();
+        assert_eq!(moved(&old, &new), new);
+        assert!(!old.exists() && new.join("relais.json").is_file(), "déplacé avec son contenu");
+        std::fs::create_dir_all(&old).unwrap();
+        assert_eq!(moved(&old, &new), new, "le nouveau dossier l'emporte");
+        assert!(new.join("relais.json").is_file());
     }
 }
