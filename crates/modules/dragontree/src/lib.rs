@@ -11,8 +11,13 @@
 //! - **réglages** : les siens sont dans ceux d'Eyrie (page DragonTree), et « Réglages… » y mène ;
 //! - **comptes** : ceux de toute la suite, que DragonTree lit lui-même ; « Comptes… » ouvre la page Comptes d'Eyrie,
 //!   et Thème et Langue disparaissent de ses réglages et de ses menus (`set_hosted`) ;
-//! - le titre « <dépôt> — DragonTree » devient le titre du module.
+//! - le titre « <dépôt> — DragonTree » devient le titre du module ;
+//! - **téléphone** (`mobile`) : ses dépôts et leur état (git, dans un fil), fetch, pull, push, ouvrir sur le PC.
 
+pub mod mobile;
+
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -115,6 +120,10 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
     };
     let profile = profile_dir.unwrap_or_else(dragontree_app::settings::config_dir);
     let key = single_instance::profile_key(&profile);
+    // Le téléphone lit le même fichier de réglages que DragonTree (`StartOptions::profile_dir`, sinon le profil par
+    // défaut), et lui transmet « ouvrir sur le PC » par son canal d'instance.
+    let phone = Rc::new(RefCell::new(mobile::Phone::new(profile.join("settings.json"), key.clone())));
+    let phone_actions = phone.clone();
     let instance = match single_instance::start(&key, &Forwarded { open: Vec::new() }, Duration::from_secs(3)) {
         Startup::Primary(i) => Some(i),
         // Une autre instance tient ce profil : elle a reçu la demande et passe au premier plan.
@@ -137,6 +146,14 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
         .key_commands(commands())
         .settings_panel(|app, ui| app.settings_ui(ui))
         .on_settings_left(|app| app.settings_left())
+        .mobile_screens(move |app, path, _| phone.borrow_mut().screen(path, app.active_repo_dir()))
+        .mobile_actions(move |app, _, action, _, cx| {
+            let (text, opened) = phone_actions.borrow_mut().action(action, app.active_repo_dir())?;
+            if opened.is_some() {
+                cx.host.show(ID);
+            }
+            Ok(Some(text))
+        })
         .after_logic(move |app, cx| {
             let now = app.active_repo_dir().map(|p| p.to_path_buf());
             if now != published {

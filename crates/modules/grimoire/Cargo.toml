@@ -10,3 +10,5 @@ authors.workspace = true
 suite-sdk.workspace = true
 grimoire.workspace = true
 eframe.workspace = true
+chrono.workspace = true
+serde_json.workspace = true

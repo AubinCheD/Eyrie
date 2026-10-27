@@ -6,8 +6,14 @@
 //!   tourne, l'exe passe sa demande à la suite ;
 //! - son travail de fond (demandes reçues, relevés) est sondé dans `ui` : appelé même masqué ;
 //! - **réglages** : les siens sont dans ceux d'Eyrie (sa page), et son bouton de réglages y mène ;
-//! - `grimoire-statusline.exe` reste un exe à part, lancé par Claude Code.
+//! - `grimoire-statusline.exe` reste un exe à part, lancé par Claude Code ;
+//! - **téléphone** (`mobile`) : profils, limites, serveurs MCP, en lecture ; « Ouvrir sur le PC » par le canal des
+//!   demandes de Grimoire.
 
+pub mod mobile;
+
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::mpsc;
 
 use eframe::egui::Color32;
@@ -59,6 +65,9 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
     let guard =
         grimoire::instance::acquire(custom.as_deref()).ok_or(Unavailable::AlreadyRunning { exe: "grimoire.exe" })?;
     let (tx, rx) = mpsc::channel();
+    // Le téléphone passe ses demandes (« ouvrir sur le PC ») par le même canal que les autres applications.
+    let phone = Rc::new(RefCell::new(mobile::Phone::new(tx.clone())));
+    let phone_actions = phone.clone();
     let pipe = grimoire::instance::pipe_name(custom.as_deref());
     let wake = bcx.cc.egui_ctx.clone();
     std::thread::Builder::new()
@@ -78,6 +87,8 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
         .key_commands(commands())
         .settings_panel(|app, ui| app.settings_ui(ui))
         .on_settings_left(|app| app.settings_left())
+        .mobile_screens(move |_, path, _| phone.borrow_mut().screen(path))
+        .mobile_actions(move |_, _, action, _, _| phone_actions.borrow_mut().action(action))
         // Ses couleurs suivent le thème clair ou sombre de la suite (sans toucher à son réglage).
         .before_logic(|app, cx| {
             let t = if cx.host.palette().dark { ThemeId::Sombre } else { ThemeId::Clair };

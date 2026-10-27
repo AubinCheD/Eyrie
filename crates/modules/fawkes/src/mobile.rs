@@ -61,13 +61,13 @@ fn state(app: &App, id: TermId) -> (String, Option<Tone>) {
 
 fn term_acts(app: &App, id: TermId) -> Vec<Act> {
     let asleep = !app.live.contains_key(&id);
-    let mut acts = vec![Act::new(format!("redemarrer:{id}"), "Redémarrer").glyph("⟳")];
+    let mut acts = vec![Act::new(format!("redemarrer:{id}"), "Redémarrer").glyph("🔄")];
     acts.push(if asleep {
-        Act::new(format!("reveiller:{id}"), "Réveiller").glyph("☀")
+        Act::new(format!("reveiller:{id}"), "Réveiller").glyph("☀️")
     } else {
-        Act::new(format!("veille:{id}"), "Mettre en veille").glyph("☾")
+        Act::new(format!("veille:{id}"), "Mettre en veille").glyph("🌙")
     });
-    acts.push(Act::new(format!("montrer:{id}"), "Montrer sur le PC").glyph("🖥"));
+    acts.push(Act::new(format!("montrer:{id}"), "Montrer sur le PC").glyph("🖥️"));
     acts
 }
 
@@ -112,7 +112,7 @@ fn home(app: &App) -> Screen {
         };
         s.note(text, Tone::Warn);
     }
-    s.row(Row::new("Nouveau terminal").glyph("＋").subtitle("Shell ou Claude, dans un dossier récent").open("nouveau"));
+    s.row(Row::new("Nouveau terminal").glyph("➕").subtitle("Shell ou Claude, dans un dossier récent").open("nouveau"));
     for g in &app.st.groups {
         let terms: Vec<_> = g.terminals.iter().filter_map(|id| app.st.term(*id)).collect();
         if terms.is_empty() {
@@ -159,13 +159,13 @@ fn new_terminal(app: &App) -> Screen {
                 .glyph("📁")
                 .tap(Act::new(format!("shell:{key}"), "Ouvrir un shell").glyph("›_"))
                 .act(Act::new(format!("shell:{key}"), "Ouvrir un shell").glyph("›_"))
-                .act(Act::new(format!("claude:{key}"), "Ouvrir Claude ici").glyph("✳")),
+                .act(Act::new(format!("claude:{key}"), "Ouvrir Claude ici").glyph("✳️")),
         );
     }
     s.section("Ailleurs", "");
     s.row(
         Row::new("Autre dossier…")
-            .glyph("⌨")
+            .glyph("⌨️")
             .tap(Act::new("shell:saisi", "Ouvrir").input("Dossier sur le PC", r"C:\Users\…\projet")),
     );
     s

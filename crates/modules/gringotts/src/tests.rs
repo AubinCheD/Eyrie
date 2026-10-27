@@ -165,3 +165,17 @@ fn without_readings_the_view_offers_to_install_the_relay() {
     let h = harness(g, ViewInfo::MAIN);
     assert!(h.query_by_label("Installer pour « Par défaut »").is_some());
 }
+
+#[test]
+fn the_phone_sees_the_limits_and_a_conversation_and_can_ask_for_a_rereading() {
+    let mut g = gringotts("telephone");
+    let h = g.host.clone();
+    let mut frame = eframe::Frame::_new_kittest();
+    let mut cx = Cx { host: &h, frame: &mut frame, active: false, visible: false };
+    let home = g.mobile_screen("", &mut cx).expect("accueil");
+    assert!(home.opens().contains("conv/s1"));
+    assert_eq!(g.mobile_screen("conv/s1", &mut cx).map(|s| s.title), Some("Export CSV".into()));
+    assert!(g.mobile_screen("conv/inconnue", &mut cx).is_none());
+    assert_eq!(g.mobile_action("", "relire", None, &mut cx), Ok(Some("Relecture lancée".into())));
+    assert!(g.mobile_action("", "autre", None, &mut cx).is_err());
+}

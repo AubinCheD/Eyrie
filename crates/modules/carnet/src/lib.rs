@@ -3,15 +3,17 @@
 //! C'est aussi le **gabarit de module** (voir `docs/ecrire-un-module.md`) : un module natif minimal
 //! qui montre tout ce que l'interface permet — deux vues, une pastille, des commandes, une page de
 //! réglages, les événements du bus, le contexte partagé, les demandes d'un autre module, un état
-//! enregistré dans son dossier de la suite.
+//! enregistré dans son dossier de la suite, ses écrans sur le téléphone.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
 use eframe::egui::{self, Color32, RichText};
 use serde::{Deserialize, Serialize};
 use suite_sdk::host::{Event, Request, SharedContext};
+use suite_sdk::mobile::ui::{Act, Row, Screen};
 use suite_sdk::shortcut::Shortcut;
 use suite_sdk::{
     Badge, BuildCx, CommandInfo, Cx, Host, Module, ModuleFactory, ModuleInfo, ModuleStatus, Origin, Tone, Unavailable,
@@ -99,13 +101,25 @@ impl Carnet {
     }
 
     fn label(&self) -> String {
-        if self.current.is_empty() {
-            "Hors dépôt".into()
-        } else {
-            std::path::Path::new(&self.current)
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| self.current.clone())
+        repo_label(&self.current)
+    }
+
+    /// Ajoute une ligne aux notes du dépôt `dir` (demande `noter`, téléphone).
+    fn append(&mut self, dir: &str, text: &str) {
+        let note = self.saved.notes.entry(dir.to_string()).or_default();
+        if !note.is_empty() && !note.ends_with('\n') {
+            note.push('\n');
+        }
+        note.push_str(text);
+        self.dirty = true;
+    }
+
+    /// Le dépôt d'un écran du téléphone : le courant pour l'accueil, celui de la clé pour `depot/<clé>`.
+    fn mobile_dir(&self, path: &str) -> Option<String> {
+        match path.strip_prefix("depot/") {
+            Some(key) => self.saved.notes.keys().find(|d| repo_key(d) == key).cloned(),
+            None if path.is_empty() => Some(self.current.clone()),
+            None => None,
         }
     }
 
@@ -279,12 +293,7 @@ impl Module for Carnet {
             "noter" => {
                 let dir = request.data.get("dir").and_then(|v| v.as_str()).unwrap_or_default().to_string();
                 let text = request.data.get("texte").and_then(|v| v.as_str()).ok_or("texte manquant")?;
-                let note = self.saved.notes.entry(dir).or_default();
-                if !note.is_empty() && !note.ends_with('\n') {
-                    note.push('\n');
-                }
-                note.push_str(text);
-                self.dirty = true;
+                self.append(&dir, text);
                 Ok(serde_json::json!({"ok": true}))
             }
             other => Err(format!("demande inconnue : {other}")),
@@ -296,10 +305,94 @@ impl Module for Carnet {
             self.save();
         }
     }
+
+    /// Accueil : les notes du dépôt courant et les autres dépôts qui en ont ; `depot/<clé>` : les notes d'un dépôt.
+    fn mobile_screen(&mut self, path: &str, _cx: &mut Cx) -> Option<Screen> {
+        let dir = self.mobile_dir(path)?;
+        Some(notes_screen(&dir, &self.saved.notes, path.is_empty()))
+    }
+
+    fn mobile_action(
+        &mut self,
+        path: &str,
+        action: &str,
+        input: Option<&str>,
+        _cx: &mut Cx,
+    ) -> Result<Option<String>, String> {
+        if action != "ajouter" {
+            return Err("action inconnue".into());
+        }
+        let dir = self.mobile_dir(path).ok_or("Ce dépôt n'a plus de notes.")?;
+        let text =
+            input.map(str::trim_end).filter(|t| !t.trim().is_empty()).ok_or("Ligne vide : rien n'est ajouté.")?;
+        self.append(&dir, text);
+        Ok(Some("Ligne ajoutée".into()))
+    }
+}
+
+/// Nom court d'un dépôt : son dossier, ou « Hors dépôt ».
+fn repo_label(dir: &str) -> String {
+    if dir.is_empty() {
+        "Hors dépôt".into()
+    } else {
+        std::path::Path::new(dir).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dir.into())
+    }
+}
+
+/// Empreinte courte d'un dépôt, pour le chemin de son écran sur le téléphone (`depot/<clé>`) : pas de chemin Windows
+/// dans un chemin d'écran, et la même clé quand la liste des dépôts change.
+fn repo_key(dir: &str) -> String {
+    let mut h = DefaultHasher::new();
+    dir.hash(&mut h);
+    format!("{:x}", h.finish() & 0xffff_ffff)
+}
+
+fn line_count(text: &str) -> usize {
+    text.lines().filter(|l| !l.trim().is_empty()).count()
+}
+
+/// Les notes de `dir` sur le téléphone ; `home` : l'accueil du module, avec les autres dépôts qui ont des notes.
+fn notes_screen(dir: &str, notes: &BTreeMap<String, String>, home: bool) -> Screen {
+    let label = repo_label(dir);
+    let mut s = if home {
+        Screen::new("Carnet").subtitle(label)
+    } else {
+        Screen::new(label).subtitle(if dir.is_empty() { "Notes prises hors de tout dépôt" } else { dir })
+    };
+    match notes.get(dir).filter(|t| !t.trim().is_empty()) {
+        Some(text) => s.text(text.trim_end(), false),
+        None => s.empty("Pas encore de notes pour ce dépôt."),
+    };
+    let add = Act::new("ajouter", "Ajouter une ligne").glyph("➕").primary().input("Nouvelle ligne", "À faire, idée…");
+    s.buttons(vec![add]);
+    if home {
+        let others: Vec<(&String, usize)> = notes
+            .iter()
+            .filter(|(d, _)| d.as_str() != dir)
+            .map(|(d, t)| (d, line_count(t)))
+            .filter(|(_, n)| *n > 0)
+            .collect();
+        if !others.is_empty() {
+            s.section("Autres dépôts", others.len().to_string());
+            for (d, n) in others {
+                let lines = if n == 1 { "1 ligne".to_string() } else { format!("{n} lignes") };
+                s.row(
+                    Row::new(repo_label(d))
+                        .subtitle(d.as_str())
+                        .detail(lines)
+                        .glyph("✏️")
+                        .open(format!("depot/{}", repo_key(d))),
+                );
+            }
+        }
+    }
+    s
 }
 
 #[cfg(test)]
 mod tests {
+    use suite_sdk::mobile::ui::Block;
+
     use super::*;
 
     fn host(name: &str) -> Host {
@@ -340,5 +433,43 @@ mod tests {
         c.on_exit();
         let again = Carnet::open(h);
         assert_eq!(again.saved.notes.get("C:/dev/ozmo").map(String::as_str), Some("relire la PR 12"));
+    }
+
+    #[test]
+    fn the_phone_sees_the_current_notes_and_the_other_repos() {
+        let notes = BTreeMap::from([
+            ("C:/dev/ozmo".to_string(), "relire la PR 12\nlancer les tests\n".to_string()),
+            ("C:/dev/diapaz".to_string(), "migration".to_string()),
+            ("C:/dev/vide".to_string(), "  \n".to_string()),
+        ]);
+        let s = notes_screen("C:/dev/ozmo", &notes, true);
+        assert_eq!((s.title.as_str(), s.subtitle.as_str()), ("Carnet", "ozmo"));
+        assert!(s.blocks.contains(&Block::Text { text: "relire la PR 12\nlancer les tests".into(), mono: false }));
+        assert_eq!(s.action_ids().into_iter().collect::<Vec<_>>(), ["ajouter"]);
+        // Les dépôts sans notes n'apparaissent pas.
+        assert_eq!(s.opens().into_iter().collect::<Vec<_>>(), [format!("depot/{}", repo_key("C:/dev/diapaz"))]);
+
+        let empty = notes_screen("", &notes, false);
+        assert_eq!(empty.title, "Hors dépôt");
+        assert!(empty.blocks.iter().any(|b| matches!(b, Block::Empty { .. })));
+        assert!(empty.opens().is_empty(), "pas d'autres dépôts hors de l'accueil");
+    }
+
+    #[test]
+    fn a_line_added_from_the_phone_goes_to_the_right_repo() {
+        let h = host("telephone");
+        let mut c = Carnet::open(h.clone());
+        c.current = "C:/dev/ozmo".into();
+        c.saved.notes.insert("C:/dev/diapaz".into(), "migration".into());
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut cx = Cx { host: &h, frame: &mut frame, active: false, visible: false };
+        assert_eq!(c.mobile_action("", "ajouter", Some("relire la PR 12"), &mut cx), Ok(Some("Ligne ajoutée".into())));
+        let other = format!("depot/{}", repo_key("C:/dev/diapaz"));
+        assert!(c.mobile_screen(&other, &mut cx).is_some());
+        assert!(c.mobile_action(&other, "ajouter", Some("  "), &mut cx).is_err(), "ligne vide refusée");
+        assert!(c.mobile_action(&other, "ajouter", Some("garder les données"), &mut cx).is_ok());
+        assert!(c.mobile_screen("depot/inconnu", &mut cx).is_none());
+        assert_eq!(c.saved.notes["C:/dev/ozmo"], "relire la PR 12");
+        assert_eq!(c.saved.notes["C:/dev/diapaz"], "migration\ngarder les données");
     }
 }

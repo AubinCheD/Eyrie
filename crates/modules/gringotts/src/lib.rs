@@ -5,11 +5,13 @@
 //! - **Limites** : l'historique des fenêtres de 5 h et des semaines (maximum atteint, heure des 100 %,
 //!   dépassement), relevé par le relais (`relay`), et les limites en cours dans la barre d'état d'Eyrie.
 //! - **Dans chaque terminal** où tourne Claude, la ligne d'état (le relais) montre la part de la conversation.
+//! - **Sur le téléphone** (`mobile`) : les limites en cours, le coût du jour, les conversations les plus coûteuses.
 //!
 //! Sorti de Grimoire (onglets Consommation et Limites) pour en faire un module à part. Ses données sont dans
 //! `EyrieSuite\gringotts` : historique des relevés, résumé des conversations, parts déposées pour le relais.
 
 pub mod analysis;
+mod mobile;
 pub mod prices;
 pub mod readings;
 pub mod relay;
@@ -22,6 +24,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use eframe::egui::{self, Color32};
 use grimoire::profiles::Profile;
+use suite_sdk::mobile::ui::Screen;
 use suite_sdk::{
     Badge, BuildCx, CommandInfo, Cx, Host, Module, ModuleFactory, ModuleInfo, ModuleStatus, Origin, StatusText, Tone,
     Unavailable, ViewInfo,
@@ -140,6 +143,8 @@ pub struct Gringotts {
     view: ui::ViewState,
     /// Résultat de la dernière installation ou du dernier retrait du relais.
     message: Option<(String, bool)>,
+    /// Ce que l'accueil du téléphone tire des conversations, oublié quand elles changent.
+    mobile: Option<mobile::Summary>,
 }
 
 impl Gringotts {
@@ -163,6 +168,7 @@ impl Gringotts {
             parts_saved: None,
             view: ui::ViewState::default(),
             message: None,
+            mobile: None,
         }
     }
 
@@ -183,6 +189,7 @@ impl Gringotts {
         if self.stale {
             self.analysis = analysis::analyze(&self.readings, &self.conversations, now());
             self.stale = false;
+            self.mobile = None;
         }
     }
 
@@ -384,6 +391,54 @@ impl Module for Gringotts {
     fn run_command(&mut self, id: &str, _cx: &mut Cx) {
         if id == "relire" {
             self.rescan();
+        }
+    }
+
+    /// Accueil : limites, coût du jour, conversations les plus coûteuses ; `conv/<id>` : le détail d'une conversation.
+    fn mobile_screen(&mut self, path: &str, _cx: &mut Cx) -> Option<Screen> {
+        self.refresh_analysis();
+        let now = now();
+        if let Some(id) = path.strip_prefix("conv/") {
+            let i = self.conversations.iter().position(|c| c.id == id)?;
+            let c = &self.conversations[i];
+            return Some(mobile::conversation(c, self.analysis.conversations.get(i), &self.analysis.accounts, now));
+        }
+        if !path.is_empty() {
+            return None;
+        }
+        let day = mobile::day_start(now);
+        if self.mobile.as_ref().is_none_or(|m| m.day != day) {
+            self.mobile = Some(mobile::summarize(&self.conversations, &self.analysis.conversations, day, now));
+        }
+        let status = match (self.scanner.is_some() && self.scanned.is_none(), self.conversations.len()) {
+            (true, _) => "lecture des conversations…".to_string(),
+            (false, 1) => "1 conversation lue".to_string(),
+            (false, n) => format!("{n} conversations lues"),
+        };
+        let sum = self.mobile.as_ref()?;
+        Some(mobile::home(
+            &self.analysis.accounts,
+            &self.conversations,
+            &self.analysis.conversations,
+            sum,
+            &status,
+            now,
+        ))
+    }
+
+    fn mobile_action(
+        &mut self,
+        _path: &str,
+        action: &str,
+        _input: Option<&str>,
+        _cx: &mut Cx,
+    ) -> Result<Option<String>, String> {
+        match action {
+            "relire" => {
+                self.rescan();
+                Ok(Some("Relecture lancée".into()))
+            }
+            _ => Err("action inconnue".into()),
         }
     }
 

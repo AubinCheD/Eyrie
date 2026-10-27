@@ -7,8 +7,13 @@
 //! - **réglages** : les siens sont dans ceux d'Eyrie (page Owlery, avec l'état de lecture des comptes) ;
 //! - **notifications** : dans le centre de notifications de la suite (une seule icône) ;
 //! - **Fawkes** : `ouvrir` passe par le bus de la suite, en appel Rust, au Fawkes de la suite ;
-//! - même verrou, même `state.lock` et même canal nommé que `owlery.exe` (`afficher`, `etat`).
+//! - même verrou, même `state.lock` et même canal nommé que `owlery.exe` (`afficher`, `etat`) ;
+//! - **téléphone** (`mobile`) : la boîte de réception lue sur le disque, actualiser par le canal des demandes.
 
+pub mod mobile;
+
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 
@@ -139,6 +144,9 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
 
     let snapshot = Arc::new(Mutex::new(Snapshot::default()));
     let (incoming_tx, incoming_rx) = mpsc::channel();
+    // Le téléphone lit l'état enregistré et demande les lectures par le même canal que les autres applications.
+    let phone = Rc::new(RefCell::new(mobile::Phone::new(dir.clone(), incoming_tx.clone())));
+    let phone_actions = phone.clone();
     let snap = snapshot.clone();
     let served = owlery::win::pipe::serve(&pipe, move |line| {
         let current = snap.lock().map(|s| s.clone()).unwrap_or_default();
@@ -195,6 +203,8 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
             .key_commands(commands())
             .settings_panel(|app, ui| app.settings_ui(ui))
             .on_settings_left(|app| app.settings_left())
+            .mobile_screens(move |_, path, _| phone.borrow_mut().screen(path))
+            .mobile_actions(move |_, path, action, _, _| phone_actions.borrow_mut().action(path, action))
             .keep(lock),
     ))
 }
