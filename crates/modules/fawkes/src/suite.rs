@@ -117,6 +117,24 @@ fn status(app: &App, base: &ModuleStatus) -> ModuleStatus {
     s
 }
 
+/// Ce qu'une demande `ouvrir` donne au shell, contrôlé avant d'atteindre Fawkes : la demande vient d'un autre module,
+/// qui peut la tirer de données qu'il ne maîtrise pas (une forge…). `dir` : un dossier existant sur un lecteur local ou
+/// mappé (`X:\…`), jamais un chemin réseau (`\\serveur\…`, que le simple fait de le sonder ouvrirait en SMB) ; `resume` :
+/// un identifiant de session Claude, qui part tel quel dans la ligne de commande.
+fn check_open(dir: &str, resume: Option<&str>) -> Result<(), String> {
+    let b = dir.as_bytes();
+    let on_a_drive = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'\\' | b'/');
+    if !on_a_drive || dir.chars().any(char::is_control) || !std::path::Path::new(dir).is_dir() {
+        return Err(format!("dossier refusé (dossier local existant attendu) : {dir}"));
+    }
+    if let Some(id) = resume
+        && !(!id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+    {
+        return Err(format!("identifiant de session refusé : {id}"));
+    }
+    Ok(())
+}
+
 /// `ouvrir{dir, titre, groupe, claude, resume}` : le contrat local de Fawkes, en appel Rust.
 fn on_request(app: &mut App, r: &Request, cx: &mut suite_sdk::Cx) -> Result<serde_json::Value, String> {
     if r.demande != "ouvrir" {
@@ -125,6 +143,7 @@ fn on_request(app: &mut App, r: &Request, cx: &mut suite_sdk::Cx) -> Result<serd
     let d = &r.data;
     let s = |k: &str| d.get(k).and_then(|v| v.as_str()).map(str::to_string);
     let dir = s("dir").ok_or("dir manquant")?;
+    check_open(&dir, s("resume").as_deref())?;
     let group = s("groupe").and_then(|name| app.st.groups.iter().find(|g| g.name == name).map(|g| g.id));
     let claude = d.get("claude").and_then(|v| v.as_bool()).unwrap_or(false).then(|| NewClaude {
         resume: s("resume"),
@@ -248,6 +267,21 @@ mod tests {
         super::in_suite_theme(&mut setting, |t| t, FawkesTheme::Graphite, |t| seen = Some((*t, theme::current())));
         assert_eq!(seen, Some((FawkesTheme::Graphite, FawkesTheme::Graphite)), "réglage et palette d'Eyrie");
         assert_eq!((setting, theme::current()), (FawkesTheme::Fluent, FawkesTheme::Fluent), "rendus ensuite");
+    }
+
+    /// Une demande `ouvrir` ne fait entrer dans le shell ni chemin réseau, ni dossier inexistant, ni commande cachée
+    /// dans l'identifiant de session.
+    #[test]
+    fn an_open_request_is_checked_before_reaching_the_shell() {
+        let here = env!("CARGO_MANIFEST_DIR");
+        assert_eq!(super::check_open(here, None), Ok(()));
+        assert_eq!(super::check_open(here, Some("7f3c2a9e-1b4d-4e8f-9a6b-0c5d2e1f3a4b")), Ok(()));
+        assert!(super::check_open(here, Some("x; Start-Process calc")).is_err());
+        assert!(super::check_open(here, Some("$(calc)")).is_err());
+        assert!(super::check_open(here, Some("")).is_err());
+        for dir in [r"\\hote.invalid\partage", "//hote.invalid/partage", "relatif", r"C:\n'existe\pas", ""] {
+            assert!(super::check_open(dir, None).is_err(), "{dir}");
+        }
     }
 
     #[test]
