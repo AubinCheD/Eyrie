@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Fond de l'icône : le chrome sombre de la suite. -->
+    <color name="ic_launcher_background">#16171B</color>
+</resources>

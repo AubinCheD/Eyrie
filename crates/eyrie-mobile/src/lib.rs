@@ -31,6 +31,40 @@ pub fn logo() -> slint::Image {
     slint::Image::from_rgba8(buf)
 }
 
+/// Les icônes Android dans `res` : le premier plan de l'icône adaptative (le nid dans la zone sûre, 66 dp sur 108)
+/// et une icône carrée de secours, à chaque densité.
+#[cfg(not(target_os = "android"))]
+pub fn write_icons(res: &std::path::Path) -> Result<(), String> {
+    for (dir, scale) in [("mdpi", 1.0), ("hdpi", 1.5), ("xhdpi", 2.0), ("xxhdpi", 3.0), ("xxxhdpi", 4.0)] {
+        let out = res.join(format!("mipmap-{dir}"));
+        std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+        // Premier plan : 108 dp, le nid sur 64 dp au centre.
+        let side = (108.0 * scale) as u32;
+        let nest = (64.0 * scale) as u32;
+        let px = nest::render(nest as usize);
+        let nest_img = image::RgbaImage::from_raw(nest, nest, px).ok_or("nid")?;
+        let mut fg = image::RgbaImage::new(side, side);
+        let off = ((side - nest) / 2) as i64;
+        image::imageops::overlay(&mut fg, &nest_img, off, off);
+        fg.save(out.join("ic_launcher_foreground.png")).map_err(|e| e.to_string())?;
+        // Secours : 48 dp, fond sombre arrondi.
+        let side = (48.0 * scale) as u32;
+        let nest = (36.0 * scale) as u32;
+        let nest_img = image::RgbaImage::from_raw(nest, nest, nest::render(nest as usize)).ok_or("nid")?;
+        let r = side as f32 * 0.22;
+        let mut legacy = image::RgbaImage::from_fn(side, side, |x, y| {
+            let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
+            let (cx, cy) = (fx.clamp(r, side as f32 - r), fy.clamp(r, side as f32 - r));
+            let inside = (fx - cx).hypot(fy - cy) <= r;
+            if inside { image::Rgba([0x16, 0x17, 0x1b, 255]) } else { image::Rgba([0, 0, 0, 0]) }
+        });
+        let off = ((side - nest) / 2) as i64;
+        image::imageops::overlay(&mut legacy, &nest_img, off, off);
+        legacy.save(out.join("ic_launcher.png")).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// Une image PNG reçue du PC (logo d'un module).
 pub fn png_image(png: &[u8]) -> Option<slint::Image> {
     let img = image::load_from_memory_with_format(png, image::ImageFormat::Png).ok()?.to_rgba8();
