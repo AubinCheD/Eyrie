@@ -188,13 +188,21 @@ impl Store {
         self.vault.set(id, token)
     }
 
-    /// Met à jour les informations d'un compte (nom affiché, organisations…), sans toucher au jeton.
+    /// Met à jour les informations d'un compte (nom affiché, organisations…), sans toucher au jeton. La forge, l'hôte
+    /// et l'utilisateur ne changent pas : le jeton partirait vers un autre serveur à la prochaine requête.
     pub fn update(&self, account: &Account) -> Result<(), String> {
         let _lock = self.lock()?;
         let mut file = self.read()?;
         let Some(existing) = file.accounts.iter_mut().find(|a| a.id == account.id) else {
             return Err(format!("compte inconnu : {}", account.id));
         };
+        if !existing.same_login(account) {
+            return Err(format!(
+                "la forge, l'hôte et l'utilisateur d'un compte ne changent pas (son jeton irait à un autre serveur) : \
+                 retirez le compte « {} » et ajoutez-le de nouveau, avec un jeton",
+                existing.username
+            ));
+        }
         // Les champs écrits par une autre version restent.
         let mut updated = account.clone().normalized();
         let mut extra = std::mem::take(&mut existing.extra);
@@ -515,6 +523,25 @@ mod tests {
         s.update(&a).unwrap();
         assert_eq!(s.list()[0].display_name, "Ada");
         assert_eq!(s.token(&a.id).unwrap().as_deref(), Some("t1"));
+    }
+
+    /// Le jeton d'un compte vaut pour sa forge, son hôte et son utilisateur : les changer par une mise à jour
+    /// l'enverrait à un autre serveur. Il faut retirer le compte et l'ajouter avec un jeton.
+    #[test]
+    fn update_never_moves_a_token_to_another_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let (s, _) = store(dir.path());
+        let a = s.add(github("aaaaaaaaaaaaaaaa", "github.com", "ada"), "t1").unwrap();
+        for changed in [
+            Account { host: "github.attaquant.example".into(), ..a.clone() },
+            Account { forge: forge::GITLAB.into(), ..a.clone() },
+            Account { username: "grace".into(), ..a.clone() },
+        ] {
+            assert!(s.update(&changed).is_err(), "{changed:?}");
+        }
+        assert_eq!(s.list()[0].host, "github.com");
+        // Même connexion écrite autrement : acceptée.
+        s.update(&Account { host: "https://GitHub.com/".into(), username: " Ada ".into(), ..a.clone() }).unwrap();
     }
 
     #[test]
