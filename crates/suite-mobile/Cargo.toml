@@ -1,0 +1,15 @@
+[package]
+name = "suite-mobile"
+description = "Le protocole entre Eyrie et son application mobile : messages, écrans, terminal, appairage, canal chiffré"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde.workspace = true
+rmp-serde = "1.3"
+snow = { version = "0.10", default-features = false, features = ["use-chacha20poly1305", "use-blake2", "use-curve25519", "use-getrandom", "use-sha2"] }
+blake2 = "0.10"
+getrandom = "0.3"
+base64 = "0.22"

@@ -1,6 +1,13 @@
 [workspace]
 resolver = "3"
-members = ["crates/suite-sdk", "crates/suite-accounts", "crates/suite-titlebar", "crates/eyrie", "crates/modules/*"]
+members = [
+    "crates/suite-sdk",
+    "crates/suite-accounts",
+    "crates/suite-titlebar",
+    "crates/suite-mobile",
+    "crates/eyrie",
+    "crates/modules/*",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -13,6 +20,7 @@ authors = ["Eyrie"]
 suite-sdk = { path = "crates/suite-sdk" }
 suite-accounts = { path = "crates/suite-accounts" }
 suite-titlebar = { path = "crates/suite-titlebar" }
+suite-mobile = { path = "crates/suite-mobile" }
 suite-carnet = { path = "crates/modules/carnet" }
 suite-fawkes = { path = "crates/modules/fawkes" }
 suite-dragontree = { path = "crates/modules/dragontree" }

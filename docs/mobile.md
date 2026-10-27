@@ -1,0 +1,141 @@
+# Eyrie sur le téléphone
+
+Demande du 27/10/2026 : « l'application mobile pour Eyrie, en Rust, très performante, une UX irréprochable ; un
+maximum des fonctionnalités du PC sans en être une copie (un module à la fois) ; toutes les commandes du téléphone
+retranscrites sur le PC en temps réel (si Tailscale est connecté) ; appairage des appareils par QR code ». Questions
+sautées à la demande de l'utilisateur : les choix ci-dessous sont les miens, marqués **(choix)** quand ils engagent.
+
+## 1. Principes
+
+- **Le PC est la seule source de vérité.** Le téléphone n'exécute rien : il montre ce que le PC lui envoie et lui
+  demande des actions. Une action faite au téléphone est faite *sur le PC*, par le module concerné : l'écran du PC
+  change de lui-même, comme si l'utilisateur avait cliqué. Eyrie le signale d'une bulle discrète (« 📱 Pixel 8 :
+  Patronus › Lancer « build » ») et l'écrit au journal du pont.
+- **Temps réel** : le PC pousse ce qui change (pastilles, vue d'ensemble, notifications, écran ouvert, terminal
+  suivi) ; rien n'est demandé en boucle par le téléphone.
+- **Un module à la fois** : une barre de navigation en bas (Ensemble, trois modules, Plus), un écran par module,
+  des sous-écrans empilés (retour par le geste ou le bouton du système).
+- **Sécurité d'abord** (prérequis de l'audit du 27/10) : voir §4.
+
+## 2. Ce qui est construit
+
+| Pièce | Où | Rôle |
+|---|---|---|
+| `suite-mobile` | `crates/suite-mobile` | Protocole partagé PC ↔ téléphone : messages, écrans génériques, terminal, appairage, canal chiffré Noise. Ni egui ni Slint. |
+| Pont mobile | `crates/eyrie/src/mobile/` | Dans Eyrie : écoute, appareils, appairage, journal, interrupteur, synchro, aiguillage des actions vers les modules. |
+| Interface mobile des modules | `Module::mobile_*` (`suite-sdk`) et chaque adaptateur `crates/modules/*` | Chaque module décrit ses écrans et ses actions pour le téléphone. |
+| Compagnon Tailscale d'Eyrie | `compagnon/` (Go, tsnet) → `eyrie-tailnet.exe` | Le nœud de la suite sur le tailnet, et le relais des connexions du téléphone vers Eyrie. |
+| Application mobile | `crates/eyrie-mobile` | Slint, Rust. Tourne sur Android et, pour le développement, sur le bureau dans une fenêtre de téléphone. |
+
+**Android d'abord (choix)** : iOS ne se compile et ne se signe que sur un Mac. Le code de l'application ne dépend
+d'Android que dans `platform/android.rs` (caméra, liens, vibration) : iOS viendra quand Slint l'aura stabilisé et
+qu'un Mac sera disponible.
+
+**Slint (choix)** plutôt qu'egui pour le téléphone : clavier virtuel et méthodes de saisie gérés par le système
+(egui/winit ne les gèrent pas sur Android), défilement inertiel, animations, rendu GPU, interface déclarative. Licence
+« royalty-free » de Slint : mention dans *À propos*.
+
+## 3. Transport
+
+- Le **compagnon d'Eyrie** (copie de celui de Fawkes, même clé chiffrée par DPAPI dans `%LOCALAPPDATA%`) écoute sur le
+  tailnet, **port 4747**. Pour chaque connexion, il demande à Tailscale qui se connecte (`WhoIs` : compte et appareil),
+  ouvre une connexion vers le port local d'Eyrie (127.0.0.1, port aléatoire), y écrit une ligne d'en-tête
+  `{"jeton":…,"login":…,"noeud":…,"adresse":…}` puis relaie les octets dans les deux sens.
+- Eyrie lui donne l'adresse locale et un **jeton aléatoire** par son entrée standard (jamais en argument : la ligne de
+  commande se lit depuis les autres processus). Une connexion locale sans le bon jeton est fermée.
+- Le téléphone rejoint le tailnet par **l'application Tailscale** (choix pour cette première version) : `tailscale-rs`
+  ne gère pas Android (préversion d'avril 2026, relais DERP seulement, « ne pas utiliser en production ») et tsnet sur
+  Android demande Go, gomobile et un contournement de l'énumération des interfaces. Le **nœud intégré à l'application**
+  (décision du 21/10) reste l'étape suivante ; le transport est derrière une interface pour l'accueillir.
+- Le compagnon de Fawkes reste utilisable en secours pour le nœud seul (sans relais : le téléphone ne peut pas se
+  connecter, la page Téléphones le dit).
+
+## 4. Sécurité
+
+Les sept prérequis de l'audit, et comment ils sont tenus :
+
+1. **Point d'entrée unique dans l'hôte** : `mobile::Bridge` reçoit tout, vérifie tout, et seul l'appelle les modules
+   (`Module::mobile_action`, `mobile_term_input`), toujours dans le bac à sable de l'hôte.
+2. **Actions typées en liste blanche** : le protocole est un `enum` fermé. Une action de module n'est acceptée que si
+   le PC l'a lui-même proposée dans le dernier écran envoyé à cet appareil (même chemin, même identifiant) ; une saisie
+   de terminal, seulement pour le terminal que le téléphone suit.
+3. **Appairage par appareil en plus de WhoIs** : chaque téléphone a sa clé (X25519) ; le canal est Noise
+   `XX_25519_ChaChaPoly_BLAKE2s`, prologue `eyrie-mobile/1`. Le PC ne parle qu'aux clés appairées ; le téléphone ne
+   parle qu'à la clé du PC appairée. Le compte Tailscale noté à l'appairage doit être le même à chaque connexion.
+4. **Contrôle Host/Origin** : rien d'HTTP ni de WebSocket ; un navigateur ne peut rien envoyer d'utile (la première
+   trame doit être un message Noise). Le port local n'écoute que 127.0.0.1 et exige le jeton du compagnon.
+5. **Confirmation sur le PC** : un appairage n'aboutit qu'après un clic sur le PC, qui affiche le nom de l'appareil, le
+   compte Tailscale et un code à six chiffres que le téléphone affiche aussi (tiré du hachage de la poignée de main).
+6. **Journal persistant** : `mobile\journal.jsonl` (connexions, refus, appairages, actions ; jamais le texte saisi dans
+   un terminal, seulement sa longueur), lisible dans la page Téléphones.
+7. **Interrupteur** : « Accès depuis le téléphone » (page Téléphones, barre d'état, palette) coupe l'écoute, ferme
+   toutes les connexions et retire le relais au compagnon ; « Couper tout accès à distance » arrête aussi le nœud.
+
+Autres règles :
+- **Ticket d'appairage** : secret de 32 octets, valable 5 minutes, à usage unique, 5 essais. QR :
+  `eyrie://appairer?v=1&n=<nom du PC>&h=<nom MagicDNS>&a=<IP tailnet>&p=4747&k=<clé du PC>&s=<secret>`. Le téléphone et
+  le PC se prouvent mutuellement le secret (MAC BLAKE2s sur le hachage de la poignée de main), et le téléphone vérifie
+  la clé du PC lue dans le QR. **Code à saisir** en secours : dix caractères (alphabet sans ambiguïté), plus le nom du
+  PC sur le tailnet.
+- **Droits par appareil** : *voir*, *agir* (actions des modules), *terminaux* (saisie et création) ; tous accordés par
+  défaut, réglables appareil par appareil ; révocation immédiate.
+- **Clé du PC** : `%LOCALAPPDATA%\EyrieSuite\Eyrie\mobile\cle`, chiffrée par DPAPI ; appareils dans
+  `mobile\appareils.json` (clés publiques seulement). Un Eyrie sur un autre dossier (essais) garde tout dans le sien.
+- **Clé du téléphone** : stockage privé de l'application (inaccessible aux autres applications).
+
+## 5. Protocole
+
+Trames : longueur (u16, gros-boutiste) + message Noise ; un message applicatif de plus de 60 000 octets est découpé.
+Contenu : MessagePack (`rmp-serde`, champs nommés : un champ ajouté plus tard est ignoré par une version plus
+ancienne). Version de protocole `1` échangée au `Bonjour` ; écart : « mettez à jour l'application ».
+
+- Téléphone → PC : `Bonjour`, `Appairer`, `Suivre { ecran, terminal }`, `Action { req, module, chemin, action,
+  saisie }`, `Terminal { id, saisie }`, `Commande { module, id }`, `NotificationsLues`, `Ping`.
+- PC → téléphone : `Accueil` (nom du PC, modules), `Appaire`, `Modules` (cartes : nom, couleur, logo une fois,
+  pastille, ligne d'état), `Ensemble` (ce qui attend), `Notifications`, `Ecran { module, chemin, ecran }`,
+  `TerminalVue` (différences), `Resultat { req, ok, message }`, `Bulle`, `Pong`.
+
+**Écran générique** (`suite_mobile::ui::Screen`) : titre, sous-titre, actions de barre, blocs (`Section`, `Row`,
+`Note`, `Meter`, `Text`, `Empty`, `Buttons`, `Field`). Une `Row` ouvre un sous-écran (`chemin`) ou porte des actions
+(appui long). Une action peut demander confirmation ou une saisie. Le téléphone dessine tous les modules avec les
+mêmes composants : cohérence, et un module ajouté au PC arrive au téléphone sans mise à jour de l'application.
+
+**Terminal** : le PC envoie une fenêtre (écran + jusqu'à 500 lignes d'historique) en différences : décalage (lignes
+sorties par le haut) + lignes changées, couleurs symboliques (par défaut, 256 couleurs, RVB) que le téléphone
+résout dans son thème. Jusqu'à 30 images/s tant qu'un téléphone le suit. Saisie : texte, touches nommées (Entrée,
+Échap, Tab, flèches, Ctrl+C…), collage ; encodées par Fawkes lui-même (`replay_keyboard`), donc justes en mode
+win32-input de ConPTY. Une session Claude qui attend montre ses choix (« 1. Yes ») en boutons.
+
+## 6. Ce que chaque module offre au téléphone
+
+| Module | Écrans | Actions | Limites (changement du module nécessaire) |
+|---|---|---|---|
+| Fawkes | groupes et terminaux (état, Claude qui attend), terminal en direct | saisie, touches, réponses rapides à Claude, nouveau terminal (dossiers récents, shell ou Claude), redémarrer, veille/réveil, montrer sur le PC | fermer un terminal |
+| Patronus | tâches, boîte de réception, détail d'une exécution (journal) | lancer, arrêter, tout arrêter, pause, budget lu, marquer lu, archiver, appliquer le diff, supprimer le worktree | — |
+| Owlery | boîte de réception par sorte (lue sur disque), détail | actualiser, ouvrir sur le téléphone ou le PC | marquer lu, reporter, masquer |
+| Menagerie | services gérés (état), ports ouverts, Docker | arrêter un processus, conteneurs (démarrer, arrêter, relancer, journaux) | démarrer/arrêter un service géré |
+| DragonTree | dépôts (branche, avance/retard, modifications), worktrees, branches | fetch, pull, push (confirmé), ouvrir sur le PC | onglets et file d'opérations de l'application |
+| Grimoire | profils, limites, serveurs MCP | ouvrir sur le PC | — |
+| Gringotts | limites en cours, coût du jour, conversations | relire | — |
+| Carnet | notes du dépôt courant et des autres | ajouter une ligne | — |
+| tous | vue d'ensemble, notifications, commandes de la palette (« sur le PC ») | | |
+
+## 7. L'application
+
+- **Premier lancement** : « Scanner le QR code » (caméra) ou « Saisir le code » ; puis le code à six chiffres à
+  comparer avec celui du PC, qui confirme.
+- **Navigation** : barre du bas (Ensemble, les trois premiers modules du PC, Plus), pastilles ; *Plus* ouvre la liste
+  de tous les modules, les notifications, la palette (recherche), les réglages.
+- **Terminal** : plein écran, police à chasse fixe, zoom (A− / A+), défilement de l'historique, barre de touches
+  (Échap, Tab, Ctrl, flèches, Entrée), champ de saisie au-dessus du clavier, réponses rapides quand Claude attend.
+- **Hors ligne** : bandeau « Reconnexion… », dernières données gardées, reconnexion automatique (délai croissant,
+  immédiate au retour au premier plan).
+- **Thème** : celui du système (clair ou sombre), couleurs de la suite.
+- **Réglages** : PC appairés (changer, oublier), nom de l'appareil, taille du terminal, à propos.
+
+## 8. Plus tard
+
+- Nœud Tailscale intégré à l'application (tsnet par Go c-shared, ou tailscale-rs quand il gérera Android).
+- Notifications Android quand l'application est en arrière-plan (service au premier plan).
+- iOS.
+- Les actions marquées « changement du module nécessaire » ci-dessus, module par module et avec accord.
