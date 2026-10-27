@@ -99,9 +99,8 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
     // Ses réglages sont dans ceux d'Eyrie : « Réglages » y mène, sur sa page.
     let link = bcx.host.clone();
     app.set_settings_link(Box::new(move || link.open_settings(&format!("module:{ID}"))));
-    // Le téléphone : ce qu'il garde entre deux appels, partagé par ses écrans, ses actions et les fils git.
+    // Le téléphone : ce qu'il garde entre deux appels (le coût du mois lu).
     let phone = mobile::Shared::default();
-    let (done, screens, acts) = (phone.clone(), phone.clone(), phone);
     Ok(Box::new(
         Embedded::new(info(), bcx.host.clone(), app)
             .hidden_ui(true)
@@ -109,9 +108,8 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
             .key_commands(commands())
             .settings_panel(|app, ui| app.settings_ui(ui))
             .on_settings_left(|app| app.settings_left())
-            .after_logic(move |app, _| mobile::after_logic(app, &done))
-            .mobile_screens(move |app, path, _| mobile::screen(app, &screens, path))
-            .mobile_actions(move |app, path, action, input, cx| mobile::action(app, &acts, path, action, input, cx))
+            .mobile_screens(move |app, path, _| mobile::screen(app, &phone, path))
+            .mobile_actions(mobile::action)
             .keep(guard)
             .keep(tray),
     ))

@@ -1,18 +1,16 @@
 //! Patronus sur le téléphone : les tâches (lancer, arrêter), la boîte de réception, le détail d'une exécution (journal,
 //! marquer lu, archiver, appliquer le diff, supprimer le worktree), la pause et le budget du mois.
 //!
-//! Tout passe par le moteur public de Patronus (`App::engine`), verrouillé le temps de relever ce qu'il faut : les
-//! écrans sont mis en forme sans le verrou, git (diff, worktree) tourne dans un fil et son résultat est reporté dans le
-//! moteur à l'image suivante (`after_logic`), comme le fait la fenêtre de Patronus.
+//! Tout passe par Patronus : son moteur public (`App::engine`), verrouillé le temps de relever ce qu'il faut (les
+//! écrans sont mis en forme sans le verrou), et, pour appliquer le diff ou supprimer le worktree, les mêmes actions que
+//! les boutons d'un résultat (`App::apply_diff`, `App::drop_worktree`) : la fenêtre de Patronus montre que git
+//! travaille, annonce le résultat, et le téléphone le lit par `App::run_job`.
 
-use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use chrono::{NaiveDate, NaiveDateTime};
-use patronus_app::app::App;
-use patronus_core::actions::{self, ApplyPlan};
+use patronus_app::app::{App, RunJob};
 use patronus_core::engine::Engine;
 use patronus_core::exec::Context;
 use patronus_core::run::{Run, RunStore, Status, now};
@@ -26,6 +24,8 @@ const INBOX: usize = 30;
 const JOURNAL: u64 = 4000;
 /// Le coût du mois se lit dans un fichier : relu au plus toutes les 10 s.
 const COST_EVERY: Duration = Duration::from_secs(10);
+/// Le résultat d'une action sur un résultat reste affiché une minute.
+const JOB_SHOWN: Duration = Duration::from_secs(60);
 
 /// Une tâche, relevée sous le verrou du moteur.
 #[derive(Clone, Debug, PartialEq)]
@@ -358,19 +358,10 @@ pub fn run(r: &Run, journal: &str, has_diff: bool, job: Option<&(String, Tone)>,
     s
 }
 
-/// Fin d'une action menée dans un fil (git), à reporter dans le moteur.
-enum Done {
-    Applied(String, Result<ApplyPlan, String>),
-    Dropped(String, Result<(), String>),
-}
-
-/// Ce que le téléphone garde entre deux appels : le coût du mois lu, les actions git en cours et leurs résultats.
+/// Ce que le téléphone garde entre deux appels : le coût du mois lu.
 #[derive(Default)]
 pub struct Phone {
     cost: Option<(Instant, f64)>,
-    /// Par exécution : ce qui se passe ou s'est passé (texte et ton ; `Info` : en cours).
-    jobs: HashMap<String, (String, Tone)>,
-    done: Vec<Done>,
 }
 
 pub type Shared = Arc<Mutex<Phone>>;
@@ -379,30 +370,17 @@ fn lock(p: &Shared) -> std::sync::MutexGuard<'_, Phone> {
     p.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// À chaque image : reporte dans le moteur ce que les fils ont fini.
-pub fn after_logic(app: &mut App, phone: &Shared) {
-    let done = std::mem::take(&mut lock(phone).done);
-    if done.is_empty() {
-        return;
+/// Ce que Patronus dit de l'action sur un résultat (texte et ton ; `Info` : en cours) ; `None` : finie depuis plus
+/// d'une minute.
+fn job_note(j: &RunJob) -> Option<(String, Tone)> {
+    match j {
+        RunJob::Running(text) => Some((text.clone(), Tone::Info)),
+        RunJob::Done(r, at) if at.elapsed() < JOB_SHOWN => Some(match r {
+            Ok(t) => (t.clone(), Tone::Ok),
+            Err(t) => (t.clone(), Tone::Danger),
+        }),
+        RunJob::Done(..) => None,
     }
-    let mut e = app.engine();
-    let mut notes = Vec::new();
-    for d in done {
-        match d {
-            Done::Applied(id, Ok(plan)) => {
-                e.mark_diff_applied(&id, now());
-                notes.push((id, (format!("Diff appliqué : {} fichier(s), sans commit.", plan.files.len()), Tone::Ok)));
-            }
-            Done::Applied(id, Err(why)) => notes.push((id, (format!("Diff non appliqué : {why}"), Tone::Danger))),
-            Done::Dropped(id, Ok(())) => {
-                e.forget_worktree(&id);
-                notes.push((id, ("Worktree supprimé ; le diff reste dans le résultat.".into(), Tone::Ok)));
-            }
-            Done::Dropped(id, Err(why)) => notes.push((id, (format!("Worktree non supprimé : {why}"), Tone::Danger))),
-        }
-    }
-    drop(e);
-    lock(phone).jobs.extend(notes);
 }
 
 pub fn screen(app: &mut App, phone: &Shared, path: &str) -> Option<Screen> {
@@ -434,52 +412,58 @@ pub fn screen(app: &mut App, phone: &Shared, path: &str) -> Option<Screen> {
     let store = RunStore::new(store_dir);
     let journal = store.read_journal_tail(id, JOURNAL);
     let has_diff = store.diff_path(id).exists();
-    let job = lock(phone).jobs.get(id).cloned();
+    let job = app.run_job(id).and_then(job_note);
     Some(run(&r, &journal, has_diff, job.as_ref(), today))
-}
-
-/// Lance `work` dans un fil ; son résultat est reporté au moteur par `after_logic`.
-fn background(phone: &Shared, id: &str, busy: &str, work: impl FnOnce() -> Done + Send + 'static) {
-    lock(phone).jobs.insert(id.to_string(), (busy.to_string(), Tone::Info));
-    let phone = phone.clone();
-    std::thread::spawn(move || {
-        let done = work();
-        lock(&phone).done.push(done);
-    });
 }
 
 pub fn action(
     app: &mut App,
-    phone: &Shared,
     path: &str,
     action: &str,
     input: Option<&str>,
     cx: &mut Cx,
 ) -> Result<Option<String>, String> {
-    let result = act_with(&mut app.engine(), phone, path, action, input);
+    let result = match (path.strip_prefix("run/"), action) {
+        (Some(id), "diff" | "worktree") => result_action(app, id, action),
+        _ => act_with(&mut app.engine(), path, action, input),
+    };
     cx.host.repaint();
     result
 }
 
-/// Une action du téléphone, sous le verrou du moteur (git part dans un fil, hors du verrou).
-#[cfg(test)]
-fn act(e: &mut Engine, phone: &Shared, path: &str, action: &str) -> Result<Option<String>, String> {
-    act_with(e, phone, path, action, None)
-}
-
-fn act_with(
-    e: &mut Engine,
-    phone: &Shared,
-    path: &str,
-    action: &str,
-    input: Option<&str>,
-) -> Result<Option<String>, String> {
-    if let Some(id) = path.strip_prefix("run/") {
+/// Appliquer le diff, supprimer le worktree : par Patronus, comme leurs boutons ; vérifié d'abord, pour répondre tout
+/// de suite si c'est impossible.
+fn result_action(app: &mut App, id: &str, action: &str) -> Result<Option<String>, String> {
+    {
+        let e = app.engine();
         if e.runs.iter().all(|r| r.id != id) {
             return Err("Cette exécution n'existe plus.".into());
         }
-        if lock(phone).jobs.get(id).is_some_and(|(_, t)| *t == Tone::Info) && matches!(action, "diff" | "worktree") {
-            return Err("Une action est déjà en cours sur cette exécution.".into());
+        if action == "diff" {
+            e.diff_job(id)?;
+        } else {
+            e.worktree_job(id)?;
+        }
+    }
+    if action == "diff" {
+        app.apply_diff(id)?;
+        Ok(Some("Application du diff lancée".into()))
+    } else {
+        app.drop_worktree(id)?;
+        Ok(Some("Suppression du worktree lancée".into()))
+    }
+}
+
+/// Une action du téléphone sur le moteur, sous son verrou.
+#[cfg(test)]
+fn act(e: &mut Engine, path: &str, action: &str) -> Result<Option<String>, String> {
+    act_with(e, path, action, None)
+}
+
+fn act_with(e: &mut Engine, path: &str, action: &str, input: Option<&str>) -> Result<Option<String>, String> {
+    if let Some(id) = path.strip_prefix("run/") {
+        if e.runs.iter().all(|r| r.id != id) {
+            return Err("Cette exécution n'existe plus.".into());
         }
         return match action {
             "lu" | "non_lu" => {
@@ -489,25 +473,6 @@ fn act_with(
             "archiver" => {
                 e.archive(id);
                 Ok(Some("Archivé".into()))
-            }
-            // git peut prendre des secondes : dans un fil, hors du verrou du moteur.
-            "diff" => {
-                let (repo, patch) = e.diff_job(id)?;
-                let rid = id.to_string();
-                background(phone, id, "Application du diff…", move || {
-                    let done = actions::check_apply(&repo, &patch)
-                        .and_then(|plan| actions::apply(&repo, &patch).map(|_| plan));
-                    Done::Applied(rid, done)
-                });
-                Ok(Some("Application du diff lancée".into()))
-            }
-            "worktree" => {
-                let (wt, repo): (PathBuf, Option<PathBuf>) = e.worktree_job(id)?;
-                let rid = id.to_string();
-                background(phone, id, "Suppression du worktree…", move || {
-                    Done::Dropped(rid, patronus_core::claude::discard_worktree(&wt, repo.as_deref()))
-                });
-                Ok(Some("Suppression du worktree lancée".into()))
             }
             _ => Err("action inconnue".into()),
         };
@@ -552,6 +517,8 @@ fn act_with(
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use patronus_core::run::Cost;
     use suite_sdk::mobile::ui::Block;
 
@@ -656,6 +623,13 @@ mod tests {
         let s = run(&r, "", true, Some(&busy), today);
         assert_eq!(s.action_ids().into_iter().collect::<Vec<_>>(), ["archiver", "lu"]);
         assert!(matches!(&s.blocks[0], Block::Note { tone: Tone::Info, .. }));
+        // Ce que Patronus en dit : en cours, puis son résultat une minute durant.
+        assert_eq!(job_note(&RunJob::Running("Application du diff…".into())), Some(busy));
+        let failed = RunJob::Done(Err("Diff non appliqué : conflit".into()), Instant::now());
+        assert_eq!(job_note(&failed), Some(("Diff non appliqué : conflit".into(), Tone::Danger)));
+        if let Some(old) = Instant::now().checked_sub(Duration::from_secs(120)) {
+            assert_eq!(job_note(&RunJob::Done(Ok("Worktree supprimé".into()), old)), None);
+        }
     }
 
     #[test]
@@ -673,14 +647,13 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("suite-patronus-telephone-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let mut e = Engine::open_headless(&dir, now());
-        let phone = Shared::default();
-        assert_eq!(act(&mut e, &phone, "", "pause"), Ok(Some("En pause".into())));
+        assert_eq!(act(&mut e, "", "pause"), Ok(Some("En pause".into())));
         assert!(e.paused());
-        assert_eq!(act(&mut e, &phone, "", "reprendre"), Ok(Some("Reprise".into())));
+        assert_eq!(act(&mut e, "", "reprendre"), Ok(Some("Reprise".into())));
         assert!(!e.paused());
-        assert!(act(&mut e, &phone, "", "lancer:inconnue").is_err());
-        assert!(act(&mut e, &phone, "run/inconnue", "lu").is_err());
-        assert!(act(&mut e, &phone, "", "autre").is_err());
+        assert!(act(&mut e, "", "lancer:inconnue").is_err());
+        assert!(act(&mut e, "run/inconnue", "lu").is_err());
+        assert!(act(&mut e, "", "autre").is_err());
         drop(e);
         let _ = std::fs::remove_dir_all(&dir);
     }
