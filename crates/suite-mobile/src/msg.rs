@@ -12,6 +12,9 @@ pub const PROTOCOL: u32 = 1;
 /// Un module qui veut que le téléphone ouvre un écran après une action répond `Ok(Some("@ouvrir <chemin>"))`.
 pub const OPEN_PREFIX: &str = "@ouvrir ";
 
+/// … ou un autre module, sur son accueil : `Ok(Some("@module fawkes"))`.
+pub const MODULE_PREFIX: &str = "@module ";
+
 /// Ce qu'un appareil a le droit de faire.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rights {

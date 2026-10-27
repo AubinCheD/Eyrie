@@ -79,7 +79,37 @@ pub struct Job {
 }
 
 /// L'accueil ; `jobs` : les actions Docker récentes, par conteneur.
-pub fn home(managed: &[ManagedSpec], names: &BTreeMap<String, String>, snap: &Snapshot, jobs: &[&Job]) -> Screen {
+/// Ce que Menagerie sait d'un service géré qu'il supervise : son état (« en cours », « planté »…).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Live {
+    pub label: String,
+    /// Lancé (ou en relance) : « Arrêter » et « Relancer » ; sinon « Démarrer ».
+    pub active: bool,
+    pub failure: bool,
+}
+
+/// Les actions d'un service géré, selon son état.
+fn service_acts(id: u64, name: &str, live: Option<&Live>) -> Vec<Act> {
+    if live.is_some_and(|l| l.active) {
+        vec![
+            Act::new(format!("service:relancer:{id}"), "Relancer").glyph("🔄"),
+            Act::new(format!("service:arreter:{id}"), "Arrêter")
+                .glyph("⏹️")
+                .danger()
+                .confirm(format!("Arrêter {name} ?")),
+        ]
+    } else {
+        vec![Act::new(format!("service:demarrer:{id}"), "Démarrer").glyph("▶️")]
+    }
+}
+
+pub fn home(
+    managed: &[ManagedSpec],
+    live: &BTreeMap<u64, Live>,
+    names: &BTreeMap<String, String>,
+    snap: &Snapshot,
+    jobs: &[&Job],
+) -> Screen {
     let mut s = Screen::new("Menagerie");
     if snap.scans == 0 {
         s.subtitle = "Premier relevé du poste en cours…".into();
@@ -96,7 +126,11 @@ pub fn home(managed: &[ManagedSpec], names: &BTreeMap<String, String>, snap: &Sn
     }
     for spec in managed {
         let tree = managed_tree(spec, snap);
-        let mut row = Row::new(&spec.name).subtitle(format!("{} · {}", spec.command, short_path(&spec.dir)));
+        let state = live.get(&spec.id);
+        let mut row = Row::new(&spec.name)
+            .subtitle(format!("{} · {}", spec.command, short_path(&spec.dir)))
+            .open(format!("service/{}", spec.id));
+        row.acts = service_acts(spec.id, &spec.name, state);
         row = match &tree {
             Some(pids) => {
                 let mut ports: Vec<u16> = snap
@@ -111,12 +145,13 @@ pub fn home(managed: &[ManagedSpec], names: &BTreeMap<String, String>, snap: &Sn
                 let detail = if ports.is_empty() { "en marche".to_string() } else { ports_text(&ports) };
                 row.detail(detail).tone(Tone::Ok).glyph("●")
             }
-            None => row.detail("arrêté").glyph("⚪"),
+            None => match state {
+                Some(l) if l.failure => row.detail(&l.label).tone(Tone::Danger).glyph("⚠️"),
+                Some(l) if l.active => row.detail(&l.label).tone(Tone::Info).glyph("●"),
+                _ => row.detail("arrêté").glyph("⚪"),
+            },
         };
         s.row(row);
-    }
-    if !managed.is_empty() {
-        s.note("Démarrer ou arrêter un service géré se fait depuis le PC.", Tone::Info);
     }
 
     // Ports ouverts par les programmes de développement (hors services gérés, déjà montrés).
@@ -196,6 +231,28 @@ pub fn home(managed: &[ManagedSpec], names: &BTreeMap<String, String>, snap: &Sn
 }
 
 /// Un conteneur : son état, ses actions, la fin de son journal (`None` : lecture en cours).
+/// Un service géré : son état, ses actions, la fin de son journal.
+pub fn service(spec: &ManagedSpec, live: Option<&Live>, log: &str) -> Screen {
+    let label = live.map(|l| l.label.clone()).unwrap_or_else(|| "arrêté".into());
+    let mut s = Screen::new(&spec.name).subtitle(label);
+    s.acts = service_acts(spec.id, &spec.name, live);
+    if live.is_some_and(|l| l.failure) {
+        s.note("Ce service s'est arrêté sur une erreur : voir son journal.", Tone::Danger);
+    }
+    s.row(Row::new("Commande").subtitle(&spec.command));
+    s.row(Row::new("Dossier").subtitle(&spec.dir));
+    if let Some(url) = &spec.health_url {
+        s.row(Row::new("Santé").subtitle(url));
+    }
+    s.section("Journal", "");
+    if log.trim().is_empty() {
+        s.empty("Rien pour l'instant.");
+    } else {
+        s.text(tail(log), true);
+    }
+    s
+}
+
 pub fn container(c: &Container, job: Option<&Job>, logs: Option<&Result<String, String>>) -> Screen {
     let mut s = Screen::new(&c.name).subtitle(format!("{} · {}", c.image, c.status));
     if let Some(j) = job {
@@ -261,13 +318,30 @@ pub fn after_logic(app: &mut App, phone: &Shared) {
     }
 }
 
+/// L'état des services que Menagerie supervise.
+fn live(app: &App) -> BTreeMap<u64, Live> {
+    app.managed()
+        .iter()
+        .map(|m| {
+            let active = m.is_active() || m.status == menagerie::supervisor::Status::Stopping;
+            (m.spec.id, Live { label: m.status.label(), active, failure: m.status.is_failure() })
+        })
+        .collect()
+}
+
 pub fn screen(app: &mut App, phone: &Shared, path: &str) -> Option<Screen> {
     let snap = app.monitor().snapshot();
     if path.is_empty() {
         let p = lock(phone);
         let mut jobs: Vec<&Job> = p.jobs.values().filter(|j| j.at.elapsed() < JOB_SHOWN).collect();
         jobs.sort_by_key(|j| j.at);
-        return Some(home(&app.st.managed, &app.st.names, &snap, &jobs));
+        return Some(home(&app.st.managed, &live(app), &app.st.names, &snap, &jobs));
+    }
+    if let Some(id) = path.strip_prefix("service/") {
+        let id: u64 = id.parse().ok()?;
+        let spec = app.st.managed.iter().find(|s| s.id == id)?.clone();
+        let log = app.managed().iter().find(|m| m.spec.id == id).map(|m| m.log_text()).unwrap_or_default();
+        return Some(service(&spec, live(app).get(&id), &log));
     }
     let id = path.strip_prefix("docker/")?;
     let Some(Docker::Running(list)) = &snap.docker else { return None };
@@ -289,6 +363,18 @@ pub fn screen(app: &mut App, phone: &Shared, path: &str) -> Option<Screen> {
 pub fn action(app: &mut App, phone: &Shared, action: &str) -> Result<Option<String>, String> {
     let (kind, rest) = action.split_once(':').ok_or("action inconnue")?;
     match kind {
+        "service" => {
+            let (verb, id) = rest.split_once(':').ok_or("action inconnue")?;
+            let id: u64 = id.parse().map_err(|_| "action inconnue")?;
+            let name = app.st.managed.iter().find(|s| s.id == id).map(|s| s.name.clone()).ok_or("service inconnu")?;
+            let done = match verb {
+                "demarrer" => app.start_service(id).map(|_| "démarré"),
+                "arreter" => app.stop_service(id).map(|_| "arrêt en cours"),
+                "relancer" => app.restart_service(id).map(|_| "relancé"),
+                _ => return Err("action inconnue".into()),
+            }?;
+            Ok(Some(format!("{name} : {done}")))
+        }
         "tuer" => {
             let (pid, created) = rest.split_once(':').ok_or("action inconnue")?;
             let pid: u32 = pid.parse().map_err(|_| "action inconnue")?;
@@ -396,7 +482,7 @@ mod tests {
             spec(1, "web", Some(RunRecord { pid: 10, created: 500 })),
             spec(2, "api", Some(RunRecord { pid: 99, created: 7 })),
         ];
-        let s = home(&managed, &BTreeMap::new(), &snap, &[]);
+        let s = home(&managed, &BTreeMap::new(), &BTreeMap::new(), &snap, &[]);
         let rows: Vec<&Row> = s
             .blocks
             .iter()
@@ -411,8 +497,33 @@ mod tests {
         assert_eq!(rows[2].title, "dotnet — contoso-web");
         assert_eq!(rows.len(), 5);
         let ids: Vec<String> = s.action_ids().into_iter().collect();
-        assert_eq!(ids, ["docker:restart:abc", "docker:start:def", "docker:stop:abc", "tuer:30:1030"]);
-        assert_eq!(s.opens().into_iter().collect::<Vec<_>>(), ["docker/abc", "docker/def"]);
+        // Sans état vivant de Menagerie (essai), les services gérés proposent « Démarrer ».
+        assert_eq!(
+            ids,
+            [
+                "docker:restart:abc",
+                "docker:start:def",
+                "docker:stop:abc",
+                "service:demarrer:1",
+                "service:demarrer:2",
+                "tuer:30:1030"
+            ]
+        );
+        assert_eq!(s.opens().into_iter().collect::<Vec<_>>(), ["docker/abc", "docker/def", "service/1", "service/2"]);
+    }
+
+    #[test]
+    fn a_running_service_offers_stop_and_restart_and_shows_its_log() {
+        let spec = spec(7, "web", None);
+        let running = Live { label: "en cours".into(), active: true, failure: false };
+        let s = service(&spec, Some(&running), "prêt sur :3000\n");
+        let ids: Vec<String> = s.action_ids().into_iter().collect();
+        assert_eq!(ids, ["service:arreter:7", "service:relancer:7"]);
+        assert!(s.blocks.iter().any(|b| matches!(b, Block::Text { text, mono: true } if text.contains(":3000"))));
+        let crashed = Live { label: "planté (code 1)".into(), active: false, failure: true };
+        let s = service(&spec, Some(&crashed), "");
+        assert_eq!(s.action_ids().into_iter().collect::<Vec<_>>(), ["service:demarrer:7"]);
+        assert!(s.blocks.iter().any(|b| matches!(b, Block::Note { tone: Tone::Danger, .. })));
     }
 
     #[test]

@@ -60,6 +60,10 @@ impl Module for Factice {
         }
     }
 
+    fn mobile_waiting(&self) -> Vec<(String, Option<String>)> {
+        vec![("Une chose attend".into(), Some("detail".into()))]
+    }
+
     fn commands(&self) -> Vec<CommandInfo> {
         vec![CommandInfo { id: "bonjour".into(), title: "Dire bonjour".into(), shortcut: None }]
     }
@@ -191,6 +195,13 @@ fn a_phone_pairs_follows_acts_and_types_and_the_pc_sees_it() {
         assert!(card.running);
         assert_eq!(card.color, 0x123456);
         assert_eq!(card.badge.as_ref().and_then(|b| b.count), Some(1));
+        // Ce qui attend mène à son écran.
+        let waiting = until(&mut c, |m| match m {
+            ToPhone::Overview { waiting } => Some(waiting),
+            _ => None,
+        });
+        let w = waiting.iter().find(|w| w.module == "factice").expect("ce qui attend");
+        assert_eq!((w.text.as_str(), w.path.as_deref()), ("Une chose attend", Some("detail")));
 
         // L'écran suivi, avec « Montrer sur le PC » ajouté par l'hôte.
         c.tx.send(&ToPc::Follow { screen: Some(("factice".into(), "".into())), terminal: None }).unwrap();

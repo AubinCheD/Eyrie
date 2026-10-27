@@ -61,14 +61,37 @@ fn state(app: &App, id: TermId) -> (String, Option<Tone>) {
 
 fn term_acts(app: &App, id: TermId) -> Vec<Act> {
     let asleep = !app.live.contains_key(&id);
-    let mut acts = vec![Act::new(format!("redemarrer:{id}"), "Redémarrer").glyph("🔄")];
+    let title = app.st.term(id).map(|t| t.display_title()).unwrap_or_default();
+    let claude = app.live.get(&id).is_some_and(|l| l.proc.claude_pid.is_some());
+    let remote = app.live.get(&id).and_then(|l| l.proc.claude.as_ref()).is_some_and(|c| c.remote_control());
+    let mut acts = Vec::new();
+    if claude && !remote {
+        acts.push(Act::new(format!("remote:{id}"), "Activer Remote Control").glyph("📡"));
+    }
+    acts.push(Act::new(format!("redemarrer:{id}"), "Redémarrer").glyph("🔄"));
     acts.push(if asleep {
         Act::new(format!("reveiller:{id}"), "Réveiller").glyph("☀️")
     } else {
         Act::new(format!("veille:{id}"), "Mettre en veille").glyph("🌙")
     });
     acts.push(Act::new(format!("montrer:{id}"), "Montrer sur le PC").glyph("🖥️"));
+    acts.push(
+        Act::new(format!("fermer:{id}"), "Fermer")
+            .glyph("✖️")
+            .danger()
+            .confirm(format!("Fermer « {title} » ? Ce qui y tourne s'arrête ; il reste rouvrable sur le PC.")),
+    );
     acts
+}
+
+/// Les sessions Claude qui attendent, avec leur terminal : la vue d'ensemble du téléphone y mène directement.
+pub fn waiting(app: &App) -> Vec<(String, Option<String>)> {
+    app.st
+        .terminals
+        .iter()
+        .filter(|t| app.ui.waiting.contains(&t.id))
+        .map(|t| (format!("Claude attend : {}", t.display_title()), Some(format!("t/{}", t.id))))
+        .collect()
 }
 
 /// Les dossiers proposés pour un nouveau terminal : les récents, puis les dépôts des groupes.
@@ -218,6 +241,15 @@ pub fn action(
             app.select_term(id);
             cx.host.show(crate::suite::ID);
             Ok(Some("Montré sur le PC".into()))
+        }
+        "fermer" => {
+            app.close_terminal(id);
+            // Le terminal n'existe plus : retour à la liste.
+            Ok(Some(OPEN_PREFIX.to_string()))
+        }
+        "remote" => {
+            app.remote_control(id)?;
+            Ok(Some("Remote Control activé : la session continue dans l'application Claude".into()))
         }
         _ => Err("action inconnue".into()),
     }

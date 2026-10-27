@@ -45,6 +45,7 @@ type PanelHook<A> = Box<dyn FnMut(&mut A, &mut egui::Ui)>;
 type LeftHook<A> = Box<dyn FnMut(&mut A)>;
 type ScreenHook<A> = Box<dyn FnMut(&mut A, &str, &mut Cx) -> Option<mobile::ui::Screen>>;
 type ActionHook<A> = Box<dyn FnMut(&mut A, &str, &str, Option<&str>, &mut Cx) -> Result<Option<String>, String>>;
+type WaitingHook<A> = Box<dyn Fn(&A) -> Vec<(String, Option<String>)>>;
 type TermHook<A> = Box<dyn FnMut(&mut A, &str, usize) -> Option<mobile::term::TermView>>;
 type TermInputHook<A> = Box<dyn FnMut(&mut A, &str, &mobile::term::TermInput, &mut Cx) -> Result<(), String>>;
 
@@ -72,6 +73,7 @@ pub struct Embedded<A: eframe::App> {
     settings_panel: Option<PanelHook<A>>,
     settings_left: Option<LeftHook<A>>,
     mobile_screen: Option<ScreenHook<A>>,
+    mobile_waiting: Option<WaitingHook<A>>,
     mobile_action: Option<ActionHook<A>>,
     mobile_term: Option<TermHook<A>>,
     mobile_term_input: Option<TermInputHook<A>>,
@@ -101,6 +103,7 @@ impl<A: eframe::App> Embedded<A> {
             settings_panel: None,
             settings_left: None,
             mobile_screen: None,
+            mobile_waiting: None,
             mobile_action: None,
             mobile_term: None,
             mobile_term_input: None,
@@ -193,6 +196,12 @@ impl<A: eframe::App> Embedded<A> {
         f: impl FnMut(&mut A, &str, &mut Cx) -> Option<mobile::ui::Screen> + 'static,
     ) -> Self {
         self.mobile_screen = Some(Box::new(f));
+        self
+    }
+
+    /// Ce qui attend, avec l'écran mobile où y répondre (`Module::mobile_waiting`).
+    pub fn mobile_waitings(mut self, f: impl Fn(&A) -> Vec<(String, Option<String>)> + 'static) -> Self {
+        self.mobile_waiting = Some(Box::new(f));
         self
     }
 
@@ -359,6 +368,10 @@ impl<A: eframe::App> Module for Embedded<A> {
 
     fn mobile_screen(&mut self, path: &str, cx: &mut Cx) -> Option<mobile::ui::Screen> {
         self.mobile_screen.as_mut().and_then(|h| h(&mut self.app, path, cx))
+    }
+
+    fn mobile_waiting(&self) -> Vec<(String, Option<String>)> {
+        self.mobile_waiting.as_ref().map(|h| h(&self.app)).unwrap_or_default()
     }
 
     fn mobile_action(

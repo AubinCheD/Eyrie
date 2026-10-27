@@ -150,7 +150,13 @@ fn on_request(app: &mut App, r: &Request, cx: &mut suite_sdk::Cx) -> Result<serd
         remote_control: false,
         extra_args: String::new(),
     });
+    let with_claude = claude.is_some();
     let id = app.create_terminal(NewTerm { cwd: dir, group, title: s("titre"), claude, ..Default::default() });
+    // Une consigne (Owlery : « Corriger avec Claude ») : collée dans la session dès que Claude est prêt, sans être
+    // envoyée, comme Fawkes le fait pour une sélection envoyée à une nouvelle session.
+    if let Some(consigne) = s("consigne").filter(|c| with_claude && !c.trim().is_empty()) {
+        app.ui.pending_paste.insert(id, (consigne, std::time::Instant::now()));
+    }
     app.select_term(id);
     cx.host.show(ID);
     Ok(serde_json::json!({ "terminal": id }))
@@ -209,6 +215,7 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
         .on_request(on_request)
         // Le téléphone : groupes et terminaux, un terminal en direct, la saisie (`mobile.rs`).
         .mobile_screens(crate::mobile::screen)
+        .mobile_waitings(crate::mobile::waiting)
         .mobile_actions(crate::mobile::action)
         .mobile_terminals(crate::mobile::term_view)
         .mobile_terminal_input(crate::mobile::term_input)

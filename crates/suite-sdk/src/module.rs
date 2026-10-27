@@ -209,6 +209,12 @@ pub trait Module {
         Err("action inconnue".into())
     }
 
+    /// Ce qui attend l'utilisateur, avec l'écran mobile où y répondre (`t/12` : la session Claude qui attend). Vide :
+    /// l'hôte reprend `status().waiting`, sans écran.
+    fn mobile_waiting(&self) -> Vec<(String, Option<String>)> {
+        Vec::new()
+    }
+
     /// Le terminal `id` suivi depuis le téléphone : l'écran et au plus `history` lignes d'historique.
     fn mobile_term(&mut self, _id: &str, _history: usize) -> Option<mobile::term::TermView> {
         None

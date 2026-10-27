@@ -329,16 +329,21 @@ fn message(
                 Err(e) => core.mobile.store.journal(&name, "action", format!("{text} : échec ({e})")),
             }
             // « @ouvrir <chemin> » : le téléphone ouvre cet écran du module (le terminal qu'il vient de créer…).
+            // « @module <id> » : celui d'un autre module (Owlery → Fawkes après « Corriger avec Claude »).
             let open = match &result {
-                Ok(Some(m)) => m.strip_prefix(suite_mobile::msg::OPEN_PREFIX).map(str::to_string),
+                Ok(Some(m)) => {
+                    m.strip_prefix(suite_mobile::msg::OPEN_PREFIX).map(|p| (module.clone(), p.to_string())).or_else(
+                        || m.strip_prefix(suite_mobile::msg::MODULE_PREFIX).map(|m| (m.to_string(), String::new())),
+                    )
+                }
                 _ => None,
             };
             let result = if open.is_some() { Ok(None) } else { result };
             reply(core, id, req, result);
-            if let Some(path) = open
+            if let Some((module, path)) = open
                 && let Some(s) = session_mut(core, id)
             {
-                s.send(ToPhone::Open { module: module.clone(), path });
+                s.send(ToPhone::Open { module, path });
             }
             if let Some(f) = session_mut(core, id).and_then(|s| s.screen.as_mut()) {
                 f.due = Instant::now();
@@ -434,17 +439,25 @@ fn push_light(core: &mut Core) {
         let mut cmds = Vec::new();
         for slot in &core.slots {
             let status = slot.module().and_then(|m| {
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (m.status(), m.commands()))).ok()
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    (m.status(), m.commands(), m.mobile_waiting())
+                }))
+                .ok()
             });
-            let (status, module_commands) = status.unwrap_or_default();
+            let (status, module_commands, waiting) = status.unwrap_or_default();
             let reason = match &slot.state {
                 SlotState::Running(_) => String::new(),
                 SlotState::Disabled => "Désactivé sur le PC".into(),
                 SlotState::Unavailable(u) => crate::app::unavailable_text(u),
                 SlotState::Crashed(msg) => format!("Arrêté après une erreur : {msg}"),
             };
-            for w in &status.waiting {
-                overview.push(Waiting { module: slot.info.id.into(), text: w.clone(), path: None });
+            if waiting.is_empty() {
+                for w in &status.waiting {
+                    overview.push(Waiting { module: slot.info.id.into(), text: w.clone(), path: None });
+                }
+            }
+            for (text, path) in waiting {
+                overview.push(Waiting { module: slot.info.id.into(), text, path });
             }
             cmds.extend(module_commands.into_iter().map(|c| CommandCard {
                 module: slot.info.id.into(),

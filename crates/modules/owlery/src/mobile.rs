@@ -1,22 +1,24 @@
 //! Owlery sur le téléphone : la boîte de réception par sorte (à relire, CI en échec, mentions, tickets, mes PR), le
-//! détail d'une entrée, l'ouvrir sur le téléphone ou sur le PC, actualiser.
+//! détail d'une entrée, et les gestes de la liste du PC : marquer lue ou non lue, traitée, reportée à demain, ignorer
+//! le dépôt, corriger avec Claude (une session dans Fawkes, que le téléphone ouvre ensuite), ouvrir sur le téléphone
+//! ou sur le PC, actualiser.
 //!
-//! Les entrées vivantes de l'application ne sont pas publiques : le téléphone lit l'état qu'Owlery enregistre
-//! (`state.json`, écrit d'un bloc), relu quand il change et au plus toutes les 2 s. « Actualiser » passe par le canal
-//! des demandes d'Owlery (`contract::Incoming::Refresh`), comme le ferait une autre application.
+//! Tout se lit dans l'état vivant d'Owlery (`App::state`) et passe par ses propres méthodes (`mark`, `mute`,
+//! `work_with_claude`) : le PC montre aussitôt le même changement. « Actualiser » passe par le canal des demandes
+//! d'Owlery (`contract::Incoming::Refresh`).
 
-use std::path::PathBuf;
 use std::sync::mpsc::Sender;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use owlery::app::App;
 use owlery::contract::Incoming;
-use owlery::inbox::{Inbox, Rules};
+use owlery::inbox::{Inbox, Rules, Snooze};
 use owlery::model::{Ci, Item, Kind, Status};
+use suite_sdk::mobile::msg::MODULE_PREFIX;
 use suite_sdk::mobile::ui::{Act, Row, Screen, Tone};
 
 /// Entrées montrées par sorte dans l'accueil.
 const PER_KIND: usize = 15;
-const CHECK_EVERY: Duration = Duration::from_secs(2);
 
 fn now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
@@ -105,20 +107,34 @@ pub fn home(inbox: &Inbox, rules: &Rules, now: i64) -> Screen {
                 row = row.tone(t);
             }
             if *status == Status::Unread {
-                row = row.badge("non lu");
+                row = row.badge("non lu").act(Act::new(format!("lu:{}", item.id), "Marquer lue").glyph("✅"));
+            } else {
+                row = row.act(Act::new(format!("non-lu:{}", item.id), "Marquer non lue").glyph("⚪"));
             }
+            row = row
+                .act(Act::new(format!("fait:{}", item.id), "Traitée").glyph("☑️"))
+                .act(Act::new(format!("reporter:{}", item.id), "Reporter à demain matin").glyph("⏰"));
             s.row(row);
         }
     }
     s
 }
 
-/// Le détail d'une entrée.
-pub fn item(i: &Item, status: Status, now: i64) -> Screen {
+/// Le détail d'une entrée ; `claude` : son dossier local est connu (*Corriger avec Claude* possible).
+pub fn item(i: &Item, status: Status, now: i64, claude: bool) -> Screen {
     let mut s = Screen::new(&i.title).subtitle(format!("{} · {}", reference(i), i.kind.label()));
-    if status == Status::Unread {
-        s.note("Non lue : la marquer lue se fait sur le PC.", Tone::Info);
-    }
+    s.acts.push(match status {
+        Status::Unread => Act::new("lu", "Marquer lue").glyph("✅"),
+        _ => Act::new("non-lu", "Marquer non lue").glyph("⚪"),
+    });
+    s.acts.push(Act::new("fait", "Traitée").glyph("☑️"));
+    s.acts.push(Act::new("reporter", "Reporter à demain matin").glyph("⏰"));
+    s.acts.push(
+        Act::new("ignorer", format!("Ignorer {}", i.repo))
+            .glyph("🔕")
+            .danger()
+            .confirm(format!("Ne plus rien montrer de {} ? (rétabli dans les réglages d'Owlery)", i.repo)),
+    );
     let mut info: Vec<(&str, String)> = vec![("Forge", i.forge.label().to_string())];
     if !i.author.is_empty() {
         info.push(("Auteur", i.author.clone()));
@@ -157,8 +173,13 @@ pub fn item(i: &Item, status: Status, now: i64) -> Screen {
         s.text(i.summary.trim(), false);
     }
     let mut acts = Vec::new();
+    if claude {
+        let label = if i.ci == Some(Ci::Failure) { "Corriger avec Claude" } else { "Ouvrir avec Claude" };
+        acts.push(Act::new("claude", label).glyph("✳️").primary());
+    }
     if owlery::actions::is_safe_url(&i.url) {
-        acts.push(Act::link("Ouvrir", &i.url).primary());
+        let link = Act::link("Ouvrir", &i.url);
+        acts.push(if claude { link } else { link.primary() });
         acts.push(Act::new("pc", "Ouvrir sur le PC").glyph("🖥️"));
     }
     if !acts.is_empty() {
@@ -167,60 +188,83 @@ pub fn item(i: &Item, status: Status, now: i64) -> Screen {
     s
 }
 
-/// Ce que le téléphone garde entre deux appels : l'état relu et le canal des demandes d'Owlery.
+/// Ce que le téléphone garde : le canal des demandes d'Owlery (« Actualiser »).
 pub struct Phone {
-    dir: PathBuf,
     requests: Sender<Incoming>,
-    checked: Option<Instant>,
-    stamp: Option<SystemTime>,
-    inbox: Inbox,
-    rules: Rules,
 }
 
 impl Phone {
-    pub fn new(dir: PathBuf, requests: Sender<Incoming>) -> Phone {
-        Phone { dir, requests, checked: None, stamp: None, inbox: Inbox::default(), rules: Rules::default() }
+    pub fn new(requests: Sender<Incoming>) -> Phone {
+        Phone { requests }
     }
 
-    /// Relit `state.json` s'il a changé (au plus toutes les 2 s).
-    fn update(&mut self) {
-        if self.checked.is_some_and(|t| t.elapsed() < CHECK_EVERY) {
-            return;
-        }
-        self.checked = Some(Instant::now());
-        let stamp = std::fs::metadata(self.dir.join("state.json")).and_then(|m| m.modified()).ok();
-        if stamp != self.stamp {
-            self.stamp = stamp;
-            let loaded = owlery::state::load(&self.dir);
-            self.inbox = loaded.state.inbox;
-            self.rules = loaded.state.settings.rules;
-        }
+    pub fn refresh(&self) -> Result<Option<String>, String> {
+        self.requests.send(Incoming::Refresh).map_err(|_| "Owlery ne répond plus.".to_string())?;
+        Ok(Some("Lecture des forges lancée".into()))
     }
 
-    pub fn screen(&mut self, path: &str) -> Option<Screen> {
-        self.update();
+    pub fn screen(&self, app: &App, path: &str) -> Option<Screen> {
+        let st = app.state();
         let now = now();
         if path.is_empty() {
-            return Some(home(&self.inbox, &self.rules, now));
+            return Some(home(&st.inbox, &st.settings.rules, now));
         }
-        let i = self.inbox.items.get(path.strip_prefix("item/")?)?;
-        Some(item(i, self.inbox.status(i, now), now))
+        let id = path.strip_prefix("item/")?;
+        let i = st.inbox.items.get(id)?;
+        Some(item(i, st.inbox.status(i, now), now, app.knows_local_dir(id)))
     }
 
-    pub fn action(&mut self, path: &str, action: &str) -> Result<Option<String>, String> {
-        match action {
-            "actualiser" => {
-                self.requests.send(Incoming::Refresh).map_err(|_| "Owlery ne répond plus.".to_string())?;
-                Ok(Some("Lecture des forges lancée".into()))
+    /// Un geste : sur l'entrée de l'écran (`item/<id>`), ou sur une ligne de l'accueil (`lu:<id>`…).
+    pub fn action(
+        &self,
+        app: &mut App,
+        ctx: &suite_sdk::egui::Context,
+        path: &str,
+        action: &str,
+    ) -> Result<Option<String>, String> {
+        if action == "actualiser" {
+            return self.refresh();
+        }
+        let (verb, id) = match action.split_once(':') {
+            Some((verb, id)) => (verb, id.to_string()),
+            None => (action, path.strip_prefix("item/").ok_or("action inconnue")?.to_string()),
+        };
+        let Some(i) = app.state().inbox.items.get(&id).cloned() else {
+            return Err("Cette entrée n'existe plus.".into());
+        };
+        let done = match verb {
+            "lu" => {
+                app.mark(&id, Status::Read);
+                "Marquée lue"
+            }
+            "non-lu" => {
+                app.mark(&id, Status::Unread);
+                "Marquée non lue"
+            }
+            "fait" => {
+                app.mark(&id, Status::Done);
+                "Traitée"
+            }
+            "reporter" => {
+                app.mark(&id, Status::Snoozed { until: Snooze::Tomorrow.until(now()) });
+                "Reportée à demain matin"
+            }
+            "ignorer" => {
+                app.mute(&i.repo);
+                "Dépôt ignoré"
+            }
+            "claude" => {
+                app.work_with_claude(ctx, &id);
+                // La session s'ouvre dans Fawkes : le téléphone y va.
+                return Ok(Some(format!("{MODULE_PREFIX}fawkes")));
             }
             "pc" => {
-                let id = path.strip_prefix("item/").ok_or("action inconnue")?;
-                let i = self.inbox.items.get(id).ok_or("Cette entrée n'existe plus.")?;
                 owlery::actions::open_url(&i.url)?;
-                Ok(Some("Ouverte sur le PC".into()))
+                "Ouverte sur le PC"
             }
-            _ => Err("action inconnue".into()),
-        }
+            _ => return Err("action inconnue".into()),
+        };
+        Ok(Some(done.into()))
     }
 }
 
@@ -293,7 +337,8 @@ mod tests {
         let first = first.unwrap();
         assert_eq!((first.title.as_str(), first.subtitle.as_str()), ("PR 13", "contoso/web#13 · ada"));
         assert_eq!(first.badge, "non lu");
-        assert_eq!(s.action_ids().into_iter().collect::<Vec<_>>(), ["actualiser"]);
+        let ids = s.action_ids();
+        assert!(ids.contains("actualiser") && ids.contains("lu:b") && ids.contains("reporter:b"), "{ids:?}");
     }
 
     #[test]
@@ -301,24 +346,21 @@ mod tests {
         let now = 1_800_000_000;
         let mut i = entry("c", Kind::CiFailed, "contoso/api", 7, now - 7200, Some(Ci::Failure));
         i.checks = vec![Check { name: "build".into(), url: "https://ci.example/1".into() }];
-        let s = item(&i, Status::Unread, now);
+        let s = item(&i, Status::Unread, now, false);
         assert_eq!(s.subtitle, "contoso/api#7 · CI en échec");
-        assert_eq!(s.action_ids().into_iter().collect::<Vec<_>>(), ["pc"]);
+        assert_eq!(s.action_ids().into_iter().collect::<Vec<_>>(), ["fait", "ignorer", "lu", "pc", "reporter"]);
+        assert!(item(&i, Status::Unread, now, true).action_ids().contains("claude"), "dossier local connu");
         let links: Vec<&str> = s.all_acts().into_iter().filter_map(|a| a.url.as_deref()).collect();
         assert_eq!(links, ["https://ci.example/1", "https://github.com/contoso/api/pull/7"]);
         i.url = "javascript:alert(1)".into();
-        assert!(item(&i, Status::Read, now).action_ids().is_empty(), "pas de lien douteux");
+        assert!(!item(&i, Status::Read, now, false).action_ids().contains("pc"), "pas de lien douteux");
     }
 
     #[test]
     fn refresh_goes_through_owlery_requests() {
         let (tx, rx) = mpsc::channel();
-        let dir = std::env::temp_dir().join(format!("suite-owlery-telephone-{}", std::process::id()));
-        let mut phone = Phone::new(dir, tx);
-        assert!(phone.screen("").is_some(), "sans état enregistré : boîte vide");
-        assert!(phone.screen("item/inconnue").is_none());
-        assert_eq!(phone.action("", "actualiser"), Ok(Some("Lecture des forges lancée".into())));
+        let phone = Phone::new(tx);
+        assert_eq!(phone.refresh(), Ok(Some("Lecture des forges lancée".into())));
         assert!(matches!(rx.try_recv(), Ok(Incoming::Refresh)));
-        assert!(phone.action("item/inconnue", "pc").is_err());
     }
 }
