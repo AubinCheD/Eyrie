@@ -212,6 +212,7 @@ pub fn items(suite: &Suite) -> Vec<Item> {
         (Page::Modules, mark("Réglages : modules")),
         (Page::Accounts, mark("Réglages : comptes")),
         (Page::Tailscale, mark("Réglages : Tailscale")),
+        (Page::Phones, mark("Réglages : téléphones")),
         (Page::Shortcuts, mark("Réglages : raccourcis")),
         (Page::Layouts, mark("Réglages : dispositions")),
     ] {
@@ -222,6 +223,30 @@ pub fn items(suite: &Suite) -> Vec<Item> {
             title: tr(title).into(),
             detail: String::new(),
             action: Action::OpenSettings(page),
+        });
+    }
+    // L'interrupteur du téléphone, et la coupure de tout accès à distance (téléphone et nœud Tailscale).
+    let mobile_on = suite.core.st.mobile.enabled;
+    v.push(Item {
+        icon: "📱".into(),
+        module: None,
+        color: if mobile_on { p.warn } else { p.text_muted },
+        title: if mobile_on {
+            tr("Couper l'accès depuis le téléphone").into()
+        } else {
+            tr("Ouvrir l'accès depuis le téléphone").into()
+        },
+        detail: String::new(),
+        action: Action::MobileAccess { on: !mobile_on, everything: false },
+    });
+    if mobile_on || suite.core.st.tailnet.enabled {
+        v.push(Item {
+            icon: "⛔".into(),
+            module: None,
+            color: p.danger,
+            title: tr("Couper tout accès à distance (téléphone et Tailscale)").into(),
+            detail: String::new(),
+            action: Action::MobileAccess { on: false, everything: true },
         });
     }
     v.push(Item {

@@ -293,5 +293,10 @@
   "regarde": "viewing",
   "vu": "seen",
   "Écoute directe (essais) :": "Direct listening (testing):",
-  "Écrire dans les terminaux, en ouvrir": "Type in terminals, open new ones"
+  "Écrire dans les terminaux, en ouvrir": "Type in terminals, open new ones",
+  "Réglages : téléphones": "Settings: phones",
+  "Couper l'accès depuis le téléphone": "Turn off access from the phone",
+  "Ouvrir l'accès depuis le téléphone": "Turn on access from the phone",
+  "Couper tout accès à distance (téléphone et Tailscale)": "Cut all remote access (phone and Tailscale)",
+  "Accès depuis le téléphone coupé.": "Access from the phone turned off."
 }

@@ -71,6 +71,11 @@ pub enum Action {
     StartModule(String),
     /// Arrête le module et le désactive.
     StopModule(String),
+    /// « Accès depuis le téléphone » ; `everything` : coupe aussi le nœud Tailscale (tout accès à distance).
+    MobileAccess {
+        on: bool,
+        everything: bool,
+    },
     Restart,
     Quit,
 }
@@ -697,6 +702,16 @@ impl Suite {
                     self.shell.palette.toggle();
                     if self.shell.palette.open {
                         self.core.focus.module = None;
+                    }
+                }
+                Action::MobileAccess { on, everything } => {
+                    self.core.st.mobile.enabled = on;
+                    if !on {
+                        self.core.mobile.stop("Accès depuis le téléphone coupé sur le PC.");
+                        self.core.journal.push("suite", Tone::Info, tr("Accès depuis le téléphone coupé."));
+                    }
+                    if everything {
+                        self.core.st.tailnet.enabled = false;
                     }
                 }
                 Action::SetTheme(t) => {
