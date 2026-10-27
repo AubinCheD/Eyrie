@@ -237,18 +237,19 @@ fn account_card(ui: &mut egui::Ui, p: &Palette, a: &AccountInfo, now: i64) {
                 ui.set_width(330.0);
                 ui.label(RichText::new(&a.label).strong().color(p.text));
                 for kind in Kind::ALL {
-                    let Some(w) = a.last.window(kind) else { continue };
-                    let pct = crate::current(w, now);
+                    let w = a.window(kind).filter(|w| w.resets_at > now);
+                    let pct = w.map_or(0.0, |w| w.pct);
                     ui.horizontal(|ui| {
                         ui.add_sized([62.0, 18.0], egui::Label::new(RichText::new(kind.label()).color(p.text_muted)));
                         bar(ui, p, pct, 180.0, 10.0);
                         ui.label(RichText::new(readings::pct_text(pct)).strong().color(tone_color(p, pct)));
                     });
                     let fmt = if kind == Kind::FiveHour { "%H:%M" } else { "%d/%m à %H:%M" };
-                    let reset = if w.resets_at <= now {
-                        "remise à zéro depuis le relevé".to_string()
-                    } else {
-                        format!("remise à zéro {} ({})", readings::local(w.resets_at, fmt), until(w.resets_at, now))
+                    let reset = match w {
+                        Some(w) => {
+                            format!("remise à zéro {} ({})", readings::local(w.resets_at, fmt), until(w.resets_at, now))
+                        }
+                        None => "pas de fenêtre en cours".to_string(),
                     };
                     ui.label(RichText::new(reset).small().color(p.text_dim));
                 }
@@ -432,8 +433,12 @@ pub fn conversations(ui: &mut egui::Ui, p: &Palette, d: &Data, v: &mut ViewState
         let repo_w = 280.0;
         ui.horizontal_top(|ui| {
             let table_w = ui.available_width() - repo_w - 12.0;
-            ui.allocate_ui(vec2(table_w, ui.available_height()), |ui| table(ui, p, &rows, v, now));
-            ui.allocate_ui(vec2(repo_w, ui.available_height()), |ui| by_repo(ui, p, &rows, v));
+            let height = ui.available_height();
+            // Chaque colonne de haut en bas : sans disposition donnée, elle prendrait celle de la rangée, et les lignes
+            // du tableau partiraient à droite de ses titres, hors de l'écran.
+            let down = Layout::top_down(Align::Min);
+            ui.allocate_ui_with_layout(vec2(table_w, height), down, |ui| table(ui, p, &rows, v, now));
+            ui.allocate_ui_with_layout(vec2(repo_w, height), down, |ui| by_repo(ui, p, &rows, v));
         });
     } else {
         table(ui, p, &rows, v, now);

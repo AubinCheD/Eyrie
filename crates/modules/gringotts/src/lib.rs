@@ -229,7 +229,8 @@ impl Gringotts {
         });
     }
 
-    /// Les limites en cours, pour la barre d'état : le compte relevé en dernier, et le détail de tous en infobulle.
+    /// Les limites en cours, pour la barre d'état : le compte relevé en dernier, ses deux fenêtres toujours (0 % sans
+    /// fenêtre en cours), et le détail de tous en infobulle.
     fn status_text(&self) -> StatusText {
         let now = now();
         let Some(a) = self.analysis.accounts.first() else {
@@ -242,13 +243,11 @@ impl Gringotts {
         let mut worst: f64 = 0.0;
         let mut parts = Vec::new();
         for kind in Kind::ALL {
-            if let Some(w) = a.last.window(kind) {
-                let p = current(w, now);
-                worst = worst.max(p);
-                parts.push(format!("{} {}", kind.label(), readings::pct_text(p)));
-            }
+            let p = a.window(kind).map_or(0.0, |w| current(w, now));
+            worst = worst.max(p);
+            parts.push(format!("{} {}", kind.label(), readings::pct_text(p)));
         }
-        if let Some(w) = a.last.five_hour.filter(|w| w.resets_at > now) {
+        if let Some(w) = a.window(Kind::FiveHour).filter(|w| w.resets_at > now) {
             parts.push(format!("↻ {}", readings::local(w.resets_at, "%H:%M")));
         }
         let tone = if worst >= 100.0 {
@@ -265,15 +264,17 @@ impl Gringotts {
             .map(|a| {
                 let windows: Vec<String> = Kind::ALL
                     .iter()
-                    .filter_map(|k| {
-                        let w = a.last.window(*k)?;
-                        let fmt = if *k == Kind::FiveHour { "%H:%M" } else { "%a %d/%m %H:%M" };
-                        Some(format!(
-                            "{} : {} (remise à zéro {})",
-                            k.label(),
-                            readings::pct_text(current(w, now)),
-                            readings::local(w.resets_at, fmt)
-                        ))
+                    .map(|k| match a.window(*k).filter(|w| w.resets_at > now) {
+                        Some(w) => {
+                            let fmt = if *k == Kind::FiveHour { "%H:%M" } else { "%a %d/%m %H:%M" };
+                            format!(
+                                "{} : {} (remise à zéro {})",
+                                k.label(),
+                                readings::pct_text(w.pct),
+                                readings::local(w.resets_at, fmt)
+                            )
+                        }
+                        None => format!("{} : 0 % (pas de fenêtre en cours)", k.label()),
                     })
                     .collect();
                 format!("{}\n  {}\n  relevé {}", a.label, windows.join("\n  "), ui::ago(a.last.t, now))
@@ -360,7 +361,7 @@ impl Module for Gringotts {
             .analysis
             .accounts
             .iter()
-            .any(|a| Kind::ALL.iter().any(|k| a.last.window(*k).is_some_and(|w| current(w, now) >= 90.0)));
+            .any(|a| Kind::ALL.iter().any(|k| a.window(*k).is_some_and(|w| current(w, now) >= 90.0)));
         ModuleStatus {
             title: None,
             badge: hot.then(|| Badge {

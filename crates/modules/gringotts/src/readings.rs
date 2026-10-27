@@ -5,6 +5,11 @@
 //! Le relais de Gringotts (la ligne d'état) range chaque relevé qui change quelque chose dans `releves.jsonl` :
 //! c'est l'historique des limites, et la base de la part de chaque conversation.
 //!
+//! Chaque session donne les taux de **sa** dernière réponse : une session restée inactive redonne ses anciens taux,
+//! plus bas, quand sa ligne d'état se redessine (une fenêtre de 5 h qui se remet à zéro les redessine toutes). Dans
+//! une fenêtre, le taux d'un compte ne fait que monter : son taux est le plus haut relevé de la fenêtre, et un relevé
+//! plus bas, ou d'une fenêtre plus ancienne, est périmé et n'apporte rien.
+//!
 //! Part d'une conversation, telle que le relais la montre dans le terminal : la hausse du taux entre deux relevés
 //! d'un même compte va à la conversation du second relevé (celle qui vient de travailler). Gringotts, qui lit aussi
 //! les transcriptions, partage plus finement (`analysis`) et dépose ses chiffres dans `parts.json`, que le relais
@@ -44,6 +49,12 @@ impl Kind {
             Kind::SevenDay => "semaine",
         }
     }
+}
+
+/// Deux heures de remise à zéro désignent-elles la même fenêtre ? Quelques minutes d'écart restent la même fenêtre
+/// (deux fenêtres d'un même compte sont à 5 h l'une de l'autre au moins).
+pub fn same_window(a: i64, b: i64) -> bool {
+    (a - b).abs() < 600
 }
 
 /// Une fenêtre relevée : part utilisée (0 à 100, plus en dépassement) et heure de remise à zéro.
@@ -168,30 +179,43 @@ fn kind_key(kind: Kind) -> &'static str {
     }
 }
 
-/// Un relevé arrive : la hausse depuis le précédent va à sa session. Rend vrai si le relevé apporte quelque chose à
-/// l'historique (un taux a bougé, une autre session, une fenêtre nouvelle, ou cinq minutes depuis le dernier).
+/// Un relevé arrive : la hausse depuis le plus haut taux de la fenêtre va à sa session. Rend vrai si le relevé
+/// apporte quelque chose à l'historique (un taux a monté, une fenêtre nouvelle, une autre session, ou cinq minutes
+/// depuis le dernier) ; un relevé périmé (taux plus bas, fenêtre plus ancienne) n'apporte rien et ne change rien.
 pub fn accumulate(state: &mut AccountState, r: &Reading) -> bool {
-    let mut changed = state.last_session != r.session || r.t - state.last_t >= 300;
+    let mut news = false;
+    let mut current = false;
     for kind in Kind::ALL {
         let Some(w) = r.window(kind) else { continue };
         let ws = state.windows.entry(kind_key(kind).into()).or_default();
-        let rise = if ws.resets_at == w.resets_at {
-            (w.pct - ws.pct).max(0.0)
-        } else {
+        let rise = if same_window(ws.resets_at, w.resets_at) {
+            if w.pct < ws.pct - 1e-9 {
+                continue;
+            }
+            w.pct - ws.pct
+        } else if w.resets_at > ws.resets_at {
             // Nouvelle fenêtre : tout ce qui est consommé depuis sa remise à zéro.
             ws.sessions.clear();
-            changed = true;
+            ws.resets_at = w.resets_at;
+            ws.pct = 0.0;
+            news = true;
             w.pct.max(0.0)
+        } else {
+            continue;
         };
-        changed |= (w.pct - ws.pct).abs() > 1e-9;
-        if rise > 0.0
-            && let Some(s) = &r.session
-        {
-            *ws.sessions.entry(s.clone()).or_default() += rise;
+        current = true;
+        if rise > 1e-9 {
+            news = true;
+            ws.pct = w.pct;
+            if let Some(s) = &r.session {
+                *ws.sessions.entry(s.clone()).or_default() += rise;
+            }
         }
-        ws.resets_at = w.resets_at;
-        ws.pct = w.pct;
     }
+    if !current {
+        return false;
+    }
+    let changed = news || state.last_session != r.session || r.t - state.last_t >= 300;
     state.last_t = r.t;
     state.last_session = r.session.clone();
     changed
@@ -252,7 +276,7 @@ impl Parts {
 
     fn get(&self, session: &str, kind: Kind, resets_at: i64) -> Option<f64> {
         let (at, pct) = *self.sessions.get(session)?.get(kind_key(kind))?;
-        (at == resets_at).then_some(pct)
+        same_window(at, resets_at).then_some(pct)
     }
 }
 
@@ -274,27 +298,35 @@ pub fn local(ts: i64, fmt: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Ligne montrée dans le terminal : `5 h 23 % (conv. 4 %) · semaine 41 % (conv. 1 %) · ↻ 14:05`. La part de la
-/// conversation vient de `parts` s'ils sont frais (moins de 10 minutes), sinon du relais (`state`).
+/// Ligne montrée dans le terminal : `5 h 23 % (conv. 4 %) · semaine 41 % (conv. 1 %) · ↻ 14:05`. Les taux sont ceux
+/// du compte (`state`, après ce relevé), pas ceux, peut-être anciens, de la session. La part de la conversation vient
+/// de `parts` s'ils sont frais (moins de 10 minutes), sinon du relais (`state`).
 pub fn line(r: &Reading, state: &AccountState, parts: &Parts, now: i64) -> String {
+    let fresh = now - parts.written_at < 600;
     let mut out = Vec::new();
+    let mut five_reset = None;
     for kind in Kind::ALL {
-        let Some(w) = r.window(kind) else { continue };
-        let fresh = now - parts.written_at < 600;
+        let ws = state.windows.get(kind_key(kind)).filter(|ws| ws.resets_at > now);
+        let Some(w) = ws.map(|ws| Window { pct: ws.pct, resets_at: ws.resets_at }).or_else(|| r.window(kind)) else {
+            continue;
+        };
         let mine = r.session.as_deref().and_then(|s| {
             fresh
                 .then(|| parts.get(s, kind, w.resets_at))
                 .flatten()
-                .or_else(|| state.windows.get(kind_key(kind)).and_then(|ws| ws.sessions.get(s).copied()))
+                .or_else(|| ws.and_then(|ws| ws.sessions.get(s).copied()))
         });
         let mut part = format!("{} {}", kind.label(), pct_text(w.pct));
         if let Some(m) = mine {
             part.push_str(&format!(" (conv. {})", pct_text(m)));
         }
         out.push(part);
+        if kind == Kind::FiveHour {
+            five_reset = Some(w.resets_at);
+        }
     }
-    if let Some(w) = r.five_hour.filter(|w| w.resets_at > now) {
-        out.push(format!("↻ {}", local(w.resets_at, "%H:%M")));
+    if let Some(at) = five_reset.filter(|at| *at > now) {
+        out.push(format!("↻ {}", local(at, "%H:%M")));
     }
     out.join(" · ")
 }
@@ -352,6 +384,32 @@ mod tests {
         parts.set("a", Kind::FiveHour, 20_000, 9.5);
         let line2 = super::line(&read("a", 15.0, 140), &st, &parts, 140);
         assert!(line2.starts_with("5 h 15 % (conv. 10 %)"), "{line2}");
+    }
+
+    #[test]
+    fn a_stale_session_changes_nothing() {
+        // Une session restée inactive redonne ses anciens taux : ni baisse, ni hausse attribuée, rien à ranger.
+        let mut st = AccountState::default();
+        let read = |s: &str, five: f64, week: f64, t: i64| {
+            let mut r = from_status(&status(s, five, week), Some(&account()), None, t).unwrap();
+            r.t = t;
+            r
+        };
+        assert!(accumulate(&mut st, &read("a", 10.0, 23.0, 100)));
+        assert!(!accumulate(&mut st, &read("vieille", 2.0, 7.0, 110)), "périmé");
+        assert_eq!((st.windows["five_hour"].pct, st.windows["seven_day"].pct), (10.0, 23.0));
+        assert!(accumulate(&mut st, &read("a", 12.0, 24.0, 120)));
+        assert_eq!(st.windows["five_hour"].sessions["a"], 12.0, "la hausse depuis 10 %, pas depuis 2 %");
+        assert!(!st.windows["five_hour"].sessions.contains_key("vieille"));
+        // Dans le terminal de la vieille session : les taux du compte.
+        let l = line(&read("vieille", 2.0, 7.0, 130), &st, &Parts::default(), 130);
+        assert!(l.starts_with("5 h 12 % · semaine 24 % · ↻"), "{l}");
+        // Une fenêtre plus ancienne que celle du compte : périmée aussi.
+        let mut old = read("vieille", 50.0, 24.0, 140);
+        old.five_hour = Some(Window { pct: 50.0, resets_at: 10_000 });
+        old.seven_day = None;
+        assert!(!accumulate(&mut st, &old));
+        assert_eq!(st.windows["five_hour"].pct, 12.0);
     }
 
     #[test]

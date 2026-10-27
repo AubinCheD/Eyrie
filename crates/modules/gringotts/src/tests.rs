@@ -98,6 +98,19 @@ fn conversations_show_their_cost_and_share_of_the_limits() {
 }
 
 #[test]
+fn on_a_wide_screen_the_table_stays_on_screen_beside_the_repositories() {
+    let h = harness(gringotts("large"), ViewInfo::MAIN);
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
+    let header = h.get_by_label("Conversation").rect();
+    let title = h.get_by_label("Export CSV").rect();
+    let repo = h.get_by_label("Dépôt ozmo").rect();
+    assert!(screen.contains_rect(title), "la conversation à l'écran : {title:?}");
+    assert!(title.top() >= header.bottom(), "les lignes sous les titres des colonnes : {header:?} {title:?}");
+    assert!(repo.left() > title.right(), "les dépôts à droite du tableau : {repo:?}");
+    assert!(screen.contains_rect(repo), "les dépôts à l'écran : {repo:?}");
+}
+
+#[test]
 fn the_repository_filter_keeps_one_repository() {
     let mut h = harness(gringotts("filtre"), ViewInfo::MAIN);
     h.state_mut().view.repo = Some("diapaz".into());
@@ -122,6 +135,26 @@ fn the_status_line_shows_the_current_limits() {
     assert!(s.tip.contains("ada@contoso.example"));
     let empty = Gringotts::open(host("vide"), host("vide").module_dir(ID), Vec::new(), false);
     assert!(empty.status().status_line.unwrap().text.contains("relais à installer"));
+}
+
+#[test]
+fn the_status_line_keeps_the_highest_rate_and_both_windows() {
+    let now = now();
+    let open = |name: &str, readings: Vec<Reading>| {
+        let mut g = Gringotts::open(host(name), host(name).module_dir(ID), vec![Profile::default_profile()], false);
+        g.set_data(Vec::new(), readings);
+        g.status().status_line.unwrap().text
+    };
+    // Le dernier relevé vient d'une session restée inactive : semaine 7 %, sans fenêtre de 5 h (passée pour elle).
+    let mut stale = reading(now - 60, "vieille", 0.0, 7.0, now);
+    stale.five_hour = None;
+    let text = open("perime", vec![reading(now - 120, "s1", 1.0, 23.0, now), stale]);
+    assert!(text.starts_with("Claude 5 h 1 % · semaine 23 %"), "{text}");
+    // Sans fenêtre de 5 h en cours : 0 %, la limite reste affichée.
+    let mut week_only = reading(now - 60, "s1", 0.0, 23.0, now);
+    week_only.five_hour = None;
+    let text = open("sans-5h", vec![week_only]);
+    assert!(text.starts_with("Claude 5 h 0 % · semaine 23 %"), "{text}");
 }
 
 #[test]

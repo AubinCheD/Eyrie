@@ -6,6 +6,8 @@
 //!   connue dans l'intervalle, la hausse va à la session du relevé. C'est une mesure tant que les relevés couvrent
 //!   la période ; avant le premier relevé (ou hors relevés), la part est **estimée** avec le rapport moyen du compte
 //!   (points de pourcentage par dollar), et marquée comme telle.
+//! - **Relevés périmés** : une session restée inactive redonne ses anciens taux (`readings`) ; un relevé plus bas que
+//!   le plus haut de sa fenêtre, ou d'une fenêtre plus ancienne, est ignoré.
 //! - **Fenêtres** : pour chaque fenêtre de 5 h et chaque semaine relevées, le maximum atteint, l'heure où 100 % a été
 //!   touché, et le coût des réponses faites ensuite jusqu'à la remise à zéro (le **dépassement**, facturé à part si
 //!   l'abonnement le permet).
@@ -13,7 +15,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::readings::{Kind, Parts, Reading};
+use crate::readings::{Kind, Parts, Reading, Window, same_window};
 use crate::transcripts::Conversation;
 
 /// Ce qu'on sait d'une conversation.
@@ -55,6 +57,15 @@ pub struct AccountInfo {
     pub label: String,
     /// Le dernier relevé du compte.
     pub last: Reading,
+    /// Les fenêtres du compte (5 h, semaine) : la plus récente relevée, à son taux le plus haut. Le dernier relevé
+    /// peut venir d'une session restée inactive, avec d'anciens taux.
+    pub windows: [Option<Window>; 2],
+}
+
+impl AccountInfo {
+    pub fn window(&self, kind: Kind) -> Option<Window> {
+        self.windows[idx(kind)]
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -93,8 +104,10 @@ pub fn analyze(readings: &[Reading], convs: &[Conversation], now: i64) -> Analys
             by_config.insert(c, key.clone());
         }
     }
-    let mut accounts: Vec<AccountInfo> =
-        latest.iter().map(|(k, r)| AccountInfo { key: k.clone(), label: r.label(), last: (*r).clone() }).collect();
+    let mut accounts: Vec<AccountInfo> = latest
+        .iter()
+        .map(|(k, r)| AccountInfo { key: k.clone(), label: r.label(), last: (*r).clone(), windows: [None; 2] })
+        .collect();
     accounts.sort_by_key(|a| std::cmp::Reverse(a.last.t));
     out.accounts = accounts;
 
@@ -139,15 +152,31 @@ pub fn analyze(readings: &[Reading], convs: &[Conversation], now: i64) -> Analys
         let empty = Vec::new();
         let reps = replies.get(acc).unwrap_or(&empty);
         for kind in Kind::ALL {
-            let mut prev: Option<(i64, crate::readings::Window)> = None;
-            for r in list.iter().filter(|r| r.window(kind).is_some()) {
-                let w = r.window(kind).expect("filtré");
-                let start = w.resets_at - kind.duration();
-                let ws = windows.entry((acc.clone(), kind, w.resets_at)).or_insert_with(|| WindowStat {
+            // La fenêtre en cours : sa remise à zéro (celle de son premier relevé), son plus haut taux, l'heure du
+            // dernier relevé retenu.
+            let mut cur: Option<(i64, f64, i64)> = None;
+            for r in list.iter() {
+                let Some(w) = r.window(kind) else { continue };
+                let (resets_at, rise, from) = match cur {
+                    Some((at, level, pt)) if same_window(at, w.resets_at) => {
+                        if w.pct < level - 1e-9 {
+                            continue;
+                        }
+                        (at, w.pct - level, pt)
+                    }
+                    Some((at, _, pt)) if w.resets_at > at => {
+                        (w.resets_at, w.pct.max(0.0), pt.max(w.resets_at - kind.duration()))
+                    }
+                    Some(_) => continue,
+                    None => (w.resets_at, w.pct.max(0.0), w.resets_at - kind.duration()),
+                };
+                let start = resets_at - kind.duration();
+                cur = Some((resets_at, w.pct, r.t));
+                let ws = windows.entry((acc.clone(), kind, resets_at)).or_insert_with(|| WindowStat {
                     account: acc.clone(),
                     kind,
                     start,
-                    resets_at: w.resets_at,
+                    resets_at,
                     max_pct: 0.0,
                     last_pct: 0.0,
                     reached_at: None,
@@ -161,16 +190,6 @@ pub fn analyze(readings: &[Reading], convs: &[Conversation], now: i64) -> Analys
                 if w.pct >= 100.0 && ws.reached_at.is_none() {
                     ws.reached_at = Some(r.t);
                 }
-                let (rise, from) = match prev {
-                    Some((pt, pw)) if pw.resets_at == w.resets_at => ((w.pct - pw.pct).max(0.0), pt),
-                    Some((pt, pw)) if w.resets_at > pw.resets_at => (w.pct.max(0.0), pt.max(start)),
-                    Some(_) => {
-                        prev = Some((r.t, w));
-                        continue;
-                    }
-                    None => (w.pct.max(0.0), start),
-                };
-                prev = Some((r.t, w));
                 // Réponses du compte dans (from, t].
                 let lo = reps.partition_point(|x| x.0 <= from);
                 let hi = reps.partition_point(|x| x.0 <= r.t).max(lo);
@@ -189,12 +208,17 @@ pub fn analyze(readings: &[Reading], convs: &[Conversation], now: i64) -> Analys
                     for x in slice {
                         let part = rise * x.3 / total;
                         out.conversations[x.1].share[idx(kind)] += part;
-                        *instance_share.entry((x.1, kind, w.resets_at)).or_default() += part;
+                        *instance_share.entry((x.1, kind, resets_at)).or_default() += part;
                     }
                 } else if let Some(&ci) = r.session.as_deref().and_then(|s| conv_of_session.get(s)) {
                     out.conversations[ci].share[idx(kind)] += rise;
-                    *instance_share.entry((ci, kind, w.resets_at)).or_default() += rise;
+                    *instance_share.entry((ci, kind, resets_at)).or_default() += rise;
                 }
+            }
+            if let Some((resets_at, pct, _)) = cur
+                && let Some(a) = out.accounts.iter_mut().find(|a| &a.key == acc)
+            {
+                a.windows[idx(kind)] = Some(Window { pct, resets_at });
             }
         }
     }
@@ -244,10 +268,10 @@ pub fn analyze(readings: &[Reading], convs: &[Conversation], now: i64) -> Analys
         }
     }
 
-    // Les parts des fenêtres en cours (dernier relevé de chaque compte), pour le relais.
+    // Les parts des fenêtres en cours de chaque compte, pour le relais.
     for a in &out.accounts {
         for kind in Kind::ALL {
-            let Some(w) = a.last.window(kind) else { continue };
+            let Some(w) = a.window(kind) else { continue };
             for ((ci, k, at), pct) in &instance_share {
                 if *k == kind && *at == w.resets_at && out.conversations[*ci].account.as_deref() == Some(a.key.as_str())
                 {
@@ -265,7 +289,6 @@ pub fn analyze(readings: &[Reading], convs: &[Conversation], now: i64) -> Analys
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::readings::Window;
     use crate::transcripts::Reply;
 
     fn reading(t: i64, session: &str, five: f64, resets: i64) -> Reading {
@@ -340,6 +363,27 @@ mod tests {
         assert!((w.overflow - 4.0).abs() < 1e-9, "{w:?}");
         assert!((an.conversations[0].overflow - 4.0).abs() < 1e-9);
         assert!((w.cost - 5.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_stale_session_neither_lowers_the_rate_nor_hides_a_rise() {
+        // 10 %, une réponse de « a », une vieille session redit 5 %, puis 20 % : la hausse de 10 points va à la
+        // réponse de « a », faite avant le relevé périmé ; le taux du compte reste le plus haut relevé.
+        let readings = [
+            reading(90_000, "a", 10.0, R),
+            reading(90_200, "vieille", 5.0, R),
+            reading(91_000, "a", 20.0, R),
+            reading(91_100, "vieille", 5.0, R),
+        ];
+        let convs = [conv("a", "cfg", vec![reply("1", 90_100, 1.0)]), conv("vieille", "cfg", vec![])];
+        let an = analyze(&readings, &convs, 92_000);
+        assert!((an.conversations[0].share[0] - 20.0).abs() < 1e-9, "{:?}", an.conversations[0]);
+        assert_eq!(an.conversations[1].share[0], 0.0);
+        let a = &an.accounts[0];
+        assert_eq!(a.last.session.as_deref(), Some("vieille"), "le dernier relevé vient de la vieille session");
+        assert_eq!(a.window(Kind::FiveHour), Some(Window { pct: 20.0, resets_at: R }));
+        let w = &an.windows[0];
+        assert_eq!((w.max_pct, w.last_pct, w.readings), (20.0, 20.0, 2));
     }
 
     #[test]
