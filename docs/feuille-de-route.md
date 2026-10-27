@@ -12,6 +12,7 @@ Le raisonnement est dans `reflexions.md`, le constat technique dans `etat-des-li
 | Premier jet de l'hôte, sans toucher au code des modules | fait (23/10) : `premier-jet.md`, `README.md` ; branche `premier-jet` |
 | Étape 2 : premières retouches dans les modules, essais approfondis | fait (23/10) : `etape-2.md` ; branches `suite/etape-2` et `suite/module` |
 | Retouches du 26/10 (deux listes de l'utilisateur) | fait : branches `suite/retouches` (Eyrie, DragonTree, Owlery, Grimoire, Menagerie) ; ci-dessous |
+| Retours de recette du 27/10 (icône, Gringotts, MCP de Grimoire) | fait : mêmes branches ; ci-dessous |
 
 ## Fait le 26/10
 
@@ -41,6 +42,22 @@ Le raisonnement est dans `reflexions.md`, le constat technique dans `etat-des-li
 - **Menagerie** : « Arrêter » et « Relancer » ne figent plus l'interface (arrêt dans un fil, fin relevée par `tick`,
   « arrêt en cours… »). Restent synchrones : quitter, retirer un service, libérer un port avant un autre lancement,
   arrêter un programme lancé hors de Menagerie.
+
+## Fait le 27/10
+
+- **Icône d'Eyrie** : le nid remplit l'icône, bord à bord, sans tuile (sur une barre des tâches sombre, la tuile
+  sombre ne se voyait pas et le nid paraissait petit).
+- **Gringotts, taux des limites** : chaque session de Claude Code donne les taux de sa dernière réponse, et une
+  session restée inactive redonne d'anciens taux, plus bas (7 % affiché pour 23 % réels). Dans une fenêtre, le taux
+  d'un compte est le plus haut relevé ; un relevé plus bas ou d'une fenêtre plus ancienne est ignoré (ni baisse, ni
+  part mal attribuée), dans le relais comme dans l'analyse. La ligne d'état du terminal montre aussi le taux du compte.
+- **Barre d'état d'Eyrie** : les limites de Claude dans le coin en bas à droite, les deux fenêtres toujours
+  (« 5 h 0 % » sans fenêtre de 5 h en cours).
+- **Gringotts, vue Conversations** : sur un écran large, le tableau et la colonne « Par dépôt » se rangent de haut en
+  bas (les lignes du tableau partaient à droite de ses titres, hors de l'écran).
+- **Grimoire, serveurs MCP** (branche `suite/retouches`, a4585f7) : ajouter, modifier, supprimer un serveur (portée
+  locale, projet ou utilisateur ; stdio, http, sse ; environnement ou en-têtes masqués) ; approuver ou refuser un
+  serveur de `.mcp.json` ; le couper ou le remettre pour le dossier. Une seule clé écrite, copie avant.
 
 ## Fait dans le premier jet (23/10)
 
