@@ -2,14 +2,16 @@
 //! le processus), les conteneurs Docker (démarrer, arrêter, relancer, journal).
 //!
 //! Tout vient de ce que Menagerie expose publiquement : son état enregistré (`App::st`) et le dernier relevé de son
-//! moniteur (`App::monitor`). Docker peut mettre des secondes à répondre : ses commandes tournent dans un fil, leur
-//! résultat s'affiche ensuite, et le moniteur est relancé pour un relevé frais.
+//! moniteur (`App::monitor`). Chaque action passe par Menagerie, comme son bouton sur le PC : un service par
+//! `start_service`…, un conteneur par `docker_action` (annoncée sur le PC, ses boutons attendent sa fin, son résultat
+//! est suivi par `docker_job_of`), un programme du poste par `kill_program`. Seul le journal d'un conteneur est lu ici,
+//! dans un fil.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use menagerie::app::App;
+use menagerie::app::{App, DockerJob};
 use menagerie::docker::{self, Container, Docker};
 use menagerie::monitor::Snapshot;
 use menagerie::persist::ManagedSpec;
@@ -23,12 +25,12 @@ const LOGS_MAX: usize = 12_000;
 /// Le résultat d'une action Docker reste affiché une minute dans l'accueil.
 const JOB_SHOWN: Duration = Duration::from_secs(60);
 
-/// Une action Docker : son libellé, ce qu'elle a fait.
-fn verb_labels(verb: &str) -> Option<(&'static str, &'static str)> {
+/// Le libellé d'une action Docker.
+fn verb_label(verb: &str) -> Option<&'static str> {
     match verb {
-        "start" => Some(("Démarrer", "démarré")),
-        "stop" => Some(("Arrêter", "arrêté")),
-        "restart" => Some(("Relancer", "relancé")),
+        "start" => Some("Démarrer"),
+        "stop" => Some("Arrêter"),
+        "restart" => Some("Relancer"),
         _ => None,
     }
 }
@@ -58,7 +60,7 @@ fn container_acts(c: &Container) -> Vec<Act> {
     verbs
         .iter()
         .filter_map(|v| {
-            let (label, _) = verb_labels(v)?;
+            let label = verb_label(v)?;
             let act = Act::new(format!("docker:{v}:{}", c.id), label);
             Some(match *v {
                 "stop" => act.glyph("⏹️").danger(),
@@ -75,7 +77,34 @@ pub struct Job {
     pub text: String,
     /// `Info` : en cours.
     pub tone: Tone,
-    pub at: Instant,
+}
+
+/// Ce que Menagerie dit d'une action sur le conteneur `name` ; `None` : finie depuis plus d'une minute.
+fn job_of(name: &str, j: &DockerJob) -> Option<Job> {
+    match j {
+        DockerJob::Running => Some(Job { text: format!("{name} : en cours…"), tone: Tone::Info }),
+        DockerJob::Done(r, at) if at.elapsed() < JOB_SHOWN => Some(match r {
+            Ok(t) => Job { text: t.clone(), tone: Tone::Ok },
+            Err(t) => Job { text: t.clone(), tone: Tone::Danger },
+        }),
+        DockerJob::Done(..) => None,
+    }
+}
+
+/// Les actions Docker récentes (lancées d'ici ou du PC), finies, de la plus ancienne à la plus récente.
+fn recent_jobs(app: &App) -> Vec<Job> {
+    let mut done: Vec<(&Instant, Job)> = app
+        .docker_jobs()
+        .values()
+        .filter_map(|j| match j {
+            DockerJob::Done(_, at) => Some((at, job_of("", j)?)),
+            DockerJob::Running => None,
+        })
+        .collect();
+    done.sort_by_key(|(at, _)| **at);
+    // Une action sur un projet compose finit pour tous ses conteneurs à la fois : dite une fois.
+    done.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
+    done.into_iter().map(|(_, j)| j).collect()
 }
 
 /// L'accueil ; `jobs` : les actions Docker récentes, par conteneur.
@@ -108,7 +137,7 @@ pub fn home(
     live: &BTreeMap<u64, Live>,
     names: &BTreeMap<String, String>,
     snap: &Snapshot,
-    jobs: &[&Job],
+    jobs: &[Job],
 ) -> Screen {
     let mut s = Screen::new("Menagerie");
     if snap.scans == 0 {
@@ -289,15 +318,11 @@ fn tail(text: &str) -> String {
     cut.split_once('\n').map_or(cut.clone(), |(_, rest)| rest.to_string())
 }
 
-/// Ce que le téléphone garde entre deux appels, partagé avec les fils Docker.
+/// Ce que le téléphone garde entre deux appels : les journaux des conteneurs, lus dans un fil.
 #[derive(Default)]
 pub struct Phone {
-    /// Par conteneur : la dernière action et ce qu'elle a donné.
-    jobs: HashMap<String, Job>,
     logs: HashMap<String, (Instant, Result<String, String>)>,
     reading: HashSet<String>,
-    /// Une action Docker a fini : relancer le moniteur pour un relevé frais.
-    poke: bool,
 }
 
 pub type Shared = Arc<Mutex<Phone>>;
@@ -309,13 +334,6 @@ fn lock(p: &Shared) -> MutexGuard<'_, Phone> {
 fn docker_cmd(app: &App) -> String {
     let cmd = app.st.docker_cmd.trim();
     if cmd.is_empty() { "docker".into() } else { cmd.to_string() }
-}
-
-/// À chaque image : un relevé frais après une action Docker.
-pub fn after_logic(app: &mut App, phone: &Shared) {
-    if std::mem::take(&mut lock(phone).poke) {
-        app.monitor().poke();
-    }
 }
 
 /// L'état des services que Menagerie supervise.
@@ -332,9 +350,7 @@ fn live(app: &App) -> BTreeMap<u64, Live> {
 pub fn screen(app: &mut App, phone: &Shared, path: &str) -> Option<Screen> {
     let snap = app.monitor().snapshot();
     if path.is_empty() {
-        let p = lock(phone);
-        let mut jobs: Vec<&Job> = p.jobs.values().filter(|j| j.at.elapsed() < JOB_SHOWN).collect();
-        jobs.sort_by_key(|j| j.at);
+        let jobs = recent_jobs(app);
         return Some(home(&app.st.managed, &live(app), &app.st.names, &snap, &jobs));
     }
     if let Some(id) = path.strip_prefix("service/") {
@@ -357,7 +373,8 @@ pub fn screen(app: &mut App, phone: &Shared, path: &str) -> Option<Screen> {
             p.logs.insert(cid, (Instant::now(), logs));
         });
     }
-    Some(container(c, p.jobs.get(id), p.logs.get(id).map(|(_, l)| l)))
+    let job = app.docker_job_of(id).and_then(|j| job_of(&c.name, j));
+    Some(container(c, job.as_ref(), p.logs.get(id).map(|(_, l)| l)))
 }
 
 pub fn action(app: &mut App, phone: &Shared, action: &str) -> Result<Option<String>, String> {
@@ -379,41 +396,22 @@ pub fn action(app: &mut App, phone: &Shared, action: &str) -> Result<Option<Stri
             let (pid, created) = rest.split_once(':').ok_or("action inconnue")?;
             let pid: u32 = pid.parse().map_err(|_| "action inconnue")?;
             let created: i64 = created.parse().map_err(|_| "action inconnue")?;
-            menagerie::supervisor::kill_external(pid, created)?;
-            app.monitor().poke();
-            Ok(Some("Processus arrêté".into()))
+            let snap = app.monitor().snapshot();
+            let name = snap
+                .services
+                .iter()
+                .find(|d| d.proc.pid == pid && d.proc.created == created)
+                .map(|d| d.proc.name.clone())
+                .unwrap_or_else(|| format!("Processus n° {pid}"));
+            app.kill_program(pid, created, &name)?;
+            Ok(Some(format!("{name} arrêté")))
         }
         "docker" => {
             let (verb, id) = rest.split_once(':').ok_or("action inconnue")?;
-            let (label, done) = verb_labels(verb).ok_or("action inconnue")?;
-            let snap = app.monitor().snapshot();
-            let name = match &snap.docker {
-                Some(Docker::Running(list)) => list.iter().find(|c| c.id == id).map(|c| c.name.clone()),
-                _ => None,
-            }
-            .ok_or("Ce conteneur n'existe plus.")?;
-            let mut p = lock(phone);
-            if p.jobs.get(id).is_some_and(|j| j.tone == Tone::Info) {
-                return Err(format!("{name} : une action est déjà en cours."));
-            }
-            p.jobs.insert(
-                id.to_string(),
-                Job { text: format!("{name} : {label}…"), tone: Tone::Info, at: Instant::now() },
-            );
-            p.logs.remove(id);
-            drop(p);
-            let (cmd, verb, cid, shared) = (docker_cmd(app), verb.to_string(), id.to_string(), phone.clone());
-            let reply = format!("Envoyé à Docker : {name}");
-            std::thread::spawn(move || {
-                let job = match docker::action(&cmd, &verb, std::slice::from_ref(&cid)) {
-                    Ok(()) => Job { text: format!("{name} : {done}"), tone: Tone::Ok, at: Instant::now() },
-                    Err(e) => Job { text: format!("{name} : {e}"), tone: Tone::Danger, at: Instant::now() },
-                };
-                let mut p = lock(&shared);
-                p.jobs.insert(cid, job);
-                p.poke = true;
-            });
-            Ok(Some(reply))
+            let name = app.docker_action(verb, id)?;
+            // Le journal est relu après l'action.
+            lock(phone).logs.remove(id);
+            Ok(Some(format!("Envoyé à Docker : {name}")))
         }
         _ => Err("action inconnue".into()),
     }
@@ -532,14 +530,22 @@ mod tests {
         let s = super::container(&c, None, Some(&Ok("prêt\n".into())));
         assert!(s.blocks.contains(&Block::Text { text: "prêt\n".into(), mono: true }));
         assert_eq!(s.action_ids().len(), 2);
-        let busy = Job { text: "db : Arrêter…".into(), tone: Tone::Info, at: Instant::now() };
+        let busy = job_of("db", &DockerJob::Running).unwrap();
         let s = super::container(&c, Some(&busy), None);
         assert!(s.action_ids().is_empty());
         assert!(s.blocks.contains(&Block::Empty { text: "Lecture du journal…".into() }));
+        // Ce qu'a dit Menagerie, une minute durant.
+        let done = DockerJob::Done(Err("Docker (db) : refusé".into()), Instant::now());
+        assert_eq!(job_of("db", &done), Some(Job { text: "Docker (db) : refusé".into(), tone: Tone::Danger }));
+        if let Some(old) = Instant::now().checked_sub(Duration::from_secs(120)) {
+            assert_eq!(job_of("db", &DockerJob::Done(Ok("db : arrêté".into()), old)), None);
+        }
     }
 
+    /// Une action Docker passe par Menagerie, comme son bouton : en cours chez lui, une à la fois, et l'écran du
+    /// conteneur le dit sans proposer d'autre action.
     #[test]
-    fn a_docker_action_runs_in_a_thread_and_its_result_is_shown() {
+    fn a_docker_action_goes_through_menagerie() {
         let dir = std::env::temp_dir().join(format!("suite-menagerie-telephone-{}", std::process::id()));
         let snap = Snapshot {
             docker: Some(Docker::Running(vec![container("abc", "db", "running")])),
@@ -558,16 +564,16 @@ mod tests {
         let mut app = App::with(st, Vec::new(), menagerie::monitor::Monitor::fixed(snap), dirs);
         let phone = Shared::default();
         assert!(action(&mut app, &phone, "docker:stop:inconnu").is_err());
+        assert!(action(&mut app, &phone, "docker:rm:abc").is_err(), "seuls démarrer, arrêter, relancer");
         assert!(action(&mut app, &phone, "tuer:pas-un-nombre:1").is_err());
         assert_eq!(action(&mut app, &phone, "docker:stop:abc"), Ok(Some("Envoyé à Docker : db".into())));
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while lock(&phone).jobs["abc"].tone == Tone::Info && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert_eq!(lock(&phone).jobs["abc"].tone, Tone::Danger, "commande introuvable");
-        assert!(lock(&phone).poke, "le moniteur sera relancé");
-        let home = screen(&mut app, &phone, "").unwrap();
-        assert!(matches!(&home.blocks[0], Block::Note { tone: Tone::Danger, text } if text.starts_with("db : ")));
+        assert_eq!(app.docker_job_of("abc"), Some(&DockerJob::Running), "en cours dans Menagerie");
+        assert!(action(&mut app, &phone, "docker:restart:abc").is_err(), "une action à la fois");
+        let s = screen(&mut app, &phone, "docker/abc").unwrap();
+        assert!(s.action_ids().is_empty());
+        assert!(
+            s.blocks.iter().any(|b| matches!(b, Block::Note { tone: Tone::Info, text } if text == "db : en cours…"))
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

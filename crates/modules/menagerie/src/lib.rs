@@ -71,16 +71,16 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
     // Ses réglages sont dans ceux d'Eyrie : son bouton de réglages y mène, sur sa page.
     let link = bcx.host.clone();
     app.set_settings_link(Box::new(move || link.open_settings(&format!("module:{ID}"))));
-    // Le téléphone : ce qu'il garde entre deux appels, partagé par ses écrans, ses actions et les fils Docker.
+    // Le téléphone : ce qu'il garde entre deux appels (les journaux des conteneurs), partagé par ses écrans et ses
+    // actions.
     let phone = mobile::Shared::default();
-    let (poke, screens, acts) = (phone.clone(), phone.clone(), phone);
+    let (screens, acts) = (phone.clone(), phone);
     let module = Embedded::new(info(), bcx.host.clone(), app)
         .hidden_ui(true)
         .title_badge(badge)
         .key_commands(commands())
         .settings_panel(|app, ui| app.settings_ui(ui))
         .on_settings_left(|app| app.settings_left())
-        .after_logic(move |app, _| mobile::after_logic(app, &poke))
         .mobile_screens(move |app, path, _| mobile::screen(app, &screens, path))
         .mobile_actions(move |app, _, action, _, _| mobile::action(app, &acts, action))
         // Ses couleurs suivent le thème clair ou sombre de la suite (sans toucher à son réglage).
