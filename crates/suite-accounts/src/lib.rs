@@ -64,6 +64,20 @@ fn pick_dir(forced: Option<PathBuf>, isolated: Option<&Path>, common: PathBuf) -
     forced.or_else(|| isolated.map(Path::to_path_buf)).unwrap_or(common)
 }
 
+/// Service du coffre pour les comptes d'un profil isolé (`dir`) : « EyrieSuite:<empreinte du dossier> ». Ses jetons
+/// ne côtoient pas ceux de la suite : retirer un compte d'une copie de `accounts.json` (mêmes identifiants) n'efface
+/// pas le vrai jeton, et un profil d'essai ne lit jamais les vrais.
+pub fn isolated_vault_service(dir: &Path) -> String {
+    // FNV-1a 64 bits du chemin en minuscules, séparateurs unifiés : stable d'un lancement à l'autre.
+    let key = dir.to_string_lossy().replace('/', "\\").trim_end_matches('\\').to_lowercase();
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in key.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{SUITE}:{h:016x}")
+}
+
 /// Un compte de forge, sans son jeton.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Account {
@@ -204,5 +218,14 @@ mod tests {
         assert_eq!(pick_dir(None, None, common.clone()), common);
         assert_eq!(pick_dir(None, Some(isolated), common.clone()), isolated);
         assert_eq!(pick_dir(Some(forced.clone()), Some(isolated), common), forced);
+    }
+
+    #[test]
+    fn an_isolated_profile_has_a_vault_service_of_its_own() {
+        use std::path::Path;
+        let a = isolated_vault_service(Path::new(r"C:\Temp\profil-essai"));
+        assert!(a.starts_with("EyrieSuite:") && a != SUITE, "{a}");
+        assert_eq!(a, isolated_vault_service(Path::new(r"c:/temp/PROFIL-ESSAI/")), "même dossier, même service");
+        assert_ne!(a, isolated_vault_service(Path::new(r"C:\Temp\autre")));
     }
 }

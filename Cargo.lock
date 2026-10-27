@@ -3957,8 +3957,10 @@ name = "suite-dragontree"
 version = "0.1.0"
 dependencies = [
  "dragontree-app",
+ "dragontree-forges",
  "dragontree-i18n",
  "eframe",
+ "suite-accounts",
  "suite-sdk",
 ]
 

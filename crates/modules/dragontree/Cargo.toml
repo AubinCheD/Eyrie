@@ -9,5 +9,7 @@ authors.workspace = true
 [dependencies]
 suite-sdk.workspace = true
 dragontree-app.workspace = true
+dragontree-forges.workspace = true
 dragontree-i18n.workspace = true
+suite-accounts.workspace = true
 eframe.workspace = true

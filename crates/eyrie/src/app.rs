@@ -268,6 +268,25 @@ impl Suite {
             journal.push("suite", Tone::Warn, p.clone());
         }
 
+        // Les comptes communs de la suite ; un Eyrie isolé (essais, tests) garde les siens dans son dossier, et leurs
+        // jetons dans un coffre à lui. Donnés aux modules avant leur construction : DragonTree et Owlery les lisent
+        // en démarrant (pas de variable d'environnement, que leurs processus enfants hériteraient).
+        let isolated = (dir != crate::persist::default_data_dir()).then_some(dir.as_path());
+        let accounts_dir = suite_accounts::accounts_dir(isolated);
+        host.set_accounts_dir(accounts_dir.clone());
+        // `EYRIESUITE_DIR` l'emporte sur le profil isolé : ces comptes-là sont partagés, avec le coffre de la suite.
+        let own_vault =
+            (isolated == Some(accounts_dir.as_path())).then(|| suite_accounts::isolated_vault_service(&accounts_dir));
+        if let Some(service) = &own_vault {
+            host.set_accounts_vault(service.clone());
+        }
+        // Les essais de l'hôte n'approchent jamais le vrai coffre de Windows.
+        let vault: std::sync::Arc<dyn suite_accounts::Vault> = match &own_vault {
+            _ if cfg!(test) => std::sync::Arc::new(suite_accounts::MemoryVault::default()),
+            Some(service) => std::sync::Arc::new(suite_accounts::OsVault::new(service)),
+            None => std::sync::Arc::new(suite_accounts::OsVault::suite()),
+        };
+
         // Les modules : construits une fois, au démarrage (eframe ne donne son `CreationContext`
         // qu'ici). Activer ou désactiver un module prend effet au prochain lancement.
         let mut fonts = FontPlan::suite();
@@ -305,18 +324,6 @@ impl Suite {
             }
         }
 
-        // Les comptes communs de la suite ; un Eyrie isolé (essais, tests) garde les siens dans son dossier.
-        let isolated = (dir != crate::persist::default_data_dir()).then_some(dir.as_path());
-        let accounts_dir = suite_accounts::accounts_dir(isolated);
-        // Les modules qui lisent les comptes reçoivent ce dossier de l'hôte (pas de variable d'environnement, que
-        // leurs processus enfants hériteraient).
-        host.set_accounts_dir(accounts_dir.clone());
-        // Les essais de l'hôte n'approchent jamais le vrai coffre de Windows.
-        let vault: std::sync::Arc<dyn suite_accounts::Vault> = if cfg!(test) {
-            std::sync::Arc::new(suite_accounts::MemoryVault::default())
-        } else {
-            std::sync::Arc::new(suite_accounts::OsVault::suite())
-        };
         let mut accounts = Accounts::new(suite_accounts::Store::new(&accounts_dir, vault));
         if isolated.is_none() && !cfg!(test) {
             let legacy = ["SuperApp", "DragonTree", "Owlery"].map(|service| {

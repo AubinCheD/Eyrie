@@ -98,6 +98,14 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
         DataMode::Shared => None,
         DataMode::Trial(dir) => Some(dir.clone()),
     };
+    // Eyrie sur un profil isolé : ses jetons sont dans un coffre à lui ; DragonTree n'approche ni celui de la suite, ni
+    // son ancien coffre « DragonTree ».
+    if let Some(service) = bcx.host.accounts_vault() {
+        dragontree_forges::secrets::use_vaults(
+            Arc::new(suite_accounts::OsVault::new(&service)),
+            Arc::new(suite_accounts::MemoryVault::default()),
+        );
+    }
     let start = StartOptions {
         screenshot_after: Duration::from_millis(2500),
         profile_dir: profile_dir.clone(),

@@ -109,6 +109,8 @@ struct Shared {
     context: Option<SharedContext>,
     /// Dossier des comptes de toute la suite, donné par l'hôte (voir `accounts_dir`).
     accounts_dir: Option<PathBuf>,
+    /// Service du coffre de ces comptes quand il n'est pas celui de la suite (voir `accounts_vault`).
+    accounts_vault: Option<String>,
     outbox: Outbox,
 }
 
@@ -138,6 +140,7 @@ impl Host {
                     palette,
                     context: None,
                     accounts_dir: None,
+                    accounts_vault: None,
                     outbox: Outbox::default(),
                 }),
             }),
@@ -260,6 +263,18 @@ impl Host {
         self.shared(|s| s.accounts_dir = Some(dir));
     }
 
+    /// Service du coffre de Windows où sont les jetons de ces comptes, quand ce n'est pas celui de la suite
+    /// (« EyrieSuite ») : un hôte lancé sur un profil isolé (essais) a son propre coffre, et ses modules ne doivent
+    /// jamais lire ni effacer les vrais jetons. `None` : le coffre de la suite.
+    pub fn accounts_vault(&self) -> Option<String> {
+        self.shared(|s| s.accounts_vault.clone())
+    }
+
+    /// Réservé à l'hôte.
+    pub fn set_accounts_vault(&self, service: String) {
+        self.shared(|s| s.accounts_vault = Some(service));
+    }
+
     // --- Contexte partagé ---
 
     /// Les modules doivent-ils suivre le contexte partagé (réglage de la suite) ?
@@ -327,6 +342,9 @@ mod tests {
         assert_eq!(h.accounts_dir(), None, "pas d'hôte qui le donne : chaque module choisit");
         h.set_accounts_dir(PathBuf::from(r"C:\Temp\suite"));
         assert_eq!(h.accounts_dir().as_deref(), Some(Path::new(r"C:\Temp\suite")));
+        assert_eq!(h.accounts_vault(), None, "le coffre de la suite");
+        h.set_accounts_vault("EyrieSuite:0123".into());
+        assert_eq!(h.accounts_vault().as_deref(), Some("EyrieSuite:0123"));
     }
 
     #[test]

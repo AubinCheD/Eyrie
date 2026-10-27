@@ -103,11 +103,19 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
     let demo = std::env::var_os("OWLERY_DEMO").is_some_and(|v| v == "1");
     let dir = if demo { state::data_dir().join("demo") } else { state::data_dir() };
     let scope = (dir != state::default_data_dir()).then_some(dir.as_path());
-    // Les comptes de toute la suite, dans le dossier donné par Eyrie ; la démonstration n'y touche jamais.
+    // Les comptes de toute la suite, dans le dossier donné par Eyrie ; la démonstration n'y touche jamais. Eyrie sur un
+    // profil isolé a son propre coffre : Owlery n'approche alors ni celui de la suite, ni son ancien coffre « Owlery ».
     let host_accounts = bcx.host.accounts_dir();
+    let own_vault = bcx.host.accounts_vault();
+    let suite_vault = || -> Arc<dyn suite_accounts::Vault> {
+        match &own_vault {
+            Some(service) => Arc::new(suite_accounts::OsVault::new(service)),
+            None => Arc::new(suite_accounts::OsVault::suite()),
+        }
+    };
     let accounts = (!demo).then(|| {
         let dir = host_accounts.clone().unwrap_or_else(|| suite_accounts::accounts_dir(scope));
-        suite_accounts::Store::new(&dir, Arc::new(suite_accounts::OsVault::suite()))
+        suite_accounts::Store::new(&dir, suite_vault())
     });
     let sid = owlery::win::pipe::current_user_sid().unwrap_or_default();
     let pipe = contract::pipe_name("owlery", &sid, scope);
@@ -147,7 +155,12 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
     }
 
     let host = bcx.host.clone();
-    let store: Arc<dyn SecretStore> = owlery::secrets::store_for(demo);
+    let store: Arc<dyn SecretStore> = match &own_vault {
+        Some(_) if !demo => {
+            Arc::new(owlery::secrets::SuiteStore::new(suite_vault(), Arc::new(owlery::secrets::MemoryStore::default())))
+        }
+        _ => owlery::secrets::store_for(demo),
+    };
     let fetcher: Arc<dyn Fetcher> = if demo {
         Arc::new(owlery::demo::DemoFetcher)
     } else {
