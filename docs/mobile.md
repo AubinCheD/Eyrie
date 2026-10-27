@@ -171,11 +171,12 @@ Fait, sur la branche `mobile` (rien de poussé) :
 | Ensemble | essai réel sur le poste : Eyrie (dossier d'essai, `EYRIE_MOBILE_LOCAL`) et l'application de bureau, appairage par le lien, clic « Appairer » par l'automatisation d'interface de Windows, vraies données (Fawkes et un vrai PowerShell en direct, Gringotts, Owlery), journal |
 
 Reste :
-- **Construire l'APK** : le SDK Android (JDK 17 et outils en ligne de commande installés dans
-  `%LOCALAPPDATA%\Android`) attend l'acceptation de ses licences par l'utilisateur
-  (`sdkmanager --licenses`), puis `sdkmanager --install "platform-tools" "platforms;android-36"
-  "build-tools;36.1.0" "ndk;28.2.13676358"` et `tools\android.ps1 -Release -Install`. Le code Android
-  (`android.rs` : caméra du NDK, permission, liens, vibration) n'a pas encore été compilé ni essayé sur un
+- **L'APK se construit** (27/10 au soir) : SDK Android dans `%LOCALAPPDATA%\Android` (JDK 17, licences
+  acceptées par l'utilisateur, `platform-tools`, `platforms;android-36`, `build-tools;36.1.0`,
+  `ndk;28.2.13676358`), puis `tools\android.ps1 -Release` → `target\android\eyrie-release.apk` (8 Mo), signé
+  par la clé de débogage d'Android (`%USERPROFILE%\.android\debug.keystore`, à garder : une version signée
+  d'une autre clé ne s'installe pas par-dessus). `-Install` l'installe par le débogage USB. Le code Android
+  (`android.rs` : caméra du NDK, permission, liens, vibration) compile, mais n'a pas encore été essayé sur un
   téléphone.
 - **Essai par Tailscale** : recompiler `eyrie.exe` (release) et `tools\compagnon.ps1 -Release`, activer
   Réglages › Tailscale puis Téléphones ; Tailscale sur le téléphone, même compte.

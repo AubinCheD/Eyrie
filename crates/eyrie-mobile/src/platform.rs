@@ -1,8 +1,6 @@
 //! Ce qui dépend du système : dossier de données, nom de l'appareil, liens, vibration, caméra. Le bureau sert au
 //! développement (fenêtre de la taille d'un téléphone) ; Android est dans `android.rs`.
 
-use std::path::PathBuf;
-
 /// Une image de la caméra, prête pour l'interface.
 pub type Frame = slint::SharedPixelBuffer<slint::Rgba8Pixel>;
 
@@ -14,6 +12,8 @@ pub use crate::android::{
 
 #[cfg(not(target_os = "android"))]
 mod desktop {
+    use std::path::PathBuf;
+
     use super::*;
 
     /// `EYRIE_MOBILE_DATA`, sinon `%LOCALAPPDATA%\EyrieMobile`.

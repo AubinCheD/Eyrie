@@ -63,6 +63,9 @@ Set-Item "env:CARGO_TARGET_${envTarget}_LINKER" $clang
 Set-Item "env:CC_$($target.Replace('-', '_'))" $clang
 Set-Item "env:AR_$($target.Replace('-', '_'))" (Join-Path $llvm 'llvm-ar.exe')
 $kind = if ($Release) { 'release' } else { 'debug' }
+# Avec --target, Cargo ne passe pas les rustflags du poste (.cargo\config.toml) aux scripts de build ni aux macros,
+# compilés pour Windows : le dlltool de tools\setup.ps1 doit alors se trouver par le PATH (toolchain gnu).
+if (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'dlltool.exe')) { $env:PATH = "$PSScriptRoot;$env:PATH" }
 $cargoArgs = @('build', '-p', 'eyrie-mobile', '--lib', '--target', $target, '-j', '4')
 if ($Release) { $cargoArgs += '--release' }
 Push-Location $repo
