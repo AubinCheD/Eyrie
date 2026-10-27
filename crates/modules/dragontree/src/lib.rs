@@ -14,6 +14,7 @@
 //! - le titre « <dépôt> — DragonTree » devient le titre du module ;
 //! - **téléphone** (`mobile`) : ses dépôts et leur état (git, dans un fil), fetch, pull, push, ouvrir sur le PC.
 
+pub mod depot;
 pub mod mobile;
 
 use std::cell::RefCell;
@@ -147,8 +148,8 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
         .settings_panel(|app, ui| app.settings_ui(ui))
         .on_settings_left(|app| app.settings_left())
         .mobile_screens(move |app, path, _| phone.borrow_mut().screen(path, app.active_repo_dir()))
-        .mobile_actions(move |app, _, action, _, cx| {
-            let (text, opened) = phone_actions.borrow_mut().action(action, app.active_repo_dir())?;
+        .mobile_actions(move |app, path, action, input, cx| {
+            let (text, opened) = phone_actions.borrow_mut().action(path, action, input, app.active_repo_dir())?;
             if opened.is_some() {
                 cx.host.show(ID);
             }

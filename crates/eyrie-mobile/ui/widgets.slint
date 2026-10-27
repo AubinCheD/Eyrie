@@ -18,7 +18,8 @@ export struct UiAct {
     url: string,
 }
 
-// Une ligne d'écran. `kind` : 0 section, 1 ligne, 2 note, 3 jauge, 4 texte, 5 vide, 6 boutons.
+// Une ligne d'écran. `kind` : 0 section, 1 ligne, 2 note, 3 jauge, 4 texte, 5 vide, 6 boutons, 7 ligne de diff (`tone` :
+// 0 contexte, 1 ajout, 2 retrait, 3 en-tête).
 export struct UiRow {
     kind: int,
     title: string,
@@ -476,6 +477,35 @@ export component ActButton inherits Rectangle {
     ta := TouchArea {
         enabled: root.enabled;
         clicked => { root.clicked(); }
+    }
+}
+
+// Une ligne de diff, dans un bloc à chasse fixe aux coins arrondis.
+export component DiffLineView inherits Rectangle {
+    in property <string> text;
+    in property <int> kind;
+    in property <bool> first;
+    in property <bool> last;
+    height: t.preferred-height + (first ? 8px : 0) + (last ? 8px : 0) + 2px;
+    Rectangle {
+        x: Theme.pad;
+        width: parent.width - 2 * Theme.pad;
+        background: root.kind == 1 ? Theme.ok.with-alpha(0.16) : root.kind == 2 ? Theme.danger.with-alpha(0.16) : Theme.term-bg;
+        border-top-left-radius: root.first ? Theme.radius-small : 0;
+        border-top-right-radius: root.first ? Theme.radius-small : 0;
+        border-bottom-left-radius: root.last ? Theme.radius-small : 0;
+        border-bottom-right-radius: root.last ? Theme.radius-small : 0;
+        t := Text {
+            x: 10px;
+            y: root.first ? 9px : 1px;
+            width: parent.width - 20px;
+            text: root.text;
+            color: root.kind == 1 ? Theme.ok : root.kind == 2 ? Theme.danger : root.kind == 3 ? Theme.accent : Theme.term-fg;
+            font-family: "Hack";
+            font-size: 12px;
+            font-weight: root.kind == 3 ? 700 : 400;
+            wrap: word-wrap;
+        }
     }
 }
 

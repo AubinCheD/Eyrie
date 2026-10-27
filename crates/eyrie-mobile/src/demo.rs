@@ -261,6 +261,19 @@ pub fn play(ui: &AppWindow, scene: &str) {
         "hors-ligne" => {
             with(|c| c.demo_offline());
         }
+        // `ecran:<module>:<fichier.json>` : un écran enregistré (par l'essai d'un module), montré dans son module.
+        s if s.starts_with("ecran:") => {
+            let mut parts = s.splitn(3, ':');
+            let (_, module, file) = (parts.next(), parts.next().unwrap_or("fawkes"), parts.next().unwrap_or(""));
+            let screen: Option<Screen> = std::fs::read(file).ok().and_then(|b| serde_json::from_slice(&b).ok());
+            if let Some(screen) = screen {
+                feed(ToPhone::Screen { module: module.into(), path: "apercu".into(), screen });
+                with(|c| {
+                    c.nav_select(module);
+                    c.open_path("apercu");
+                });
+            }
+        }
         _ => {}
     }
 }

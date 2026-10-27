@@ -77,18 +77,28 @@ pub fn rows(s: &Screen) -> Vec<UiRow> {
     s.blocks
         .iter()
         .enumerate()
-        .map(|(i, b)| match b {
+        .flat_map(|(i, b)| match b {
             Block::Section { title, aside } => {
-                UiRow { detail: aside.as_str().into(), ..empty(0, &title.to_uppercase()) }
+                vec![UiRow { detail: aside.as_str().into(), ..empty(0, &title.to_uppercase()) }]
             }
-            Block::Row(r) => row(r, i == 0 || !is_row(i - 1), !is_row(i + 1)),
-            Block::Note { text, tone: t } => UiRow { tone: tone(Some(*t)), ..empty(2, text) },
+            Block::Row(r) => vec![row(r, i == 0 || !is_row(i - 1), !is_row(i + 1))],
+            Block::Note { text, tone: t } => vec![UiRow { tone: tone(Some(*t)), ..empty(2, text) }],
             Block::Meter { label, value, text, tone: t } => {
-                UiRow { detail: text.as_str().into(), value: *value, tone: tone(Some(*t)), ..empty(3, label) }
+                vec![UiRow { detail: text.as_str().into(), value: *value, tone: tone(Some(*t)), ..empty(3, label) }]
             }
-            Block::Text { text, mono } => UiRow { mono: *mono, ..empty(4, text) },
-            Block::Empty { text } => empty(5, text),
-            Block::Buttons { acts: list } => UiRow { acts: acts(list), ..empty(6, "") },
+            Block::Text { text, mono } => vec![UiRow { mono: *mono, ..empty(4, text) }],
+            Block::Empty { text } => vec![empty(5, text)],
+            Block::Buttons { acts: list } => vec![UiRow { acts: acts(list), ..empty(6, "") }],
+            Block::Diff { lines } => lines
+                .iter()
+                .enumerate()
+                .map(|(n, (kind, text))| UiRow {
+                    tone: *kind as i32,
+                    first: n == 0,
+                    last: n + 1 == lines.len(),
+                    ..empty(7, text)
+                })
+                .collect(),
         })
         .collect()
 }
@@ -123,6 +133,15 @@ mod tests {
         assert!(!r[2].first && r[2].last && r[2].has_tap && r[2].acts.row_count() == 1);
         assert_eq!((r[3].kind, r[3].tone), (2, 3));
         assert!(r[4].first && r[4].last, "seule dans sa carte");
+    }
+
+    #[test]
+    fn a_diff_becomes_one_row_per_line() {
+        let mut s = Screen::new("x");
+        s.diff(vec![(3, "@@ -1 +1 @@".into()), (2, "-a".into()), (1, "+b".into())]);
+        let r = rows(&s);
+        assert_eq!(r.iter().map(|r| (r.kind, r.tone)).collect::<Vec<_>>(), [(7, 3), (7, 2), (7, 1)]);
+        assert!(r[0].first && r[2].last);
     }
 
     #[test]

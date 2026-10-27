@@ -1,6 +1,7 @@
 //! DragonTree sur le téléphone : les dépôts de ses réglages (onglets ouverts, favoris, récents), leur branche, leur
-//! avance ou retard et leurs modifications ; le détail d'un dépôt (modifications, branches locales, worktrees) ; fetch,
-//! pull, push et « ouvrir sur le PC ».
+//! avance ou retard et leurs modifications ; fetch, pull, push et « ouvrir sur le PC » depuis la liste ; et, dans un
+//! dépôt, un client git presque complet (`depot.rs` : modifications et diff, indexer, valider, historique, branches,
+//! fusion, rebase, remises, étiquettes, worktrees, opération en cours).
 //!
 //! L'état de l'application n'est pas public : le téléphone lit les réglages de DragonTree (le fichier, sans le
 //! réécrire) et interroge git lui-même par `dragontree-git`, toujours dans un fil (git est lent) : l'état des dépôts
@@ -17,18 +18,25 @@ use std::time::{Duration, Instant, SystemTime};
 
 use dragontree_app::settings::{Settings, path_key};
 use dragontree_app::single_instance::{self, Forwarded};
-use dragontree_git::{FileState, Git, HeadState, NetOptions, Repo, StatusEntry, StatusSnapshot};
-use suite_sdk::mobile::ui::{Act, Row, Screen, Tone};
+use dragontree_git::{
+    CancelToken, DiffOptions, FileState, Git, LogOptions, LogScope, MergeMode, NetOptions, Oid, Repo, ResetMode,
+    StatusSnapshot,
+};
+use suite_sdk::mobile::ui::{Act, Block, Row, Screen, Tone};
+
+use crate::depot::{self, Op, RepoView, file_key};
 
 /// Dépôts montrés.
 const MAX_REPOS: usize = 20;
-/// Modifications montrées dans le détail d'un dépôt.
-const MAX_PATHS: usize = 50;
 /// L'état des dépôts est relu au plus toutes les 30 s tant que le téléphone regarde.
 const SWEEP_EVERY: Duration = Duration::from_secs(30);
 const SETTINGS_EVERY: Duration = Duration::from_secs(5);
-/// Le résultat d'un fetch, d'un pull ou d'un push reste affiché une minute dans l'accueil.
+/// Le résultat d'une opération reste affiché une minute.
 const JOB_SHOWN: Duration = Duration::from_secs(60);
+/// Ce qu'un écran du dépôt relit tant qu'il est regardé : l'état, l'historique, un diff.
+const OVERVIEW_EVERY: Duration = Duration::from_secs(20);
+const LOG_EVERY: Duration = Duration::from_secs(60);
+const DIFF_EVERY: Duration = Duration::from_secs(15);
 
 /// D'où vient un dépôt de la liste.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,36 +68,6 @@ pub struct RepoState {
     pub error: Option<String>,
 }
 
-/// Une branche locale.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Branch {
-    pub name: String,
-    pub upstream: Option<String>,
-    pub ahead: u32,
-    pub behind: u32,
-    pub gone: bool,
-    pub head: bool,
-}
-
-/// Un worktree.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Tree {
-    pub path: PathBuf,
-    pub branch: Option<String>,
-    pub main: bool,
-    pub current: bool,
-    pub prunable: bool,
-}
-
-/// Le détail d'un dépôt, relevé quand son écran est ouvert.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Details {
-    /// Les premières modifications : (lettre d'état, chemin, conflit).
-    pub changes: Vec<(char, String, bool)>,
-    pub branches: Vec<Branch>,
-    pub worktrees: Vec<Tree>,
-}
-
 /// Ce qu'a donné (ou fait en ce moment) un fetch, un pull ou un push.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Job {
@@ -119,24 +97,6 @@ pub fn repo_key(path: &Path) -> String {
 
 fn repo_name(path: &Path) -> String {
     path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string())
-}
-
-fn letter(e: &StatusEntry) -> char {
-    if e.conflict.is_some() {
-        return 'U';
-    }
-    let state = if e.worktree != FileState::Unmodified { e.worktree } else { e.index };
-    match state {
-        FileState::Modified => 'M',
-        FileState::Added => 'A',
-        FileState::Deleted => 'D',
-        FileState::Renamed => 'R',
-        FileState::Copied => 'C',
-        FileState::TypeChanged => 'T',
-        FileState::Untracked => '?',
-        FileState::Ignored => '!',
-        FileState::Unmodified => ' ',
-    }
 }
 
 fn sync_text(ahead: u32, behind: u32) -> Option<String> {
@@ -231,92 +191,17 @@ pub fn home(entries: &[Entry], sweeping: bool) -> Screen {
     s
 }
 
-/// Le détail d'un dépôt.
-pub fn depot(e: &Entry, details: Option<&Details>) -> Screen {
-    let key = repo_key(&e.path);
-    let mut s = Screen::new(repo_name(&e.path)).subtitle(e.path.display().to_string());
-    let busy = e.job.as_ref().is_some_and(|j| j.tone == Tone::Info);
-    if let Some(j) = &e.job {
-        s.note(&j.text, j.tone);
-    }
-    match &e.state {
-        None => {
-            s.empty("Lecture de l'état du dépôt…");
-        }
-        Some(st) if st.error.is_some() => {
-            s.note(st.error.clone().unwrap_or_default(), Tone::Danger);
-        }
-        Some(st) => {
-            s.row(Row::new("Branche").detail(st.branch.clone().unwrap_or_else(|| "HEAD détachée".into())));
-            s.row(Row::new("Branche suivie").detail(st.upstream.clone().unwrap_or_else(|| "aucune".into())));
-            s.row(Row::new("Avance, retard").detail(sync_text(st.ahead, st.behind).unwrap_or_else(|| "à jour".into())));
-        }
-    }
-    let mut acts = if busy { Vec::new() } else { net_acts(&key) };
-    acts.push(Act::new(format!("pc:{key}"), "Ouvrir sur le PC").glyph("🖥️"));
-    s.buttons(acts);
-    let Some(d) = details else {
-        s.empty("Lecture du détail…");
-        return s;
-    };
-    let total = e.state.as_ref().map_or(d.changes.len(), |st| st.changes);
-    s.section("Modifications", total.to_string());
-    if d.changes.is_empty() {
-        s.empty("Aucune modification.");
-    }
-    for (l, path, conflict) in &d.changes {
-        let mut row = Row::new(path).glyph(l.to_string());
-        if *conflict {
-            row = row.tone(Tone::Danger).badge("conflit");
-        }
-        s.row(row);
-    }
-    if total > d.changes.len() {
-        s.note(format!("Et {} autres : voir sur le PC.", total - d.changes.len()), Tone::Info);
-    }
-    s.section("Branches locales", d.branches.len().to_string());
-    for b in &d.branches {
-        let mut sub = match (&b.upstream, b.gone) {
-            (Some(u), true) => format!("{u} (supprimée)"),
-            (Some(u), false) => u.clone(),
-            (None, _) => "non suivie".into(),
-        };
-        if let Some(t) = sync_text(b.ahead, b.behind) {
-            sub = format!("{sub} · {t}");
-        }
-        let mut row = Row::new(&b.name).subtitle(sub).glyph("🌿");
-        if b.head {
-            row = row.badge("courante").tone(Tone::Ok);
-        }
-        s.row(row);
-    }
-    if d.worktrees.len() > 1 {
-        s.section("Worktrees", d.worktrees.len().to_string());
-        for w in &d.worktrees {
-            let mut row = Row::new(repo_name(&w.path))
-                .subtitle(w.branch.clone().unwrap_or_else(|| "HEAD détachée".into()))
-                .detail(if w.main { "principal" } else { "" })
-                .glyph("🌳");
-            if w.current {
-                row = row.badge("celui-ci");
-            }
-            if w.prunable {
-                row = row.tone(Tone::Warn).subtitle("dossier disparu");
-            }
-            s.row(row);
-        }
-    }
-    s
-}
-
 // --- Le travail de fond ---
 
 /// Ce que les fils de git ont relevé ou fait, lu par l'interface.
 #[derive(Default)]
 struct Work {
     states: HashMap<String, RepoState>,
-    details: HashMap<String, (Instant, Details)>,
-    inspecting: HashSet<String>,
+    /// Ce qui est relevé de chaque dépôt ouvert sur le téléphone.
+    views: HashMap<String, RepoView>,
+    /// (dépôt, relevé) → quand il a été fait ; en cours : absent de `loaded`, présent dans `loading`.
+    loaded: HashMap<(String, String), Instant>,
+    loading: HashSet<(String, String)>,
     jobs: HashMap<String, Job>,
     sweep_at: Option<Instant>,
     sweeping: bool,
@@ -368,54 +253,114 @@ fn read_state(git: &Result<Git, String>, path: &Path) -> RepoState {
     state_of(status.as_ref().map_err(String::clone))
 }
 
-fn read_details(git: &Result<Git, String>, path: &Path) -> (RepoState, Details) {
-    let repo = match git.clone().and_then(|g| open(&g, path)) {
-        Ok(r) => r,
-        Err(e) => return (RepoState { error: Some(e), ..Default::default() }, Details::default()),
-    };
-    let status = repo.status().map_err(|e| e.to_string());
-    let state = state_of(status.as_ref().map_err(String::clone));
-    let mut d = Details::default();
-    if let Ok(s) = &status {
-        d.changes =
-            s.entries.iter().take(MAX_PATHS).map(|e| (letter(e), e.path.clone(), e.conflict.is_some())).collect();
-    }
-    if let Ok(refs) = repo.refs() {
-        let head = match &refs.head {
-            HeadState::Branch(b) | HeadState::Unborn(b) => Some(b.clone()),
-            HeadState::Detached(_) => None,
-        };
-        d.branches = refs
-            .locals
-            .iter()
-            .map(|b| Branch {
-                name: b.name.clone(),
-                upstream: b.upstream.clone(),
-                ahead: b.ahead,
-                behind: b.behind,
-                gone: b.upstream_gone,
-                head: b.is_head || head.as_deref() == Some(b.name.as_str()),
-            })
-            .collect();
-    }
-    if let Ok(list) = repo.worktrees() {
-        d.worktrees = list
-            .into_iter()
-            .map(|w| Tree {
-                path: w.path,
-                branch: w.branch,
-                main: w.is_main,
-                current: w.is_current,
-                prunable: w.prunable,
-            })
-            .collect();
-    }
-    (state, d)
+/// Ce qu'un écran du dépôt a besoin de relever.
+#[derive(Clone, Debug, PartialEq)]
+enum Load {
+    /// État, branches, remises, worktrees, remotes, opération en cours, dernier message.
+    Overview,
+    Log,
+    Commit(String),
+    /// Diff d'un fichier du dossier de travail (indexé et non indexé).
+    WorkDiff(String),
+    /// Diff d'un fichier d'un commit.
+    CommitDiff(String, String),
 }
 
-/// Fetch, pull (avance rapide seulement) ou push de la branche courante, sans fenêtre d'authentification.
-fn net(git: &Result<Git, String>, path: &Path, op: &str) -> Result<String, String> {
-    let repo = git.clone().and_then(|g| open(&g, path))?;
+impl Load {
+    fn key(&self) -> String {
+        match self {
+            Load::Overview => "etat".into(),
+            Load::Log => "historique".into(),
+            Load::Commit(id) => format!("commit:{id}"),
+            Load::WorkDiff(f) => format!("w:{f}"),
+            Load::CommitDiff(id, f) => format!("c:{id}:{f}"),
+        }
+    }
+
+    fn every(&self) -> Option<Duration> {
+        match self {
+            Load::Overview => Some(OVERVIEW_EVERY),
+            Load::Log => Some(LOG_EVERY),
+            Load::WorkDiff(_) => Some(DIFF_EVERY),
+            // Un commit ne change pas.
+            Load::Commit(_) | Load::CommitDiff(..) => None,
+        }
+    }
+}
+
+fn read_overview(repo: &Repo, v: &mut RepoView) {
+    v.status = Some(repo.status().map_err(|e| e.to_string()));
+    v.refs = repo.refs().ok();
+    v.stashes = repo.stashes().unwrap_or_default();
+    v.worktrees = repo.worktrees().unwrap_or_default();
+    v.remotes = repo.remotes().map(|r| r.into_iter().map(|r| r.name).collect()).unwrap_or_default();
+    v.op = Some(repo.operation_state());
+    v.last_message = repo.last_commit_message().unwrap_or_default();
+}
+
+fn oid(hex: &str) -> Result<Oid, String> {
+    Oid::from_hex(hex).ok_or_else(|| "identifiant de commit illisible".into())
+}
+
+/// Relève `what` dans `v` (une copie de ce qu'on sait : les fichiers d'un commit, les modifications).
+fn read(repo: &Repo, what: &Load, v: &mut RepoView) {
+    let opts = DiffOptions::default();
+    match what {
+        Load::Overview => read_overview(repo, v),
+        Load::Log => {
+            let o = LogOptions { scope: LogScope::Head, max_count: Some(depot::LOG_COUNT), ..Default::default() };
+            v.log = Some(repo.log(&o, &CancelToken::new()).map_err(|e| e.to_string()));
+        }
+        Load::Commit(id) => {
+            let r = oid(id).and_then(|o| {
+                let info = repo.commit_info(o).map_err(|e| e.to_string())?;
+                let files = repo.commit_files(o, info.parents.first().copied()).map_err(|e| e.to_string())?;
+                Ok((info, files))
+            });
+            v.commits.insert(id.clone(), r);
+        }
+        Load::WorkDiff(f) => {
+            let Some(e) = v.entry(f).cloned() else { return };
+            let staged = e.conflict.is_none() && !matches!(e.index, FileState::Unmodified | FileState::Untracked);
+            let unstaged = !matches!(e.worktree, FileState::Unmodified | FileState::Ignored);
+            let untracked = e.worktree == FileState::Untracked;
+            let mut parts = Vec::new();
+            let mut error = None;
+            for (wanted, cached, title) in [(staged, true, "Indexé"), (unstaged, false, "Non indexé")] {
+                if !wanted {
+                    continue;
+                }
+                match repo.diff_worktree_file(&e.path, cached, untracked && !cached, &opts) {
+                    Ok(d) => {
+                        parts.push((suite_sdk::mobile::ui::DIFF_HEADER, format!("── {title} ──")));
+                        parts.extend(depot::render_diff(&d));
+                    }
+                    Err(err) => error = Some(err.to_string()),
+                }
+            }
+            let r = match (parts.is_empty(), error) {
+                (true, Some(e)) => Err(e),
+                _ => Ok(parts),
+            };
+            v.diffs.insert(format!("w:{f}"), r);
+        }
+        Load::CommitDiff(id, f) => {
+            let Some(Ok((info, files))) = v.commits.get(id) else { return };
+            let Some(change) = files.iter().find(|c| file_key(&c.path) == *f).cloned() else { return };
+            let parent = info.parents.first().copied();
+            let r = oid(id).and_then(|o| {
+                repo.diff_commit_file(o, parent, &change, &opts)
+                    .map(|d| depot::render_diff(&d))
+                    .map_err(|e| e.to_string())
+            });
+            v.diffs.insert(format!("c:{id}:{f}"), r);
+        }
+    }
+}
+
+/// Fetch, pull (avance rapide, ou rebase) ou push (forcé avec bail) de la branche courante, sans fenêtre
+/// d'authentification.
+fn net(repo: &Repo, op: &str) -> Result<String, String> {
     let n = NetOptions { non_interactive: true, ..Default::default() };
     let err = |e: dragontree_git::GitError| e.to_string();
     if op == "fetch" {
@@ -434,27 +379,98 @@ fn net(git: &Result<Git, String>, path: &Path, op: &str) -> Result<String, Strin
         .ok_or("Remote de la branche suivie introuvable.")?;
     let remote_branch = &upstream[remote.name.len() + 1..];
     match op {
-        "pull" => {
-            if s.ahead > 0 && s.behind > 0 {
-                return Err("Branches divergentes : à régler sur le PC.".into());
+        "pull" | "pull-rebase" => {
+            let rebase = op == "pull-rebase";
+            if s.ahead > 0 && s.behind > 0 && !rebase {
+                return Err("Branches divergentes : faites un pull avec rebase, ou réglez-le sur le PC.".into());
             }
             if s.behind == 0 {
                 return Ok("déjà à jour".into());
             }
-            repo.pull(&remote.name, remote_branch, false, &n, &mut |_| {}).map_err(err)?;
+            repo.pull(&remote.name, remote_branch, rebase, &n, &mut |_| {}).map_err(err)?;
             Ok(format!("pull terminé ({} commit(s))", s.behind))
         }
-        "push" => {
-            if s.behind > 0 {
+        "push" | "push-force" => {
+            let force = op == "push-force";
+            if s.behind > 0 && !force {
                 return Err("En retard sur la branche distante : faites d'abord un pull.".into());
             }
             if s.ahead == 0 {
                 return Ok("rien à pousser".into());
             }
-            repo.push(&remote.name, &branch, remote_branch, false, false, &n, &mut |_| {}).map_err(err)?;
+            repo.push(&remote.name, &branch, remote_branch, false, force, &n, &mut |_| {}).map_err(err)?;
             Ok(format!("push terminé ({} commit(s))", s.ahead))
         }
         _ => Err("action inconnue".into()),
+    }
+}
+
+/// Exécute une opération du dépôt ; le texte dit ce qui s'est passé.
+fn run(repo: &Repo, op: &Op) -> Result<String, String> {
+    let e = |e: dragontree_git::GitError| e.to_string();
+    let n = NetOptions { non_interactive: true, ..Default::default() };
+    let branch_name = |name: &str| {
+        if repo.is_valid_branch_name(name) {
+            Ok(())
+        } else {
+            Err(format!("« {name} » n'est pas un nom de branche valide."))
+        }
+    };
+    match op {
+        Op::Fetch => net(repo, "fetch"),
+        Op::Pull { rebase } => net(repo, if *rebase { "pull-rebase" } else { "pull" }),
+        Op::Push { force } => net(repo, if *force { "push-force" } else { "push" }),
+        Op::Stage(p) => repo.stage(p).map(|_| "indexé".into()).map_err(e),
+        Op::Unstage(p) => repo.unstage(p).map(|_| "désindexé".into()).map_err(e),
+        Op::Discard { tracked, untracked } => repo.discard(tracked, untracked).map(|_| "annulé".into()).map_err(e),
+        Op::Commit { message, amend } => {
+            repo.commit(message, *amend).map(|_| if *amend { "commit corrigé" } else { "validé" }.into()).map_err(e)
+        }
+        Op::StashSave(m) => repo.stash_save(m.as_deref(), true, false).map(|_| "mis de côté".into()).map_err(e),
+        Op::StashApply(h) => repo.stash_apply_oid(oid(h)?).map(|_| "remise appliquée".into()).map_err(e),
+        Op::StashPop(h) => repo.stash_pop_oid(oid(h)?).map(|_| "remise appliquée et retirée".into()).map_err(e),
+        Op::StashDrop(h) => repo.stash_drop_oid(oid(h)?).map(|_| "remise jetée".into()).map_err(e),
+        Op::Checkout(b) => repo.checkout(b).map(|_| format!("sur {b}")).map_err(e),
+        Op::CheckoutDetached(id) => repo.checkout(id).map(|_| "HEAD détachée sur ce commit".into()).map_err(e),
+        Op::Track { remote_branch, local } => {
+            branch_name(local)?;
+            repo.checkout_new_tracking(remote_branch, local).map(|_| format!("sur {local}")).map_err(e)
+        }
+        Op::CreateBranch { name, start } => {
+            branch_name(name)?;
+            repo.create_branch(name, start, true).map(|_| "créée et sortie".into()).map_err(e)
+        }
+        Op::RenameBranch { old, new } => {
+            branch_name(new)?;
+            repo.rename_branch(old, new).map(|_| format!("renommée en {new}")).map_err(e)
+        }
+        Op::DeleteBranch { name, force } => repo.delete_branch(name, *force).map(|_| "supprimée".into()).map_err(e),
+        Op::PushBranch { name, remote } => repo
+            .push(remote, name, name, true, false, &n, &mut |_| {})
+            .map(|_| format!("poussée vers {remote}"))
+            .map_err(e),
+        Op::Merge(r) => repo.merge(r, MergeMode::Default).map(|_| "fusionné".into()).map_err(e),
+        Op::Rebase(r) => repo.rebase(r).map(|_| "rebasé".into()).map_err(e),
+        Op::CherryPick(h) => repo.cherry_pick(&[oid(h)?]).map(|_| "appliqué".into()).map_err(e),
+        Op::Revert(h) => repo.revert(oid(h)?).map(|_| "commit d'annulation créé".into()).map_err(e),
+        Op::Reset { rev, mode } => {
+            let mode = match mode {
+                depot::Reset::Soft => ResetMode::Soft,
+                depot::Reset::Mixed => ResetMode::Mixed,
+                depot::Reset::Hard => ResetMode::Hard,
+            };
+            repo.reset(rev, mode).map(|_| "branche ramenée".into()).map_err(e)
+        }
+        Op::Continue => repo.continue_op(repo.operation_state()).map(|_| "poursuivi".into()).map_err(e),
+        Op::Abort => repo.abort_op(repo.operation_state()).map(|_| "abandonné".into()).map_err(e),
+        Op::Skip => repo.skip_rebase_commit().map(|_| "commit passé".into()).map_err(e),
+        Op::CreateTag { name, rev } => repo.create_tag(name, rev, None).map(|_| "étiquette créée".into()).map_err(e),
+        Op::DeleteTag(name) => repo.delete_tag(name).map(|_| "étiquette supprimée".into()).map_err(e),
+        Op::PushTag { name, remote } => {
+            repo.push_tag(remote, name, &n, &mut |_| {}).map(|_| format!("poussée vers {remote}")).map_err(e)
+        }
+        Op::RemoveWorktree(p) => repo.remove_worktree(p, false).map(|_| "worktree supprimé".into()).map_err(e),
+        Op::PruneWorktrees => repo.prune_worktrees().map(|_| "élagués".into()).map_err(e),
     }
 }
 
@@ -559,23 +575,61 @@ impl Phone {
         });
     }
 
-    /// Relève le détail d'un dépôt dans un fil, s'il est dû.
-    fn inspect(&self, path: &Path, force: bool) {
-        let key = repo_key(path);
+    /// Relève `what` pour le dépôt `path` dans un fil, s'il est dû (`force` : tout de suite).
+    fn want(&self, path: &Path, what: Load, force: bool) {
+        let key = (repo_key(path), what.key());
         let mut w = lock(&self.work);
-        let fresh = w.details.get(&key).is_some_and(|(t, _)| t.elapsed() < SWEEP_EVERY);
-        if (fresh && !force) || !w.inspecting.insert(key.clone()) {
+        let fresh = w.loaded.get(&key).is_some_and(|t| what.every().is_none_or(|every| t.elapsed() < every));
+        if (fresh && !force) || !w.loading.insert(key.clone()) {
             return;
         }
+        let mut view = w.views.get(&key.0).cloned().unwrap_or_default();
         drop(w);
         let (work, cell, configured, path) =
             (self.work.clone(), self.git.clone(), self.lists.git_path.clone(), path.to_path_buf());
         std::thread::spawn(move || {
-            let (state, details) = read_details(&git(&cell, configured), &path);
+            let repo = git(&cell, configured).and_then(|g| open(&g, &path));
+            match &repo {
+                Ok(r) => read(r, &what, &mut view),
+                Err(e) => view.status = Some(Err(e.clone())),
+            }
             let mut w = lock(&work);
-            w.inspecting.remove(&key);
-            w.states.insert(key.clone(), state);
-            w.details.insert(key, (Instant::now(), details));
+            w.loading.remove(&key);
+            w.loaded.insert(key.clone(), Instant::now());
+            let current = w.views.entry(key.0.clone()).or_default();
+            // Seulement ce que ce relevé concerne : un autre relevé a pu écrire le reste entre-temps.
+            match &what {
+                Load::Overview => {
+                    current.status = view.status.clone();
+                    current.refs = view.refs;
+                    current.stashes = view.stashes;
+                    current.worktrees = view.worktrees;
+                    current.remotes = view.remotes;
+                    current.op = view.op;
+                    current.last_message = view.last_message;
+                }
+                Load::Log => current.log = view.log,
+                Load::Commit(id) => {
+                    if let Some(c) = view.commits.remove(id) {
+                        current.commits.insert(id.clone(), c);
+                    }
+                }
+                Load::WorkDiff(_) | Load::CommitDiff(..) => {
+                    let k = what.key();
+                    if let Some(d) = view.diffs.remove(&k) {
+                        current.diffs.insert(k, d);
+                    }
+                }
+            }
+            if let Load::Overview = what {
+                let state = state_of(
+                    view.status
+                        .as_ref()
+                        .map(|r| r.as_ref().map_err(String::clone))
+                        .unwrap_or(Err("dépôt illisible".into())),
+                );
+                w.states.insert(key.0, state);
+            }
         });
     }
 
@@ -592,66 +646,151 @@ impl Phone {
             let entries: Vec<Entry> = repos.into_iter().map(|r| self.entry(&w, r)).collect();
             return Some(home(&entries, w.sweeping));
         }
-        let key = path.strip_prefix("depot/")?;
-        let repo = repos.into_iter().find(|r| repo_key(&r.0) == key)?;
-        self.inspect(&repo.0, false);
+        let rest = path.strip_prefix("depot/")?;
+        let (key, sub) = rest.split_once('/').unwrap_or((rest, ""));
+        let repo = repos.into_iter().find(|r| repo_key(&r.0) == key)?.0;
+        self.want(&repo, Load::Overview, false);
+        let parts: Vec<&str> = sub.split('/').collect();
+        match parts.as_slice() {
+            ["fichier", f] => self.want(&repo, Load::WorkDiff(f.to_string()), false),
+            ["historique"] => self.want(&repo, Load::Log, false),
+            ["commit", id] => self.want(&repo, Load::Commit(id.to_string()), false),
+            ["commit", id, f] => {
+                self.want(&repo, Load::Commit(id.to_string()), false);
+                self.want(&repo, Load::CommitDiff(id.to_string(), f.to_string()), false);
+            }
+            _ => {}
+        }
         let w = lock(&self.work);
-        let details = w.details.get(key).map(|(_, d)| d.clone());
-        let e = self.entry(&w, repo);
-        Some(depot(&e, details.as_ref()))
+        let view = w.views.get(key).cloned().unwrap_or_default();
+        let job = w.jobs.get(key).filter(|j| j.at.elapsed() < JOB_SHOWN || j.tone == Tone::Info).cloned();
+        drop(w);
+        let busy = job.as_ref().is_some_and(|j| j.tone == Tone::Info);
+        let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+        let mut screen = match parts.as_slice() {
+            [""] => {
+                let j = job.as_ref().map(|j| (j.text.as_str(), j.tone));
+                return Some(depot::overview(&repo_name(&repo), &repo.display().to_string(), &view, j, busy));
+            }
+            ["modifs"] => depot::changes(&view, busy),
+            ["fichier", f] => depot::file(&view, f, busy)?,
+            ["historique"] => depot::history(&view, now),
+            ["commit", id] => depot::commit(&view, id, now, busy),
+            ["commit", id, f] => depot::commit_file(&view, id, f)?,
+            ["branches"] => depot::branches(&view, busy),
+            ["remises"] => depot::stashes(&view, now, busy),
+            ["etiquettes"] => depot::tags(&view, busy),
+            ["worktrees"] => depot::worktrees(&view, busy),
+            _ => return None,
+        };
+        // Ce qu'a donné la dernière opération, en tête de chaque écran du dépôt.
+        if let Some(j) = job {
+            screen.blocks.insert(0, Block::Note { text: j.text, tone: j.tone });
+        }
+        Some(screen)
     }
 
-    /// Une action ; `Ok(Some(dépôt))` pour « ouvrir sur le PC » : le dépôt transmis à DragonTree.
-    pub fn action(&mut self, action: &str, active: Option<&Path>) -> Result<(String, Option<PathBuf>), String> {
+    /// Une action de la liste (`fetch:<clé>`…) ou d'un écran du dépôt (`depot/<clé>/…`). `Ok(Some(dépôt))` pour
+    /// « ouvrir sur le PC » : le dépôt transmis à DragonTree.
+    pub fn action(
+        &mut self,
+        path: &str,
+        action: &str,
+        input: Option<&str>,
+        active: Option<&Path>,
+    ) -> Result<(String, Option<PathBuf>), String> {
         let repos = self.repos(active);
-        if action == "actualiser" {
+        let in_repo = path.strip_prefix("depot/").map(|r| r.split_once('/').map_or(r, |(k, _)| k).to_string());
+        if action == "actualiser" && in_repo.is_none() {
             self.sweep(repos.into_iter().map(|r| r.0).collect(), true);
             return Ok(("Actualisation lancée".into(), None));
         }
-        let (op, key) = action.split_once(':').ok_or("action inconnue")?;
-        let path = repos
+        // Depuis la liste, l'action porte la clé du dépôt (`fetch:<clé>`) ; dans un écran du dépôt, le chemin.
+        let (verb, key) = match &in_repo {
+            Some(k) => (action.to_string(), k.clone()),
+            None => {
+                let (op, k) = action.split_once(':').ok_or("action inconnue")?;
+                (op.to_string(), k.to_string())
+            }
+        };
+        let repo = repos
             .into_iter()
             .find(|r| repo_key(&r.0) == key)
             .map(|r| r.0)
             .ok_or("Ce dépôt n'est plus dans la liste.")?;
-        let name = repo_name(&path);
-        if op == "pc" {
-            let (instance, target) = (self.instance.clone(), path.clone());
+        let name = repo_name(&repo);
+        if verb == "pc" {
+            let (instance, target) = (self.instance.clone(), repo.clone());
             // Le canal d'instance est servi par un fil de DragonTree, dans ce même processus : jamais attendu ici.
             std::thread::spawn(move || {
                 let _ = single_instance::send(&instance, &Forwarded { open: vec![target] }, Duration::from_secs(3));
             });
-            return Ok((format!("{name} ouvert sur le PC"), Some(path)));
+            return Ok((format!("{name} ouvert sur le PC"), Some(repo)));
         }
-        let label = match op {
-            "fetch" => "Fetch",
-            "pull" => "Pull",
-            "push" => "Push",
-            _ => return Err("action inconnue".into()),
-        };
+        if verb == "actualiser" {
+            self.want(&repo, Load::Overview, true);
+            if lock(&self.work).loaded.contains_key(&(key.clone(), Load::Log.key())) {
+                self.want(&repo, Load::Log, true);
+            }
+            return Ok(("Relecture du dépôt…".into(), None));
+        }
+        let view = lock(&self.work).views.get(&key).cloned().unwrap_or_default();
+        let (op, label) = depot::parse(&view, &verb, input)?;
         let mut w = lock(&self.work);
-        if w.jobs.get(key).is_some_and(|j| j.tone == Tone::Info) {
+        if w.jobs.get(&key).is_some_and(|j| j.tone == Tone::Info) {
             return Err(format!("{name} : une opération est déjà en cours."));
         }
-        w.jobs
-            .insert(key.to_string(), Job { text: format!("{label} en cours…"), tone: Tone::Info, at: Instant::now() });
+        w.jobs.insert(key.clone(), Job { text: format!("{label} en cours…"), tone: Tone::Info, at: Instant::now() });
         drop(w);
-        let (work, cell, configured, op, key) =
-            (self.work.clone(), self.git.clone(), self.lists.git_path.clone(), op.to_string(), key.to_string());
+        let (work, cell, configured) = (self.work.clone(), self.git.clone(), self.lists.git_path.clone());
+        let log_shown = lock(&self.work).loaded.contains_key(&(key.clone(), Load::Log.key()));
+        let reply = format!("{label} lancé : {name}");
         std::thread::spawn(move || {
-            let git = git(&cell, configured);
-            let done = net(&git, &path, &op);
-            let (state, details) = read_details(&git, &path);
+            let repo = git(&cell, configured).and_then(|g| open(&g, &repo));
+            let done = repo.as_ref().map_err(String::clone).and_then(|r| run(r, &op));
+            // Après l'opération : l'état, l'historique s'il est montré ; les diffs du dossier de travail sont relus.
+            let mut fresh = RepoView::default();
+            if let Ok(r) = &repo {
+                read_overview(r, &mut fresh);
+                if log_shown {
+                    read(r, &Load::Log, &mut fresh);
+                }
+            }
             let job = match done {
-                Ok(text) => Job { text, tone: Tone::Ok, at: Instant::now() },
-                Err(text) => Job { text, tone: Tone::Danger, at: Instant::now() },
+                Ok(text) => Job { text: format!("{label} : {text}"), tone: Tone::Ok, at: Instant::now() },
+                Err(text) => Job { text: format!("{label} : {text}"), tone: Tone::Danger, at: Instant::now() },
             };
             let mut w = lock(&work);
             w.jobs.insert(key.clone(), job);
-            w.states.insert(key.clone(), state);
-            w.details.insert(key, (Instant::now(), details));
+            if repo.is_ok() {
+                w.states.insert(
+                    key.clone(),
+                    state_of(
+                        fresh
+                            .status
+                            .as_ref()
+                            .map(|r| r.as_ref().map_err(String::clone))
+                            .unwrap_or(Err("dépôt illisible".into())),
+                    ),
+                );
+                let current = w.views.entry(key.clone()).or_default();
+                current.status = fresh.status;
+                current.refs = fresh.refs;
+                current.stashes = fresh.stashes;
+                current.worktrees = fresh.worktrees;
+                current.remotes = fresh.remotes;
+                current.op = fresh.op;
+                current.last_message = fresh.last_message;
+                if log_shown {
+                    current.log = fresh.log;
+                }
+                current.diffs.retain(|k, _| !k.starts_with("w:"));
+                let now = Instant::now();
+                w.loaded.insert((key.clone(), Load::Overview.key()), now);
+                w.loaded.retain(|(k, what), _| !(k == &key && what.starts_with("w:")));
+            }
         });
-        Ok((format!("{label} lancé : {name}"), None))
+        Ok((reply, None))
     }
 }
 
@@ -733,42 +872,32 @@ mod tests {
         assert!(push.confirm.is_some(), "push confirmé");
     }
 
-    #[test]
-    fn a_repo_shows_its_changes_branches_and_worktrees() {
-        let e = entry(r"C:\dev\ozmo", Origin::Tab, Some(state("main", 0, 0, 60)));
-        let d = Details {
-            changes: (0..MAX_PATHS).map(|i| ('M', format!("src/f{i}.rs"), i == 0)).collect(),
-            branches: vec![
-                Branch { name: "main".into(), upstream: Some("origin/main".into()), head: true, ..Default::default() },
-                Branch {
-                    name: "vieille".into(),
-                    upstream: Some("origin/vieille".into()),
-                    gone: true,
-                    ..Default::default()
-                },
-            ],
-            worktrees: vec![
-                Tree {
-                    path: r"C:\dev\ozmo".into(),
-                    branch: Some("main".into()),
-                    main: true,
-                    current: true,
-                    prunable: false,
-                },
-                Tree { path: r"C:\dev\ozmo-wt".into(), branch: Some("essai".into()), ..Default::default() },
-            ],
-        };
-        let s = depot(&e, Some(&d));
-        assert!(s.blocks.contains(&Block::Section { title: "Modifications".into(), aside: "60".into() }));
-        assert!(
-            s.blocks.iter().any(|b| matches!(b, Block::Note { text, .. } if text == "Et 10 autres : voir sur le PC."))
-        );
-        assert!(s.blocks.iter().any(|b| matches!(b, Block::Row(r) if r.subtitle == "origin/vieille (supprimée)")));
-        assert!(s.blocks.contains(&Block::Section { title: "Worktrees".into(), aside: "2".into() }));
-        assert_eq!(s.action_ids().len(), 4, "fetch, pull, push, ouvrir sur le PC");
-        let mut busy = e.clone();
-        busy.job = Some(Job { text: "Push en cours…".into(), tone: Tone::Info, at: Instant::now() });
-        assert_eq!(depot(&busy, None).action_ids().len(), 1, "pendant une opération : seulement ouvrir sur le PC");
+    /// Attend la fin de l'opération en cours sur ce dépôt ; rend son ton.
+    fn wait_job(phone: &Phone, key: &str) -> Tone {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while lock(&phone.work).jobs.get(key).is_none_or(|j| j.tone == Tone::Info) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        lock(&phone.work).jobs[key].tone
+    }
+
+    /// Attend qu'un écran contienne `text`.
+    fn wait_screen(phone: &mut Phone, path: &str, text: &str) -> Screen {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let s = phone.screen(path, None).expect("écran");
+            if format!("{s:?}").contains(text) || Instant::now() > deadline {
+                return s;
+            }
+            std::thread::sleep(Duration::from_millis(30));
+        }
+    }
+
+    fn phone_for(dir: &Path, repo: &Path) -> Phone {
+        let settings = Settings { recent_repos: vec![repo.to_path_buf()], ..Default::default() };
+        let file = dir.join("settings.json");
+        std::fs::write(&file, serde_json::to_vec(&settings).unwrap()).unwrap();
+        Phone::new(file, "essai".into())
     }
 
     #[test]
@@ -776,21 +905,107 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("suite-dragontree-telephone-{}", std::process::id()));
         let repo = dir.join("pas-un-depot");
         std::fs::create_dir_all(&repo).unwrap();
-        let settings = Settings { recent_repos: vec![repo.clone()], ..Default::default() };
-        let file = dir.join("settings.json");
-        std::fs::write(&file, serde_json::to_vec(&settings).unwrap()).unwrap();
-        let mut phone = Phone::new(file, "essai".into());
+        let mut phone = phone_for(&dir, &repo);
         let key = repo_key(&repo);
-        assert!(phone.action("fetch:inconnu", None).is_err());
-        assert_eq!(phone.action(&format!("fetch:{key}"), None).map(|r| r.1), Ok(None));
-        assert!(phone.action(&format!("fetch:{key}"), None).is_err(), "une seule opération à la fois");
-        let deadline = Instant::now() + Duration::from_secs(20);
-        while lock(&phone.work).jobs[&key].tone == Tone::Info && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert_eq!(lock(&phone.work).jobs[&key].tone, Tone::Danger, "pas un dépôt git");
+        assert!(phone.action("", "fetch:inconnu", None, None).is_err());
+        assert_eq!(phone.action("", &format!("fetch:{key}"), None, None).map(|r| r.1), Ok(None));
+        assert!(phone.action("", &format!("fetch:{key}"), None, None).is_err(), "une seule opération à la fois");
+        assert_eq!(wait_job(&phone, &key), Tone::Danger, "pas un dépôt git");
         let s = phone.screen(&format!("depot/{key}"), None).unwrap();
         assert!(s.blocks.iter().any(|b| matches!(b, Block::Note { tone: Tone::Danger, .. })));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Un vrai dépôt : modifier, voir le diff, indexer, valider, retrouver le commit, créer une branche.
+    #[test]
+    fn a_change_is_staged_committed_and_found_in_the_history() {
+        let Ok(git) = Git::discover() else { return };
+        let dir = std::env::temp_dir().join(format!("suite-dragontree-git-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let repo = dir.join("depot");
+        std::fs::create_dir_all(&repo).unwrap();
+        let sh = |args: &[&str]| {
+            let ok = std::process::Command::new(git.exe())
+                .args(args)
+                .current_dir(&repo)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .output()
+                .unwrap()
+                .status
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        sh(&["init", "-q", "-b", "main"]);
+        sh(&["config", "user.name", "Essai"]);
+        sh(&["config", "user.email", "essai@exemple.org"]);
+        std::fs::write(
+            repo.join("lisez-moi.txt"),
+            "un
+",
+        )
+        .unwrap();
+        sh(&["add", "."]);
+        sh(&["commit", "-q", "-m", "Premier commit"]);
+        std::fs::write(
+            repo.join("lisez-moi.txt"),
+            "un
+deux
+",
+        )
+        .unwrap();
+
+        let mut phone = phone_for(&dir, &repo);
+        let key = repo_key(&repo);
+        let base = format!("depot/{key}");
+        let s = wait_screen(&mut phone, &base, "1 fichier(s), dont 0 indexé(s)");
+        assert!(format!("{s:?}").contains("1 fichier(s), dont 0 indexé(s)"), "{s:?}");
+        let f = file_key("lisez-moi.txt");
+        let diff = wait_screen(&mut phone, &format!("{base}/fichier/{f}"), "+deux");
+        assert!(format!("{diff:?}").contains("+deux"), "{diff:?}");
+
+        phone.action(&format!("{base}/modifs"), &format!("indexer:{f}"), None, None).unwrap();
+        assert_eq!(wait_job(&phone, &key), Tone::Ok);
+        let s = phone.screen(&format!("{base}/modifs"), None).unwrap();
+        assert!(s.action_ids().contains("valider"), "indexé : on peut valider");
+        phone.action(&format!("{base}/modifs"), "valider", Some("Ajoute deux"), None).unwrap();
+        assert_eq!(wait_job(&phone, &key), Tone::Ok, "{:?}", lock(&phone.work).jobs[&key]);
+        let log = wait_screen(&mut phone, &format!("{base}/historique"), "Ajoute deux");
+        assert!(format!("{log:?}").contains("Ajoute deux") && format!("{log:?}").contains("Premier commit"));
+
+        phone.action(&format!("{base}/branches"), "nouvelle-branche", Some("feature/essai"), None).unwrap();
+        assert_eq!(wait_job(&phone, &key), Tone::Ok);
+        let b = wait_screen(&mut phone, &format!("{base}/branches"), "Courante : feature/essai");
+        if let Some(out) = std::env::var_os("SUITE_MOBILE_DUMP") {
+            std::fs::write(
+                repo.join("lisez-moi.txt"),
+                "un
+deux
+trois
+",
+            )
+            .unwrap();
+            std::fs::write(
+                repo.join("nouveau.rs"),
+                "fn main() {}
+",
+            )
+            .unwrap();
+            phone.action(&base, "actualiser", None, None).unwrap();
+            let out = Path::new(&out);
+            for (name, path, wait) in [
+                ("depot", base.clone(), "fichier(s)"),
+                ("modifs", format!("{base}/modifs"), "Non indexé"),
+                ("diff", format!("{base}/fichier/{f}"), "+trois"),
+                ("historique", format!("{base}/historique"), "Ajoute deux"),
+                ("branches", format!("{base}/branches"), "feature/essai"),
+            ] {
+                let s = wait_screen(&mut phone, &path, wait);
+                std::fs::write(out.join(format!("{name}.json")), serde_json::to_vec(&s).unwrap()).unwrap();
+            }
+        }
+        assert!(b.action_ids().contains("basculer:main"));
+        assert!(phone.action(&format!("{base}/branches"), "nouvelle-branche", Some("pas valide..nom"), None).is_ok());
+        assert_eq!(wait_job(&phone, &key), Tone::Danger, "nom de branche refusé");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -226,7 +226,18 @@ pub enum Block {
     Buttons {
         acts: Vec<Act>,
     },
+    /// Un diff : une ligne par entrée, avec sa sorte (`DIFF_*`).
+    Diff {
+        lines: Vec<(u8, String)>,
+    },
 }
+
+/// Sortes de ligne d'un [`Block::Diff`].
+pub const DIFF_CONTEXT: u8 = 0;
+pub const DIFF_ADDED: u8 = 1;
+pub const DIFF_REMOVED: u8 = 2;
+/// En-tête (`@@ … @@`, « Indexé »…).
+pub const DIFF_HEADER: u8 = 3;
 
 /// Un écran.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -292,6 +303,11 @@ impl Screen {
 
     pub fn empty(&mut self, text: impl Into<String>) -> &mut Self {
         self.blocks.push(Block::Empty { text: text.into() });
+        self
+    }
+
+    pub fn diff(&mut self, lines: Vec<(u8, String)>) -> &mut Self {
+        self.blocks.push(Block::Diff { lines });
         self
     }
 

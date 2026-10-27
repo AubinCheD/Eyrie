@@ -5,7 +5,7 @@ import { ListView, LineEdit } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import {
     UiAct, UiRow, ModuleItem, WaitItem, NoteItem, CommandItem, PcItem, Icon, IconButton, ModuleAvatar, Pill,
-    SectionHeader, RowView, NoteView, MeterView, TextBlock, ActButton, EmptyView
+    SectionHeader, RowView, NoteView, MeterView, TextBlock, ActButton, EmptyView, DiffLineView
 } from "widgets.slint";
 
 // L'écran d'un module : les blocs décrits par le PC.
@@ -53,6 +53,12 @@ export component ScreenPage inherits Rectangle {
             }
             if r.kind == 5: EmptyView {
                 text: r.title;
+            }
+            if r.kind == 7: DiffLineView {
+                text: r.title;
+                kind: r.tone;
+                first: r.first;
+                last: r.last;
             }
             if r.kind == 6: HorizontalLayout {
                 padding-left: Theme.pad;
