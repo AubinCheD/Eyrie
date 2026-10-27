@@ -61,13 +61,20 @@ mod tests {
     fn catalog_matches_sources() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut used = BTreeSet::new();
-        for entry in std::fs::read_dir(&dir).unwrap() {
-            let path = entry.unwrap().path();
-            // Ce fichier-ci ne contient que des exemples.
-            if path.file_name().is_some_and(|n| n == "i18n.rs") {
-                continue;
+        let mut dirs = vec![dir];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs.push(path);
+                    continue;
+                }
+                // Ce fichier-ci ne contient que des exemples.
+                if path.file_name().is_some_and(|n| n == "i18n.rs") {
+                    continue;
+                }
+                used.extend(super::keys_in(&std::fs::read_to_string(path).unwrap()));
             }
-            used.extend(super::keys_in(&std::fs::read_to_string(path).unwrap()));
         }
         let catalog: std::collections::BTreeMap<String, String> =
             serde_json::from_str(include_str!("../locales/en.json")).expect("en.json lisible");

@@ -688,18 +688,24 @@ fn removing_an_account_asks_for_confirmation() {
 /// bien l'ensemble des applications.
 #[test]
 fn interface_texts_name_eyrie() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut dirs = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
     let mut wrong = Vec::new();
-    for entry in std::fs::read_dir(&dir).unwrap() {
-        let path = entry.unwrap().path();
-        if path.file_name().is_some_and(|n| n == "i18n.rs" || n == "tests.rs") {
-            continue;
-        }
-        for key in crate::i18n::keys_in(&std::fs::read_to_string(&path).unwrap()) {
-            let lower = key.to_lowercase();
-            let about_the_app = lower.replace("toute la suite", "").contains("la suite") || key == "Suite";
-            if about_the_app || lower.contains("superapp") {
-                wrong.push(key);
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+                continue;
+            }
+            if path.file_name().is_some_and(|n| n == "i18n.rs" || n == "tests.rs") {
+                continue;
+            }
+            for key in crate::i18n::keys_in(&std::fs::read_to_string(&path).unwrap()) {
+                let lower = key.to_lowercase();
+                let about_the_app = lower.replace("toute la suite", "").contains("la suite") || key == "Suite";
+                if about_the_app || lower.contains("superapp") {
+                    wrong.push(key);
+                }
             }
         }
     }

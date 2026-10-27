@@ -25,6 +25,7 @@ pub enum Page {
     Modules,
     Accounts,
     Tailscale,
+    Phones,
     Shortcuts,
     Layouts,
     Module(String),
@@ -60,6 +61,7 @@ impl Page {
             "modules" => Page::Modules,
             "raccourcis" => Page::Shortcuts,
             "tailscale" => Page::Tailscale,
+            "telephones" => Page::Phones,
             "dispositions" => Page::Layouts,
             k if k.starts_with("module:") => Page::Module(k["module:".len()..].to_string()),
             _ => Page::General,
@@ -195,6 +197,7 @@ fn nav(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui) {
         (Page::Modules, mark("Modules")),
         (Page::Accounts, mark("Comptes")),
         (Page::Tailscale, mark("Tailscale")),
+        (Page::Phones, mark("Téléphones")),
         (Page::Shortcuts, mark("Raccourcis")),
         (Page::Layouts, mark("Dispositions")),
     ] {
@@ -232,6 +235,7 @@ fn page(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui) {
         Page::Modules => modules(suite, ui),
         Page::Accounts => accounts(suite, ui),
         Page::Tailscale => tailscale(suite, ui),
+        Page::Phones => crate::mobile::page::page(suite, ui),
         Page::Shortcuts => shortcuts(suite, ui),
         Page::Layouts => layouts(suite, ui),
         Page::Module(id) => module_page(suite, ui, &id),
@@ -537,9 +541,8 @@ fn tailscale(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui) {
     match &companion {
         Some(c) => hint(ui, p, &format!("{} {}", tr("Compagnon :"), c.display())),
         None => {
-            ui.label(RichText::new(tr("Compagnon fawkes-tailnet.exe introuvable.")).color(p.warn)).on_hover_text(tr(
-                "Compilez-le dans Fawkes (tools\\compagnon.ps1) ou indiquez-le dans FAWKES_TAILNET_EXE.",
-            ));
+            ui.label(RichText::new(tr("Compagnon eyrie-tailnet.exe introuvable.")).color(p.warn))
+                .on_hover_text(tr("Compilez-le avec tools\\compagnon.ps1 ou indiquez-le dans EYRIE_TAILNET_EXE."));
         }
     }
     let (line, color) = suite.core.tailnet.status_line(p);

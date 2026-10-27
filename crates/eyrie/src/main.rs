@@ -14,6 +14,7 @@ mod i18n;
 mod icon;
 mod layout;
 mod migrate;
+mod mobile;
 mod nest;
 mod palette;
 mod persist;
@@ -125,12 +126,6 @@ fn main() -> eframe::Result {
         }
     }
     let _ = std::fs::create_dir_all(&dir);
-    if std::env::var_os("FAWKES_TAILNET_EXE").is_none()
-        && let Some(companion) = tailnet::find_companion()
-    {
-        // Avant tout autre fil : le compagnon de Fawkes est cherché par cette variable.
-        unsafe { std::env::set_var("FAWKES_TAILNET_EXE", companion) };
-    }
     sandbox::install_panic_hook();
 
     let mut loaded = persist::load(&dir);

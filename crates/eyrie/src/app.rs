@@ -168,6 +168,8 @@ pub struct Core {
     pub concentrate: Option<Pane>,
     pub accounts: Accounts,
     pub tailnet: Tailnet,
+    /// Le pont mobile : le seul point d'entrée du téléphone.
+    pub mobile: crate::mobile::Bridge,
     pub screens: Screens,
     pub registry: Registry,
     pub capture: Option<capture::Capture>,
@@ -332,6 +334,7 @@ impl Suite {
             accounts = accounts.with_legacy_vaults(legacy.to_vec());
         }
         let tailnet = Tailnet::new(&dir);
+        let mobile = crate::mobile::Bridge::new(&dir, ctx.clone());
 
         let core = Core {
             host,
@@ -352,6 +355,7 @@ impl Suite {
             concentrate: None,
             accounts,
             tailnet,
+            mobile,
             screens: Screens::default(),
             registry,
             capture: capture::Capture::from_env(),
@@ -1152,7 +1156,10 @@ impl eframe::App for Suite {
         self.handle_close(ctx);
         self.process_outbox(ctx, frame);
         self.run_logic(ctx, frame);
-        self.core.tailnet.poll(&self.core.st.tailnet, &self.core.dir, ctx);
+        let commands = crate::mobile::poll(&mut self.core, frame, ctx);
+        self.shell.pending_commands.extend(commands);
+        let relay = self.core.mobile.relay();
+        self.core.tailnet.poll(&self.core.st.tailnet, &self.core.dir, ctx, relay);
         self.core.accounts.poll();
         if self.core.accounts.take_added() {
             self.shell.settings.clear_new_account();
@@ -1194,6 +1201,7 @@ impl eframe::App for Suite {
                 let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| m.on_exit()));
             }
         }
+        self.core.mobile.stop("Eyrie se ferme.");
         self.core.tailnet.stop();
         self.save();
         if self.core.quit.restart {

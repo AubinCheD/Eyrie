@@ -81,6 +81,22 @@ pub struct TailnetSettings {
     pub hostname: String,
 }
 
+/// Le pont mobile (`docs/mobile.md`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MobileSettings {
+    /// « Accès depuis le téléphone » : l'interrupteur du pont.
+    pub enabled: bool,
+    /// Une bulle sur le PC pour chaque action faite au téléphone.
+    pub show_actions: bool,
+}
+
+impl Default for MobileSettings {
+    fn default() -> Self {
+        MobileSettings { enabled: false, show_actions: true }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SuiteState {
@@ -98,6 +114,7 @@ pub struct SuiteState {
     /// Raccourcis de la suite changés par l'utilisateur : commande → combinaison.
     pub shortcuts: BTreeMap<String, String>,
     pub tailnet: TailnetSettings,
+    pub mobile: MobileSettings,
     /// Les cases suivent le contexte partagé (dépôt courant).
     pub follow_context: bool,
     /// Barre de titre de Windows, menus en dessous (sinon Eyrie dessine la sienne, menus compris).
@@ -122,6 +139,7 @@ impl Default for SuiteState {
             window: WindowGeometry::default(),
             shortcuts: BTreeMap::new(),
             tailnet: TailnetSettings::default(),
+            mobile: MobileSettings::default(),
             follow_context: true,
             native_title_bar: false,
             welcomed: false,

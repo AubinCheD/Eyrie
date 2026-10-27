@@ -547,6 +547,7 @@ fn status_bar(suite: &mut Suite, ui: &mut egui::Ui) {
                 }
                 ui.separator();
             }
+            crate::mobile::page::status_item(suite, ui);
             let (text, color) = suite.core.tailnet.status_line(p);
             if ui
                 .add(egui::Button::new(small(text, color)).frame(false))
@@ -589,6 +590,7 @@ pub fn overlays(suite: &mut Suite, ctx: &egui::Context, _frame: &mut eframe::Fra
         );
     }
     toasts(suite, ctx);
+    crate::mobile::page::confirm(suite, ctx);
     close_dialog(suite, ctx);
     save_layout_dialog(suite, ctx);
     if suite.shell.welcome {
