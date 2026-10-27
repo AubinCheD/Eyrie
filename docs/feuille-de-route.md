@@ -69,6 +69,9 @@ Branche `mobile`, rien de poussé ; conception, état et ce qui reste dans `mobi
 - `Module::mobile_*` et les écrans des huit modules.
 - Application `eyrie-mobile` (Slint) : bureau et Android (APK à construire : licences du SDK à accepter).
 - Compagnon `eyrie-tailnet.exe` (relais du téléphone).
+- Avec l'accord du 27/10, API pour le téléphone dans Fawkes (fermer, Remote Control), Owlery (boîte en direct,
+  marquer, reporter, ignorer, corriger avec Claude) et Menagerie (services gérés) : branche `suite/mobile` de
+  chacun ; notifications sur le téléphone ; interrupteur dans la palette.
 
 ## Fait dans le premier jet (23/10)
 

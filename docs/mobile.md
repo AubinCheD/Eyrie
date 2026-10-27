@@ -108,17 +108,21 @@ win32-input de ConPTY. Une session Claude qui attend montre ses choix (« 1. Yes
 
 ## 6. Ce que chaque module offre au téléphone
 
-| Module | Écrans | Actions | Limites (changement du module nécessaire) |
+| Module | Écrans | Actions | Limites |
 |---|---|---|---|
-| Fawkes | groupes et terminaux (état, Claude qui attend), terminal en direct | saisie, touches, réponses rapides à Claude, nouveau terminal (dossiers récents, shell ou Claude), redémarrer, veille/réveil, montrer sur le PC | fermer un terminal |
-| Patronus | tâches, boîte de réception, détail d'une exécution (journal) | lancer, arrêter, tout arrêter, pause, budget lu, marquer lu, archiver, appliquer le diff, supprimer le worktree | — |
-| Owlery | boîte de réception par sorte (lue sur disque), détail | actualiser, ouvrir sur le téléphone ou le PC | marquer lu, reporter, masquer |
-| Menagerie | services gérés (état), ports ouverts, Docker | arrêter un processus, conteneurs (démarrer, arrêter, relancer, journaux) | démarrer/arrêter un service géré |
-| DragonTree | dépôts (branche, avance/retard, modifications), worktrees, branches | fetch, pull, push (confirmé), ouvrir sur le PC | onglets et file d'opérations de l'application |
+| Fawkes | groupes et terminaux (état, Claude qui attend), terminal en direct | saisie, touches, réponses rapides à Claude, nouveau terminal (dossiers récents, shell ou Claude), redémarrer, veille/réveil, fermer, Remote Control, montrer sur le PC | — |
+| Patronus | tâches, boîte de réception, détail d'une exécution (journal) | lancer (avec ou sans consigne), arrêter, tout arrêter, pause, marquer lu, archiver, appliquer le diff, supprimer le worktree | — |
+| Owlery | boîte de réception en direct, par sorte ; détail | marquer lue ou non lue, traitée, reporter à demain, ignorer le dépôt, corriger avec Claude (puis Fawkes), ouvrir sur le téléphone ou le PC, actualiser | — |
+| Menagerie | services gérés (état, journal), ports ouverts, Docker | démarrer, arrêter, relancer un service géré ; arrêter un processus ; conteneurs (démarrer, arrêter, relancer, journaux) | — |
+| DragonTree | dépôts (branche, avance/retard, modifications), worktrees, branches | fetch, pull, push (confirmé), ouvrir sur le PC | git direct, avec son gestionnaire d'identifiants (pas les comptes de DragonTree) |
 | Grimoire | profils, limites, serveurs MCP | ouvrir sur le PC | — |
 | Gringotts | limites en cours, coût du jour, conversations | relire | — |
 | Carnet | notes du dépôt courant et des autres | ajouter une ligne | — |
-| tous | vue d'ensemble, notifications, commandes de la palette (« sur le PC ») | | |
+| tous | vue d'ensemble (ce qui attend mène à son écran), notifications, commandes de la palette (« sur le PC ») | | |
+
+Les modules voisins ont reçu, avec l'accord du 27/10, de petites API publiques pour cela (branche `suite/mobile` de
+Fawkes, Owlery et Menagerie) : `close_terminal`, `remote_control` ; `state`, `mark`, `mute`, `undo`,
+`work_with_claude`, `knows_local_dir` ; `managed`, `start_service`, `stop_service`, `restart_service`.
 
 ## 7. L'application
 
@@ -130,6 +134,9 @@ win32-input de ConPTY. Une session Claude qui attend montre ses choix (« 1. Yes
   (Échap, Tab, Ctrl, flèches, Entrée), champ de saisie au-dessus du clavier, réponses rapides quand Claude attend.
 - **Hors ligne** : bandeau « Reconnexion… », dernières données gardées, reconnexion automatique (délai croissant,
   immédiate au retour au premier plan).
+- **Notifications** : une bulle quand une notification arrive du PC ; sur Android, en arrière-plan, une
+  notification du système pour ce qui se met à attendre (session Claude…) et pour les alertes, tant que
+  l'application tourne (pas de service au premier plan : Android peut couper le réseau au bout d'un moment).
 - **Thème** : celui du système (clair ou sombre), couleurs de la suite.
 - **Réglages** : PC appairés (changer, oublier), nom de l'appareil, taille du terminal, à propos.
 
@@ -162,4 +169,6 @@ Reste :
   téléphone.
 - **Essai par Tailscale** : recompiler `eyrie.exe` (release) et `tools\compagnon.ps1 -Release`, activer
   Réglages › Tailscale puis Téléphones ; Tailscale sur le téléphone, même compte.
-- Plus tard : §8, et les actions marquées « changement du module nécessaire » (§6).
+- Les branches `suite/mobile` de Fawkes, Owlery et Menagerie (API pour le téléphone) sont à fusionner avec celle
+  d'Eyrie : Eyrie les compile par chemin, il lui faut donc ces branches extraites.
+- Plus tard : §8.
