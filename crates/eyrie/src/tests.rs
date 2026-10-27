@@ -486,7 +486,7 @@ fn build_teller(_: &suite_sdk::BuildCx) -> Result<Box<dyn Module>, suite_sdk::Un
     Ok(Box::new(Teller { info: teller_info() }))
 }
 
-/// Le texte d'un module est dans la barre d'état ; un clic montre le module.
+/// Le texte d'un module est dans la barre d'état, dans le coin en bas à droite ; un clic montre le module.
 #[test]
 fn a_module_text_sits_in_the_status_bar() {
     use egui_kittest::kittest::Queryable;
@@ -495,6 +495,9 @@ fn a_module_text_sits_in_the_status_bar() {
     h.run_steps(3);
     let text = h.get_by_label("Claude 5 h 23 %");
     assert!(text.rect().top() > 900.0 - 24.0 - 1.0, "en bas de la fenêtre : {:?}", text.rect());
+    let tailscale = h.get_by_label_contains("Tailscale").rect();
+    assert!(text.rect().left() > tailscale.right(), "à droite de tout le reste : {:?}", text.rect());
+    assert!(text.rect().right() > 1400.0 - 24.0, "contre le bord droit : {:?}", text.rect());
     text.click();
     h.run_steps(3);
     assert!(h.state().locate(&Pane::module("compteur", suite_sdk::ViewInfo::MAIN)).is_some(), "le module est montré");

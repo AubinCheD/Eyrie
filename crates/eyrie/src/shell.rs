@@ -525,17 +525,6 @@ fn status_bar(suite: &mut Suite, ui: &mut egui::Ui) {
             .on_hover_text(tr("Où les modules embarqués rangent leur état (Réglages > Général)."));
         let running = suite.core.slots.iter().filter(|s| s.is_running()).count();
         ui.label(small(format!("· {running}/{} {}", suite.core.slots.len(), tr("actifs")), p.text_dim));
-        // Ce que les modules affichent en permanence (limites de Claude : Gringotts) ; un clic montre le module.
-        let lines: Vec<(&'static str, suite_sdk::StatusText)> =
-            suite.core.slots.iter().filter_map(|s| Some((s.info.id, s.module()?.status().status_line?))).collect();
-        for (id, line) in lines {
-            ui.separator();
-            let resp = ui.add(egui::Button::new(small(line.text.clone(), line.tone.color(p))).frame(false));
-            let resp = if line.tip.is_empty() { resp } else { resp.on_hover_text(&line.tip) };
-            if resp.clicked() {
-                suite.core.act(Action::Reveal(Pane::module(id, suite_sdk::ViewInfo::MAIN)));
-            }
-        }
         if suite.core.restart_needed {
             ui.separator();
             if ui
@@ -546,6 +535,18 @@ fn status_bar(suite: &mut Suite, ui: &mut egui::Ui) {
             }
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // Ce que les modules affichent en permanence (limites de Claude : Gringotts), dans le coin en bas à droite ;
+            // un clic montre le module.
+            let lines: Vec<(&'static str, suite_sdk::StatusText)> =
+                suite.core.slots.iter().filter_map(|s| Some((s.info.id, s.module()?.status().status_line?))).collect();
+            for (id, line) in lines {
+                let resp = ui.add(egui::Button::new(small(line.text.clone(), line.tone.color(p))).frame(false));
+                let resp = if line.tip.is_empty() { resp } else { resp.on_hover_text(&line.tip) };
+                if resp.clicked() {
+                    suite.core.act(Action::Reveal(Pane::module(id, suite_sdk::ViewInfo::MAIN)));
+                }
+                ui.separator();
+            }
             let (text, color) = suite.core.tailnet.status_line(p);
             if ui
                 .add(egui::Button::new(small(text, color)).frame(false))
