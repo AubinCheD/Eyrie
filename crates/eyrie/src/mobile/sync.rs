@@ -328,7 +328,18 @@ fn message(
                 }
                 Err(e) => core.mobile.store.journal(&name, "action", format!("{text} : échec ({e})")),
             }
+            // « @ouvrir <chemin> » : le téléphone ouvre cet écran du module (le terminal qu'il vient de créer…).
+            let open = match &result {
+                Ok(Some(m)) => m.strip_prefix(suite_mobile::msg::OPEN_PREFIX).map(str::to_string),
+                _ => None,
+            };
+            let result = if open.is_some() { Ok(None) } else { result };
             reply(core, id, req, result);
+            if let Some(path) = open
+                && let Some(s) = session_mut(core, id)
+            {
+                s.send(ToPhone::Open { module: module.clone(), path });
+            }
             if let Some(f) = session_mut(core, id).and_then(|s| s.screen.as_mut()) {
                 f.due = Instant::now();
             }

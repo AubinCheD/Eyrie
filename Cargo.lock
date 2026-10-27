@@ -4188,6 +4188,7 @@ dependencies = [
 name = "suite-fawkes"
 version = "0.1.0"
 dependencies = [
+ "alacritty_terminal",
  "eframe",
  "fawkes",
  "serde_json",

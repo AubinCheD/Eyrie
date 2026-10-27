@@ -193,6 +193,7 @@ impl Row {
 }
 
 /// Un bloc d'écran.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Block {
     /// Titre de section ; `aside` : texte court à droite (« 3 »).
@@ -299,26 +300,25 @@ impl Screen {
         self
     }
 
-    /// Toutes les actions envoyables au PC que cet écran propose : la liste blanche du pont.
-    pub fn action_ids(&self) -> BTreeSet<String> {
-        let mut out = BTreeSet::new();
-        let mut add = |a: &Act| {
-            if a.reaches_pc() {
-                out.insert(a.id.clone());
-            }
-        };
-        self.acts.iter().for_each(&mut add);
+    /// Toutes les actions de l'écran (barre, lignes, boutons).
+    pub fn all_acts(&self) -> Vec<&Act> {
+        let mut out: Vec<&Act> = self.acts.iter().collect();
         for b in &self.blocks {
             match b {
                 Block::Row(r) => {
-                    r.tap.iter().for_each(&mut add);
-                    r.acts.iter().for_each(&mut add);
+                    out.extend(r.tap.iter());
+                    out.extend(r.acts.iter());
                 }
-                Block::Buttons { acts } => acts.iter().for_each(&mut add),
+                Block::Buttons { acts } => out.extend(acts.iter()),
                 _ => {}
             }
         }
         out
+    }
+
+    /// Toutes les actions envoyables au PC que cet écran propose : la liste blanche du pont.
+    pub fn action_ids(&self) -> BTreeSet<String> {
+        self.all_acts().into_iter().filter(|a| a.reaches_pc()).map(|a| a.id.clone()).collect()
     }
 
     /// Les sous-écrans que cet écran ouvre.

@@ -11,3 +11,5 @@ suite-sdk.workspace = true
 fawkes.workspace = true
 eframe.workspace = true
 serde_json.workspace = true
+# La même version que Fawkes : sa grille de terminal, lue pour le téléphone.
+alacritty_terminal = "0.26.0"

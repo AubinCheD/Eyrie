@@ -9,6 +9,9 @@ use crate::ui::{Screen, Tone};
 /// Version du protocole.
 pub const PROTOCOL: u32 = 1;
 
+/// Un module qui veut que le téléphone ouvre un écran après une action répond `Ok(Some("@ouvrir <chemin>"))`.
+pub const OPEN_PREFIX: &str = "@ouvrir ";
+
 /// Ce qu'un appareil a le droit de faire.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rights {
@@ -180,6 +183,11 @@ pub enum ToPhone {
         req: u32,
         ok: bool,
         message: String,
+    },
+    /// Ouvrir cet écran (le terminal qu'une action vient de créer…).
+    Open {
+        module: String,
+        path: String,
     },
     Toast {
         text: String,

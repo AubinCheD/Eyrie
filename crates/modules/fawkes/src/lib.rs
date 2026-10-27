@@ -3,4 +3,5 @@
 
 pub use fawkes::tailnet;
 
+pub mod mobile;
 pub mod suite;

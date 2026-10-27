@@ -121,7 +121,7 @@ fn status(app: &App, base: &ModuleStatus) -> ModuleStatus {
 /// qui peut la tirer de données qu'il ne maîtrise pas (une forge…). `dir` : un dossier existant sur un lecteur local ou
 /// mappé (`X:\…`), jamais un chemin réseau (`\\serveur\…`, que le simple fait de le sonder ouvrirait en SMB) ; `resume` :
 /// un identifiant de session Claude, qui part tel quel dans la ligne de commande.
-fn check_open(dir: &str, resume: Option<&str>) -> Result<(), String> {
+pub(crate) fn check_open(dir: &str, resume: Option<&str>) -> Result<(), String> {
     let b = dir.as_bytes();
     let on_a_drive = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'\\' | b'/');
     if !on_a_drive || dir.chars().any(char::is_control) || !std::path::Path::new(dir).is_dir() {
@@ -207,6 +207,11 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
         .on_settings_left(|app| app.settings_left())
         .status(status)
         .on_request(on_request)
+        // Le téléphone : groupes et terminaux, un terminal en direct, la saisie (`mobile.rs`).
+        .mobile_screens(crate::mobile::screen)
+        .mobile_actions(crate::mobile::action)
+        .mobile_terminals(crate::mobile::term_view)
+        .mobile_terminal_input(crate::mobile::term_input)
         // Contexte partagé : le groupe lié à ce dépôt devient le groupe affiché.
         .on_event(|app, event, cx| {
             if event.kind != "contexte" || !cx.host.follows_context() || event.source == ID {

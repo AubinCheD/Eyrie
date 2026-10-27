@@ -28,6 +28,9 @@ pub const STRIKE: u8 = 32;
 /// Une suite de cellules de même style.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Run {
+    /// Colonne de la première cellule (les caractères larges en occupent deux).
+    #[serde(rename = "c", default)]
+    pub col: u16,
     #[serde(rename = "t")]
     pub text: String,
     #[serde(rename = "f", default)]
