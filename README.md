@@ -32,6 +32,10 @@ langue, comptes, Tailscale) disparaît des siens.
   la case cliquée, commandes de fenêtre contenues, plantage isolé.
 - **Contrat local en appel Rust** : un module demande à un autre (`ouvrir` un terminal dans Fawkes
   depuis Owlery…) par le bus d'Eyrie, sans tube.
+- **Le téléphone** (`docs/mobile.md`) : une application Android en Rust (Slint), appairée par QR code et
+  confirmée sur le PC, qui pilote Eyrie par Tailscale en temps réel, un module à la fois (terminaux en direct,
+  réponses à Claude, tâches, services, dépôts, notifications…). Page Réglages › Téléphones : interrupteur,
+  appareils et leurs droits, journal.
 - **Tout ou partie des modules**, activables et arrêtables à chaud ; un module natif d'exemple,
   **Carnet** (notes par dépôt, journal du bus), sert de gabarit (`docs/ecrire-un-module.md`).
 
@@ -66,6 +70,19 @@ Un module seul, depuis son dépôt, avec la même configuration :
 La première compilation prend quelques minutes : toutes les dépendances des six modules (un seul
 egui 0.37 pour tous).
 
+## Le téléphone
+
+```powershell
+tools\compagnon.ps1 -Release           # eyrie-tailnet.exe (Go, tsnet) : le nœud et le relais du téléphone
+tools\android.ps1 -Release -Install    # l'APK (NDK, aapt2, signature de débogage), installé par adb
+cargo run -p eyrie-mobile               # la même application sur le bureau, fenêtre de téléphone
+```
+
+Essais : `EYRIE_MOBILE_DEMO=<scène>` (`ensemble`, `fawkes`, `terminal`, `patronus`, `plus`, `reglages`, `accueil`,
+`code`, `appairage`, `hors-ligne`) et `EYRIE_MOBILE_CAPTURE=<png>` ; contre un vrai Eyrie sans Tailscale :
+`EYRIE_MOBILE_LOCAL=4747` côté Eyrie (écoute directe, essais seulement), puis le code affiché et le PC `localhost`
+dans l'application. `EYRIE_CAPTURE_SCENE=appairer` ouvre la page Téléphones avec un ticket.
+
 ## Lancer
 
 ```powershell
@@ -90,7 +107,8 @@ Variables utiles :
 | `EYRIE_CAPTURE=<png>` | capture de la fenêtre principale puis fermeture (essais) |
 | `EYRIE_CAPTURE_AFTER_MS` | délai avant la capture (4000 par défaut) |
 | `EYRIE_CAPTURE_SCENE` | scène : `palette`, `reglages`, `modules`, `raccourcis`, `ensemble`, `journal`, `ressources`, `grille`, `colonnes`, `detacher`, `concentration`, `terminal`, `module:<id>`, `theme:<graphite\|fluent\|nuit>` (séparées par des virgules) |
-| `FAWKES_TAILNET_EXE` | compagnon Tailscale (sinon cherché à côté de l'exe, ou dans `../Fawkes/target` si ce dépôt est dans le profil de l'utilisateur) |
+| `EYRIE_TAILNET_EXE` | compagnon Tailscale d'Eyrie (sinon `eyrie-tailnet.exe` à côté de l'exe ou dans `target`, puis, sans relais du téléphone, celui de Fawkes) |
+| `EYRIE_MOBILE_LOCAL` | essais : le pont mobile écoute directement ce port local, sans compagnon |
 | `SUITE_FAWKES_DIR` | autre emplacement des sources de Fawkes |
 
 `eyrie.exe` comprend aussi ce que les modules demandent à leur propre exécutable quand ils
@@ -118,7 +136,9 @@ crates/
   suite-sdk/        interface de module, services de l'hôte, adaptateur eframe, thèmes, polices,
                     langue, raccourcis, état versionné, instance unique
   suite-accounts/   comptes de forge communs à toute la suite (liste, coffre, normalisation)
-  eyrie/            l'hôte (exe eyrie) : cases, fenêtres, bac à sable, palette, réglages…
+  suite-mobile/     protocole PC ↔ téléphone : écrans, terminal, appairage, canal Noise
+  eyrie/            l'hôte (exe eyrie) : cases, fenêtres, bac à sable, palette, réglages, pont mobile…
+  eyrie-mobile/     l'application mobile (Slint) : Android, et le bureau pour le développement
   modules/
     fawkes/         Fawkes : sa bibliothèque, plus l'adaptateur
     dragontree/     adaptateurs des cinq autres modules (leur bibliothèque, telle quelle)

@@ -139,3 +139,27 @@ win32-input de ConPTY. Une session Claude qui attend montre ses choix (« 1. Yes
 - Notifications Android quand l'application est en arrière-plan (service au premier plan).
 - iOS.
 - Les actions marquées « changement du module nécessaire » ci-dessus, module par module et avec accord.
+
+## 9. État au 27/10/2026 (soir)
+
+Fait, sur la branche `mobile` (rien de poussé) :
+
+| Pièce | Vérifié par |
+|---|---|
+| Protocole `suite-mobile` | 18 essais : ticket et code, preuves, code de vérification, canal Noise (trame altérée, requête HTTP refusées), messages, différences de terminal, réponses rapides |
+| Pont dans Eyrie | 13 essais : appairage confirmé ou refusé, code faux ou expiré, cinq essais puis ticket brûlé, appareil inconnu, autre compte Tailscale, jeton du compagnon faux, clé du PC du QR, session calme au-delà de 10 s ; bout en bout avec un module factice (écran, action proposée ou non, terminal et saisie, journal, bulle) ; interrupteur |
+| Écrans des modules | essais par module (Fawkes 6, Patronus 7, Owlery 4, Menagerie 5, DragonTree 5, Grimoire 3, Gringotts 27, Carnet 4) |
+| Application | 6 essais (tampon de terminal, couleurs, lignes, magasin) ; captures de toutes les scènes en démonstration |
+| Compagnon `eyrie-tailnet.exe` | `go test` : consigne de relais (boucle locale seulement), en-tête et relais dans les deux sens, relais coupé |
+| Ensemble | essai réel sur le poste : Eyrie (dossier d'essai, `EYRIE_MOBILE_LOCAL`) et l'application de bureau, appairage par le lien, clic « Appairer » par l'automatisation d'interface de Windows, vraies données (Fawkes et un vrai PowerShell en direct, Gringotts, Owlery), journal |
+
+Reste :
+- **Construire l'APK** : le SDK Android (JDK 17 et outils en ligne de commande installés dans
+  `%LOCALAPPDATA%\Android`) attend l'acceptation de ses licences par l'utilisateur
+  (`sdkmanager --licenses`), puis `sdkmanager --install "platform-tools" "platforms;android-36"
+  "build-tools;36.1.0" "ndk;28.2.13676358"` et `tools\android.ps1 -Release -Install`. Le code Android
+  (`android.rs` : caméra du NDK, permission, liens, vibration) n'a pas encore été compilé ni essayé sur un
+  téléphone.
+- **Essai par Tailscale** : recompiler `eyrie.exe` (release) et `tools\compagnon.ps1 -Release`, activer
+  Réglages › Tailscale puis Téléphones ; Tailscale sur le téléphone, même compte.
+- Plus tard : §8, et les actions marquées « changement du module nécessaire » (§6).

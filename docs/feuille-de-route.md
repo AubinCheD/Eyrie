@@ -59,6 +59,17 @@ Le raisonnement est dans `reflexions.md`, le constat technique dans `etat-des-li
   locale, projet ou utilisateur ; stdio, http, sse ; environnement ou en-têtes masqués) ; approuver ou refuser un
   serveur de `.mcp.json` ; le couper ou le remettre pour le dossier. Une seule clé écrite, copie avant.
 
+## Fait le 27/10 (soir) : Eyrie sur le téléphone
+
+Branche `mobile`, rien de poussé ; conception, état et ce qui reste dans `mobile.md` (§9).
+
+- Protocole `suite-mobile` (Noise XX, MessagePack, écrans génériques, terminal en différences, appairage).
+- Pont dans Eyrie : page Réglages › Téléphones (QR code, code à saisir, appareils et droits, journal), confirmation
+  de l'appairage sur le PC, interrupteur, synchro temps réel, liste blanche des actions.
+- `Module::mobile_*` et les écrans des huit modules.
+- Application `eyrie-mobile` (Slint) : bureau et Android (APK à construire : licences du SDK à accepter).
+- Compagnon `eyrie-tailnet.exe` (relais du téléphone).
+
 ## Fait dans le premier jet (23/10)
 
 - Hôte : cases `egui_tiles`, dispositions en un clic et nommées, une par configuration d'écrans,
