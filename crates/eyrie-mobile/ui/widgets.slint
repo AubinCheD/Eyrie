@@ -61,6 +61,8 @@ export struct WaitItem {
     glyph: string,
     color: color,
     text: string,
+    // L'écran du module où y répondre (vide : son accueil).
+    path: string,
 }
 
 export struct NoteItem {
@@ -272,7 +274,7 @@ export component RowView inherits Rectangle {
                     }
                     Pill {
                         text: item.badge;
-                        tone: item.tone >= 2 ? item.tone : 3;
+                        tone: item.tone >= 3 ? item.tone : 1;
                     }
                 }
                 if item.subtitle != "": Text {

@@ -40,6 +40,15 @@ fn initial(name: &str) -> String {
 /// Ce que le PC suit pour ce téléphone : l'écran `(module, chemin)` et le terminal `(module, id)`.
 type Followed = (Option<(String, String)>, Option<(String, String)>);
 
+/// Ce qui a déjà été signalé à l'utilisateur.
+#[derive(Default)]
+struct Signalled {
+    /// Notifications du PC vues jusqu'à cet instant (secondes Unix) ; `None` : rien reçu depuis la connexion.
+    notes_until: Option<u64>,
+    /// Ce qui attendait au dernier relevé ; `None` : rien reçu depuis la connexion.
+    waiting: Option<std::collections::HashSet<String>>,
+}
+
 /// Où l'appairage en cours se connecte.
 #[derive(Clone)]
 struct Target {
@@ -76,6 +85,9 @@ pub struct Controller {
     term_dark: Option<bool>,
     req: u32,
     target: Option<Target>,
+    /// Ce qui a déjà été signalé (bulle ou notification du système) : rien deux fois, et rien à la connexion (l'état
+    /// initial n'est pas une nouveauté).
+    signalled: Signalled,
     /// Démonstration (captures) : rien n'est envoyé.
     demo: bool,
     goto: Option<String>,
@@ -135,6 +147,7 @@ impl Controller {
             term_dark: None,
             req: 0,
             target: None,
+            signalled: Signalled::default(),
             demo,
             goto: None,
         };
@@ -229,6 +242,8 @@ impl Controller {
                 self.set_link(1, "Connecté");
                 // Tout est renvoyé par le PC ; l'écran suivi est redemandé.
                 self.followed = None;
+                self.signalled = Signalled::default();
+                platform::ask_notifications();
                 if let Some(goto) = self.goto.take() {
                     let (tab, path) = goto.split_once('/').unwrap_or((&goto, ""));
                     self.tab = tab.to_string();
@@ -277,10 +292,12 @@ impl Controller {
                 self.refresh_modules();
             }
             ToPhone::Overview { waiting } => {
+                self.signal_waiting(&waiting);
                 self.waiting = waiting;
                 self.refresh_modules();
             }
             ToPhone::Notes { notes, unread } => {
+                self.signal_notes(&notes);
                 self.notes = notes;
                 self.unread = unread;
                 self.refresh_modules();
@@ -296,7 +313,18 @@ impl Controller {
                 self.refresh_screen();
             }
             ToPhone::NoScreen { module, path, reason } => {
-                self.missing.insert((module, path), reason);
+                // L'écran ouvert a disparu (terminal fermé, entrée traitée) : retour à l'écran d'avant.
+                let stack = self.stacks.get_mut(&module);
+                if self.tab == module
+                    && let Some(stack) = stack
+                    && stack.len() > 1
+                    && stack.last() == Some(&path)
+                {
+                    stack.pop();
+                    self.toast(&reason, 1);
+                } else {
+                    self.missing.insert((module, path), reason);
+                }
                 self.refresh_screen();
             }
             ToPhone::Term(f) => {
@@ -312,14 +340,7 @@ impl Controller {
                     self.toast(&message, 2);
                 }
             }
-            ToPhone::Open { module, path } => {
-                self.tab = module.clone();
-                let stack = self.stacks.entry(module).or_insert_with(|| vec![String::new()]);
-                if stack.last() != Some(&path) {
-                    stack.push(path);
-                }
-                self.refresh_all();
-            }
+            ToPhone::Open { module, path } => self.open_module_path(&module, &path),
             ToPhone::Toast { text, tone } => self.toast(&text, view::tone(Some(tone))),
             ToPhone::Bye { reason } => self.set_link(2, &reason),
             ToPhone::Welcome { .. }
@@ -328,6 +349,47 @@ impl Controller {
             | ToPhone::Refused { .. }
             | ToPhone::Pong => {}
         }
+    }
+
+    // --- Ce qui arrive : bulle au premier plan, notification du système en arrière-plan ---
+
+    /// Ce qui se met à attendre (une session Claude…) : une notification si l'application est en arrière-plan ; au
+    /// premier plan, la pastille et la vue d'ensemble suffisent.
+    fn signal_waiting(&mut self, waiting: &[Waiting]) {
+        let now: std::collections::HashSet<String> =
+            waiting.iter().map(|w| format!("{}\u{1f}{}", w.module, w.text)).collect();
+        if let Some(before) = &self.signalled.waiting
+            && platform::in_background()
+        {
+            for w in waiting {
+                if !before.contains(&format!("{}\u{1f}{}", w.module, w.text)) {
+                    let module = self.card(&w.module).map(|c| c.name.clone()).unwrap_or_else(|| w.module.clone());
+                    platform::notify(&format!("attente:{}:{}", w.module, w.text), &module, &w.text);
+                }
+            }
+        }
+        self.signalled.waiting = Some(now);
+    }
+
+    /// Une notification du PC arrive : une bulle au premier plan ; une notification du système en arrière-plan pour
+    /// ce qui demande de l'attention (attention, échec), hors Fawkes (ses sessions qui attendent sont déjà signalées).
+    fn signal_notes(&mut self, notes: &[Note]) {
+        let latest = notes.iter().map(|n| n.at).max().unwrap_or(0);
+        if let Some(until) = self.signalled.notes_until {
+            let fresh: Vec<&Note> = notes.iter().filter(|n| n.at > until && !n.read).collect();
+            if platform::in_background() {
+                for n in fresh.iter().filter(|n| {
+                    matches!(n.tone, suite_mobile::ui::Tone::Warn | suite_mobile::ui::Tone::Danger)
+                        && n.module != "fawkes"
+                }) {
+                    platform::notify(&format!("note:{}:{}", n.at, n.title), &n.title, &n.body);
+                }
+            } else if let Some(n) = fresh.first() {
+                let text = if n.body.is_empty() { n.title.clone() } else { format!("{} : {}", n.title, n.body) };
+                self.toast(&text, view::tone(Some(n.tone)));
+            }
+        }
+        self.signalled.notes_until = Some(self.signalled.notes_until.unwrap_or(0).max(latest));
     }
 
     // --- Ce que l'on montre ---
@@ -414,6 +476,7 @@ impl Controller {
                     glyph: initial(c.map(|c| c.name.as_str()).unwrap_or(&w.module)).into(),
                     color: view::rgb(c.map(|c| c.color).unwrap_or(0x5b8def)),
                     text: w.text.as_str().into(),
+                    path: w.path.clone().unwrap_or_default().into(),
                 }
             })
             .collect();
@@ -658,6 +721,18 @@ impl Controller {
             self.stacks.entry(key.to_string()).or_insert_with(|| vec![String::new()]);
         }
         self.refresh_screen();
+    }
+
+    /// Ouvre un écran d'un module (vide : son accueil, la pile de cet onglet repart de là).
+    pub(crate) fn open_module_path(&mut self, module: &str, path: &str) {
+        self.tab = module.to_string();
+        let stack = self.stacks.entry(module.to_string()).or_insert_with(|| vec![String::new()]);
+        if path.is_empty() {
+            *stack = vec![String::new()];
+        } else if stack.last().map(String::as_str) != Some(path) {
+            stack.push(path.to_string());
+        }
+        self.refresh_all();
     }
 
     pub(crate) fn open_path(&mut self, path: &str) {
@@ -1044,6 +1119,9 @@ fn wire(ui: &AppWindow) {
     });
     ui.on_open_path(|p| {
         with(|c| c.open_path(&p));
+    });
+    ui.on_open_module_path(|m, p| {
+        with(|c| c.open_module_path(&m, &p));
     });
     ui.on_back_requested(|| with(|c| c.back()).unwrap_or(false));
     ui.on_run_act(|a, input| {

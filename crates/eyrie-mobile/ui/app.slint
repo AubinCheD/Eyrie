@@ -97,6 +97,7 @@ export component AppWindow inherits Window {
 
     // --- Vers le code ---
     callback nav-select(string);
+    callback open-module-path(string, string);
     callback open-path(string);
     callback back-requested() -> bool;
     callback run-act(UiAct, string);
@@ -279,6 +280,7 @@ export component AppWindow inherits Window {
                         notes: root.recent-notes;
                         unread: root.unread;
                         open-module(id) => { root.nav-select(id); }
+                        open-wait(id, path) => { root.open-module-path(id, path); }
                         open-notes => { root.open-extra("notes"); }
                     }
                     if root.tab == "plus": MorePage {

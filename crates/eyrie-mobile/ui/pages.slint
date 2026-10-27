@@ -136,6 +136,7 @@ export component OverviewPage inherits Rectangle {
     in property <[NoteItem]> notes;
     in property <int> unread;
     callback open-module(string);
+    callback open-wait(string, string);
     callback open-notes();
     property <length> card-w: (root.width - 3 * Theme.pad) / 2;
     Flickable {
@@ -236,7 +237,7 @@ export component OverviewPage inherits Rectangle {
                     first: i == 0,
                     last: i == root.waiting.length - 1,
                 };
-                tapped => { root.open-module(w.module); }
+                tapped => { root.open-wait(w.module, w.path); }
             }
             SectionHeader {
                 title: "MODULES";

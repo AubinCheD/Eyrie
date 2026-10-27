@@ -7,7 +7,10 @@ use std::path::PathBuf;
 pub type Frame = slint::SharedPixelBuffer<slint::Rgba8Pixel>;
 
 #[cfg(target_os = "android")]
-pub use crate::android::{can_scan, data_dir, device_model, device_name, haptic, open_url, start_scan, stop_scan};
+pub use crate::android::{
+    ask_notifications, can_scan, data_dir, device_model, device_name, haptic, in_background, notify, open_url,
+    start_scan, stop_scan,
+};
 
 #[cfg(not(target_os = "android"))]
 mod desktop {
@@ -48,6 +51,15 @@ mod desktop {
     pub fn start_scan(_on_frame: Box<dyn Fn(Frame) + Send>, _on_code: Box<dyn Fn(String) + Send>) {}
 
     pub fn stop_scan() {}
+
+    /// Sur le bureau, l'application est toujours « au premier plan » : les bulles suffisent.
+    pub fn in_background() -> bool {
+        false
+    }
+
+    pub fn notify(_tag: &str, _title: &str, _body: &str) {}
+
+    pub fn ask_notifications() {}
 }
 
 #[cfg(not(target_os = "android"))]

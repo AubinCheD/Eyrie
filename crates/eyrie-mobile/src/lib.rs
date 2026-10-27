@@ -130,13 +130,14 @@ fn capture(ui: &AppWindow, path: std::path::PathBuf) {
 #[unsafe(no_mangle)]
 fn android_main(app: slint::android::AndroidApp) {
     android::init(app.clone());
-    let listener = |event: &slint::android::android_activity::PollEvent<'_>| {
-        if let slint::android::android_activity::PollEvent::Main(
-            slint::android::android_activity::MainEvent::Resume { .. },
-        ) = event
-        {
+    use slint::android::android_activity::{MainEvent, PollEvent};
+    let listener = |event: &PollEvent<'_>| match event {
+        PollEvent::Main(MainEvent::Resume { .. }) => {
+            android::set_foreground(true);
             app::with(|c| c.resumed());
         }
+        PollEvent::Main(MainEvent::Pause) => android::set_foreground(false),
+        _ => {}
     };
     if slint::android::init_with_event_listener(app, listener).is_ok() {
         let _ = run();

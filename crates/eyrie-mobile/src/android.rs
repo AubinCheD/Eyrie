@@ -132,6 +132,126 @@ pub fn can_scan() -> bool {
     true
 }
 
+/// L'activité est-elle au premier plan ? Tenue par les événements d'android-activity (`lib.rs`).
+static FOREGROUND: AtomicBool = AtomicBool::new(true);
+
+pub fn set_foreground(yes: bool) {
+    FOREGROUND.store(yes, Ordering::Relaxed);
+}
+
+pub fn in_background() -> bool {
+    !FOREGROUND.load(Ordering::Relaxed)
+}
+
+const NOTIFICATIONS: &str = "android.permission.POST_NOTIFICATIONS";
+
+/// Android 13 et suivants demandent la permission d'afficher des notifications ; demandée une fois appairé.
+pub fn ask_notifications() {
+    with_java(|env, activity| {
+        let sdk = env.get_static_field("android/os/Build$VERSION", "SDK_INT", "I")?.i()?;
+        if sdk < 33 {
+            return Ok(());
+        }
+        let p = env.new_string(NOTIFICATIONS)?;
+        let granted =
+            env.call_method(activity, "checkSelfPermission", "(Ljava/lang/String;)I", &[JValue::Object(&p)])?.i()? == 0;
+        if !granted {
+            let list = env.new_object_array(1, "java/lang/String", &p)?;
+            env.call_method(
+                activity,
+                "requestPermissions",
+                "([Ljava/lang/String;I)V",
+                &[JValue::Object(&list), JValue::Int(8)],
+            )?;
+        }
+        Ok(())
+    });
+}
+
+/// Une notification du système (application en arrière-plan) ; la toucher rouvre l'application. `tag` : une même
+/// étiquette remplace la notification précédente au lieu de s'ajouter.
+pub fn notify(tag: &str, title: &str, body: &str) {
+    with_java(|env, activity| {
+        let service = env.new_string("notification")?;
+        let nm = env
+            .call_method(
+                activity,
+                "getSystemService",
+                "(Ljava/lang/String;)Ljava/lang/Object;",
+                &[JValue::Object(&service)],
+            )?
+            .l()?;
+        let channel_id = env.new_string("eyrie")?;
+        let channel_name = env.new_string("Ce qui vous attend sur le PC")?;
+        // IMPORTANCE_HIGH : une session Claude qui attend mérite d'apparaître en haut de l'écran.
+        let channel = env.new_object(
+            "android/app/NotificationChannel",
+            "(Ljava/lang/String;Ljava/lang/CharSequence;I)V",
+            &[JValue::Object(&channel_id), JValue::Object(&channel_name), JValue::Int(4)],
+        )?;
+        env.call_method(
+            &nm,
+            "createNotificationChannel",
+            "(Landroid/app/NotificationChannel;)V",
+            &[JValue::Object(&channel)],
+        )?;
+        let pm = env.call_method(activity, "getPackageManager", "()Landroid/content/pm/PackageManager;", &[])?.l()?;
+        let package = env.call_method(activity, "getPackageName", "()Ljava/lang/String;", &[])?.l()?;
+        let launch = env
+            .call_method(
+                &pm,
+                "getLaunchIntentForPackage",
+                "(Ljava/lang/String;)Landroid/content/Intent;",
+                &[JValue::Object(&package)],
+            )?
+            .l()?;
+        // FLAG_IMMUTABLE | FLAG_UPDATE_CURRENT.
+        let pending = env
+            .call_static_method(
+                "android/app/PendingIntent",
+                "getActivity",
+                "(Landroid/content/Context;ILandroid/content/Intent;I)Landroid/app/PendingIntent;",
+                &[
+                    JValue::Object(activity),
+                    JValue::Int(0),
+                    JValue::Object(&launch),
+                    JValue::Int(0x0400_0000 | 0x0800_0000),
+                ],
+            )?
+            .l()?;
+        let builder = env.new_object(
+            "android/app/Notification$Builder",
+            "(Landroid/content/Context;Ljava/lang/String;)V",
+            &[JValue::Object(activity), JValue::Object(&channel_id)],
+        )?;
+        let info =
+            env.call_method(activity, "getApplicationInfo", "()Landroid/content/pm/ApplicationInfo;", &[])?.l()?;
+        let icon = env.get_field(&info, "icon", "I")?.i()?;
+        const B: &str = "Landroid/app/Notification$Builder;";
+        env.call_method(&builder, "setSmallIcon", format!("(I){B}"), &[JValue::Int(icon)])?;
+        let t = env.new_string(title)?;
+        let b = env.new_string(body)?;
+        env.call_method(&builder, "setContentTitle", format!("(Ljava/lang/CharSequence;){B}"), &[JValue::Object(&t)])?;
+        env.call_method(&builder, "setContentText", format!("(Ljava/lang/CharSequence;){B}"), &[JValue::Object(&b)])?;
+        env.call_method(
+            &builder,
+            "setContentIntent",
+            format!("(Landroid/app/PendingIntent;){B}"),
+            &[JValue::Object(&pending)],
+        )?;
+        env.call_method(&builder, "setAutoCancel", format!("(Z){B}"), &[JValue::Bool(1)])?;
+        let n = env.call_method(&builder, "build", "()Landroid/app/Notification;", &[])?.l()?;
+        let tag = env.new_string(tag)?;
+        env.call_method(
+            &nm,
+            "notify",
+            "(Ljava/lang/String;ILandroid/app/Notification;)V",
+            &[JValue::Object(&tag), JValue::Int(1), JValue::Object(&n)],
+        )?;
+        Ok(())
+    });
+}
+
 const CAMERA: &str = "android.permission.CAMERA";
 
 fn camera_granted() -> bool {
