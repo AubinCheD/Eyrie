@@ -89,10 +89,12 @@ mod tests {
         let size = 64;
         let px = super::render(size);
         let at = |x: usize, y: usize| <[u8; 4]>::try_from(&px[(y * size + x) * 4..][..4]).unwrap();
-        assert_eq!(at(0, 0)[3], 0, "hors de la tuile, transparent");
-        assert_eq!(at(4, 31), [0x1b, 0x1d, 0x22, 255], "la tuile");
+        assert_eq!(at(0, 0)[3], 0, "coin hors du nid, transparent");
+        for (x, y) in [(1, 32), (62, 32), (32, 1), (32, 62)] {
+            assert_eq!(at(x, y)[3], 255, "le nid remplit l'icône, bord à bord ({x}, {y})");
+        }
         assert_eq!(at(31, 31), [0xe8, 0xb8, 0x4a, 255], "le cœur doré");
-        assert_eq!(at(31, 22), [0xf2, 0x6d, 0x3b, 255], "l'œuf du haut, aux couleurs de Fawkes");
+        assert_eq!(at(31, 21), [0xf2, 0x6d, 0x3b, 255], "l'œuf du haut, aux couleurs de Fawkes");
     }
 
     #[cfg(windows)]
