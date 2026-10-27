@@ -11,6 +11,13 @@ sautées à la demande de l'utilisateur : les choix ci-dessous sont les miens, m
   demande des actions. Une action faite au téléphone est faite *sur le PC*, par le module concerné : l'écran du PC
   change de lui-même, comme si l'utilisateur avait cliqué. Eyrie le signale d'une bulle discrète (« 📱 Pixel 8 :
   Patronus › Lancer « build » ») et l'écrit au journal du pont.
+- **Par le module lui-même, jamais à côté** (demande du 27/10 au soir : « TOUTES les commandes du téléphone doivent
+  s'exécuter sur le PC, sur DragonTree aussi ») : une commande du téléphone prend le chemin du bouton du module —
+  sa file d'opérations, ses comptes et identifiants, ses dialogues et notifications, son état « occupé ». Le module
+  montre l'opération pendant qu'elle se fait et le téléphone lit ce que le module en dit. Une fusion en conflit
+  est celle de DragonTree, un conteneur arrêté l'est par Menagerie, un diff appliqué l'est par Patronus. Seules
+  les *lectures* que le module ne garde pas (le diff d'un fichier, le journal d'un conteneur) sont faites à part,
+  sur le PC, dans un fil.
 - **Temps réel** : le PC pousse ce qui change (pastilles, vue d'ensemble, notifications, écran ouvert, terminal
   suivi) ; rien n'est demandé en boucle par le téléphone.
 - **Un module à la fois** : une barre de navigation en bas (Ensemble, trois modules, Plus), un écran par module,
@@ -111,18 +118,21 @@ win32-input de ConPTY. Une session Claude qui attend montre ses choix (« 1. Yes
 | Module | Écrans | Actions | Limites |
 |---|---|---|---|
 | Fawkes | groupes et terminaux (état, Claude qui attend), terminal en direct | saisie, touches, réponses rapides à Claude, nouveau terminal (dossiers récents, shell ou Claude), redémarrer, veille/réveil, fermer, Remote Control, montrer sur le PC | — |
-| Patronus | tâches, boîte de réception, détail d'une exécution (journal) | lancer (avec ou sans consigne), arrêter, tout arrêter, pause, marquer lu, archiver, appliquer le diff, supprimer le worktree | — |
+| Patronus | tâches, boîte de réception, détail d'une exécution (journal) | lancer (avec ou sans consigne), arrêter, tout arrêter, pause, marquer lu, archiver, appliquer le diff, supprimer le worktree (ces deux-là par les boutons de Patronus : `apply_diff`, `drop_worktree`, suivis par `run_job`) | — |
 | Owlery | boîte de réception en direct, par sorte ; détail | marquer lue ou non lue, traitée, reporter à demain, ignorer le dépôt, corriger avec Claude (puis Fawkes), ouvrir sur le téléphone ou le PC, actualiser | — |
-| Menagerie | services gérés (état, journal), ports ouverts, Docker | démarrer, arrêter, relancer un service géré ; arrêter un processus ; conteneurs (démarrer, arrêter, relancer, journaux) | — |
-| DragonTree | dépôts ; dans un dépôt : modifications et diff en couleurs, historique et commits (fichiers, diff), branches locales et distantes, remises, étiquettes, worktrees, opération en cours | fetch, pull (ou avec rebase), push (ou forcé avec bail), publier ; indexer, désindexer, annuler (un fichier ou tout), valider, corriger le dernier commit ; basculer, nouvelle branche, renommer, supprimer, suivre une distante, fusionner, rebaser ; cherry-pick, revert, reset soft/mixed/hard, sortir un commit ; mettre de côté, appliquer, retirer, jeter ; étiquette (créer, pousser, supprimer) ; supprimer et élaguer les worktrees ; continuer, passer, abandonner ; ouvrir sur le PC | git direct par `dragontree-git`, avec son gestionnaire d'identifiants (pas les comptes de DragonTree) ; conflits à résoudre sur le PC |
+| Menagerie | services gérés (état, journal), ports ouverts, Docker | démarrer, arrêter, relancer un service géré ; arrêter un processus (`kill_program`) ; conteneurs (démarrer, arrêter, relancer par `docker_action`, suivis par `docker_job_of` ; journaux) | — |
+| DragonTree | dépôts ; dans un dépôt : modifications et diff en couleurs, historique et commits (fichiers, diff), branches locales et distantes, remises, étiquettes, worktrees, opération en cours ; ce que fait DragonTree (progression) et ce qu'il a donné, d'où que vienne l'opération | fetch, pull (fusion ou rebase), push (ou forcé avec bail), publier ; indexer, désindexer, annuler (un fichier ou tout), valider, corriger le dernier commit ; conflits : garder une version, marquer résolu ; basculer, nouvelle branche, renommer, supprimer, suivre une distante, fusionner, rebaser ; cherry-pick, revert, reset soft/mixed/hard, sortir un commit ; mettre de côté, appliquer, retirer, jeter ; étiquette (créer, pousser, supprimer) ; supprimer et élaguer les worktrees ; continuer, passer, abandonner ; afficher dans DragonTree | tout par DragonTree (`queue_operation`) : le dépôt regardé est ouvert dans un onglet de fond, l'opération passe par sa file, avec le compte associé au dépôt, sa progression, ses notifications et son bandeau de conflits sur le PC. Un conflit se règle fichier par fichier en gardant une version, ou sur le PC (éditeur de conflits de DragonTree) |
 | Grimoire | profils, limites, serveurs MCP | ouvrir sur le PC | — |
 | Gringotts | limites en cours, coût du jour, conversations | relire | — |
 | Carnet | notes du dépôt courant et des autres | ajouter une ligne | — |
 | tous | vue d'ensemble (ce qui attend mène à son écran), notifications, commandes de la palette (« sur le PC ») | | |
 
 Les modules voisins ont reçu, avec l'accord du 27/10, de petites API publiques pour cela (branche `suite/mobile` de
-Fawkes, Owlery et Menagerie) : `close_terminal`, `remote_control` ; `state`, `mark`, `mute`, `undo`,
-`work_with_claude`, `knows_local_dir` ; `managed`, `start_service`, `stop_service`, `restart_service`.
+Fawkes, Owlery, Menagerie, Patronus et DragonTree) : `close_terminal`, `remote_control` ; `state`, `mark`, `mute`,
+`undo`, `work_with_claude`, `knows_local_dir` ; `managed`, `start_service`, `stop_service`, `restart_service`,
+`docker_action`, `docker_job_of`, `kill_program` ; `apply_diff`, `drop_worktree`, `run_job` ; `repo_tab`,
+`open_repo_tab`, `show_repo`, `refresh_repo`, `queue_operation` (`RemoteOp`), `cancel_operation`,
+`RepoTab::outcome`.
 
 ## 7. L'application
 
@@ -155,7 +165,7 @@ Fait, sur la branche `mobile` (rien de poussé) :
 |---|---|
 | Protocole `suite-mobile` | 18 essais : ticket et code, preuves, code de vérification, canal Noise (trame altérée, requête HTTP refusées), messages, différences de terminal, réponses rapides |
 | Pont dans Eyrie | 13 essais : appairage confirmé ou refusé, code faux ou expiré, cinq essais puis ticket brûlé, appareil inconnu, autre compte Tailscale, jeton du compagnon faux, clé du PC du QR, session calme au-delà de 10 s ; bout en bout avec un module factice (écran, action proposée ou non, terminal et saisie, journal, bulle) ; interrupteur |
-| Écrans des modules | essais par module (Fawkes 6, Patronus 7, Owlery 4, Menagerie 5, DragonTree 5, Grimoire 3, Gringotts 27, Carnet 4) |
+| Écrans des modules | essais par module (Fawkes 6, Patronus 7, Owlery 4, Menagerie 5, DragonTree 10, Grimoire 3, Gringotts 27, Carnet 4) |
 | Application | 6 essais (tampon de terminal, couleurs, lignes, magasin) ; captures de toutes les scènes en démonstration |
 | Compagnon `eyrie-tailnet.exe` | `go test` : consigne de relais (boucle locale seulement), en-tête et relais dans les deux sens, relais coupé |
 | Ensemble | essai réel sur le poste : Eyrie (dossier d'essai, `EYRIE_MOBILE_LOCAL`) et l'application de bureau, appairage par le lien, clic « Appairer » par l'automatisation d'interface de Windows, vraies données (Fawkes et un vrai PowerShell en direct, Gringotts, Owlery), journal |
@@ -169,6 +179,6 @@ Reste :
   téléphone.
 - **Essai par Tailscale** : recompiler `eyrie.exe` (release) et `tools\compagnon.ps1 -Release`, activer
   Réglages › Tailscale puis Téléphones ; Tailscale sur le téléphone, même compte.
-- Les branches `suite/mobile` de Fawkes, Owlery et Menagerie (API pour le téléphone) sont à fusionner avec celle
-  d'Eyrie : Eyrie les compile par chemin, il lui faut donc ces branches extraites.
+- Les branches `suite/mobile` de Fawkes, Owlery, Menagerie, Patronus et DragonTree (API pour le téléphone) sont à
+  fusionner avec celle d'Eyrie : Eyrie les compile par chemin, il lui faut donc ces branches extraites.
 - Plus tard : §8.
