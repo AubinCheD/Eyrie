@@ -273,7 +273,10 @@ fn general(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui) {
 
     section(ui, tr("Zoom"));
     let mut zoom = suite.core.st.zoom;
-    if ui.add(egui::Slider::new(&mut zoom, 0.8..=1.6).step_by(0.05).text(tr("taille de l'interface"))).changed() {
+    if ui
+        .add(egui::Slider::new(&mut zoom, crate::persist::ZOOM).step_by(0.05).text(tr("taille de l'interface")))
+        .changed()
+    {
         suite.core.st.zoom = zoom;
         theme::apply(ui.ctx(), suite.core.host.palette(), zoom);
     }

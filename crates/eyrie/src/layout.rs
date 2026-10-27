@@ -140,6 +140,25 @@ pub fn preset(window: u64, kind: Preset, panes: Vec<Pane>) -> Tree<Pane> {
 }
 
 /// Les cases d'un arbre, dans l'ordre de l'affichage (de la racine, enfants dans l'ordre).
+/// L'arbre relu d'un fichier est-il un arbre ? Chaque case atteinte depuis la racine existe et n'est atteinte qu'une
+/// fois : une boucle (un conteneur parmi ses propres descendants) ferait tourner le dessin sans fin, à chaque
+/// lancement.
+pub fn is_sound(tree: &Tree<Pane>) -> bool {
+    let mut stack: Vec<TileId> = tree.root.into_iter().collect();
+    let mut seen = std::collections::HashSet::new();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            return false;
+        }
+        match tree.tiles.get(id) {
+            Some(Tile::Pane(_)) => {}
+            Some(Tile::Container(c)) => stack.extend(c.children_vec()),
+            None => return false,
+        }
+    }
+    true
+}
+
 pub fn panes(tree: &Tree<Pane>) -> Vec<(TileId, Pane)> {
     let mut out = Vec::new();
     let mut stack: Vec<TileId> = tree.root.into_iter().collect();

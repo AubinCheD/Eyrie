@@ -141,8 +141,41 @@ pub fn state_path(dir: &Path) -> PathBuf {
     dir.join("state.json")
 }
 
+/// Bornes du zoom (celles du réglage).
+pub const ZOOM: std::ops::RangeInclusive<f32> = 0.8..=1.6;
+
 pub fn load(dir: &Path) -> suite_sdk::state::Loaded<SuiteState> {
-    suite_sdk::state::load_json(&state_path(dir), VERSION)
+    let mut loaded: suite_sdk::state::Loaded<SuiteState> = suite_sdk::state::load_json(&state_path(dir), VERSION);
+    loaded.problems.extend(loaded.value.sanitize());
+    loaded
+}
+
+impl SuiteState {
+    /// Ce qui, relu d'un fichier abîmé ou modifié à la main, empêcherait Eyrie de démarrer : zoom hors de ses bornes
+    /// (nul, négatif, infini), disposition qui n'est pas un arbre. Rend ce qui a été écarté.
+    fn sanitize(&mut self) -> Vec<String> {
+        let mut problems = Vec::new();
+        if !self.zoom.is_finite() || !ZOOM.contains(&self.zoom) {
+            let zoom = if self.zoom.is_finite() { self.zoom.clamp(*ZOOM.start(), *ZOOM.end()) } else { 1.0 };
+            problems.push(format!("Zoom {} hors des bornes : ramené à {zoom}.", self.zoom));
+            self.zoom = zoom;
+        }
+        let sound = |l: &SavedLayout| {
+            crate::layout::is_sound(&l.main) && l.windows.iter().all(|w| crate::layout::is_sound(&w.tree))
+        };
+        if self.layout.as_ref().is_some_and(|l| !sound(l)) {
+            self.layout = None;
+            problems.push("Disposition enregistrée illisible : disposition par défaut.".into());
+        }
+        self.layouts.retain(|name, l| {
+            let keep = sound(l);
+            if !keep {
+                problems.push(format!("Disposition « {name} » illisible : retirée."));
+            }
+            keep
+        });
+        problems
+    }
 }
 
 pub fn save(dir: &Path, st: &SuiteState) -> std::io::Result<()> {
@@ -167,5 +200,30 @@ mod tests {
         assert_eq!(st.zoom, 1.2);
         let back = serde_json::to_value(&st).unwrap();
         assert_eq!(back["plus_tard"], serde_json::json!([1, 2]));
+    }
+
+    /// Un `state.json` abîmé ou modifié à la main n'empêche pas Eyrie de démarrer : le zoom revient dans ses bornes, une
+    /// disposition qui n'est pas un arbre (boucle) est écartée.
+    #[test]
+    fn a_damaged_state_is_brought_back_within_bounds() {
+        for (zoom, want) in [(0.0, 0.8), (-3.0, 0.8), (40.0, 1.6), (f32::NAN, 1.0), (1.2, 1.2)] {
+            let mut st = SuiteState { zoom, ..SuiteState::default() };
+            st.sanitize();
+            assert_eq!(st.zoom, want, "{zoom}");
+        }
+        let mut tiles = egui_tiles::Tiles::default();
+        let pane = tiles.insert_pane(Pane::module("fawkes", suite_sdk::ViewInfo::MAIN));
+        let tabs = tiles.insert_tab_tile(vec![pane]);
+        if let Some(egui_tiles::Tile::Container(c)) = tiles.get_mut(tabs) {
+            c.add_child(tabs);
+        }
+        let looped = SavedLayout { main: Tree::new(egui::Id::new("boucle"), tabs, tiles), windows: Vec::new() };
+        let fine = SavedLayout { main: Tree::empty(egui::Id::new("vide")), windows: Vec::new() };
+        let mut st = SuiteState { layout: Some(looped.clone()), ..SuiteState::default() };
+        st.layouts.insert("boucle".into(), looped);
+        st.layouts.insert("vide".into(), fine);
+        assert_eq!(st.sanitize().len(), 2);
+        assert_eq!(st.layout, None);
+        assert_eq!(st.layouts.keys().collect::<Vec<_>>(), ["vide"]);
     }
 }
