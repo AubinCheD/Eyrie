@@ -3,7 +3,7 @@
 //! les fils réseau lui écrivent par `slint::invoke_from_event_loop`.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -90,10 +90,218 @@ fn bubble_time(tone: i32) -> Duration {
 }
 
 /// Une action envoyée au PC, en attente de son résultat : son bouton est grisé, avec un indicateur.
+#[derive(Debug, PartialEq)]
 struct Pending {
     module: String,
     path: String,
     act: String,
+}
+
+/// Les demandes au PC : leur numéro (actions et commandes), et les actions envoyées sans résultat encore.
+#[derive(Default)]
+struct Pendings {
+    req: u32,
+    sent: HashMap<u32, Pending>,
+}
+
+impl Pendings {
+    /// Un nouveau numéro de demande.
+    fn next(&mut self) -> u32 {
+        self.req += 1;
+        self.req
+    }
+
+    /// Une action part : son numéro ; `None` si la même attend encore son résultat (deux touchers : un seul envoi,
+    /// pas deux Pull dans la file de DragonTree).
+    fn send(&mut self, module: &str, path: &str, act: &str) -> Option<u32> {
+        if self.sent.values().any(|p| p.module == module && p.path == path && p.act == act) {
+            return None;
+        }
+        let req = self.next();
+        self.sent.insert(req, Pending { module: module.into(), path: path.into(), act: act.into() });
+        Some(req)
+    }
+
+    /// Le résultat d'une demande, ou son délai passé : l'action qu'elle portait, une seule fois (un résultat arrivé
+    /// après le délai ne fait plus rien).
+    fn answer(&mut self, req: u32) -> Option<Pending> {
+        self.sent.remove(&req)
+    }
+
+    /// Les actions en cours dans cet écran.
+    fn acts(&self, key: &(String, String)) -> HashSet<String> {
+        let here = self.sent.values().filter(|p| p.module == key.0 && p.path == key.1);
+        here.map(|p| p.act.clone()).collect()
+    }
+}
+
+/// Ce qu'un geste de navigation demande à la liste.
+#[derive(Debug, PartialEq)]
+enum Moved {
+    /// Un autre écran, à montrer.
+    Screen,
+    /// Le même écran, sa liste remontée en haut.
+    Top,
+}
+
+/// La navigation : l'onglet du bas, la pile d'écrans de chaque module, la position de la liste et le texte cherché
+/// de chaque écran. Sans interface : le contrôleur la suit et l'affiche.
+struct Nav {
+    tab: String,
+    stacks: HashMap<String, Vec<String>>,
+    /// La position de la liste de chaque écran quitté, rendue au retour ; un écran ouvert de nouveau part du haut.
+    scroll: HashMap<(String, String), f32>,
+    /// Le texte cherché dans chaque écran qui a une recherche (filtrée sur le téléphone).
+    search: HashMap<(String, String), String>,
+}
+
+impl Nav {
+    fn new() -> Nav {
+        Nav { tab: "ensemble".into(), stacks: HashMap::new(), scroll: HashMap::new(), search: HashMap::new() }
+    }
+
+    fn is_module_tab(&self) -> bool {
+        self.tab != "ensemble" && self.tab != "plus" && !EXTRAS.contains(&self.tab.as_str())
+    }
+
+    fn top_path(&self) -> String {
+        self.stacks.get(&self.tab).and_then(|s| s.last().cloned()).unwrap_or_default()
+    }
+
+    /// L'écran affiché : (module, chemin).
+    fn key(&self) -> (String, String) {
+        (self.tab.clone(), self.top_path())
+    }
+
+    /// Cet écran est celui qui est affiché.
+    fn is_shown(&self, key: &(String, String)) -> bool {
+        self.is_module_tab() && key.0 == self.tab && key.1 == self.top_path()
+    }
+
+    fn stack(&mut self) -> &mut Vec<String> {
+        self.stacks.entry(self.tab.clone()).or_insert_with(|| vec![String::new()])
+    }
+
+    /// Retient la position `y` de la liste de `shown` (l'écran dont les lignes sont montrées), s'il est affiché.
+    fn remember(&mut self, shown: Option<&(String, String)>, y: f32) {
+        if let Some(key) = shown
+            && self.is_shown(key)
+        {
+            self.scroll.insert(key.clone(), y);
+        }
+    }
+
+    /// La position où rendre la liste de cet écran (0 : en haut).
+    fn scroll_of(&self, key: &(String, String)) -> f32 {
+        self.scroll.get(key).copied().unwrap_or(0.0)
+    }
+
+    fn search_of(&self, key: &(String, String)) -> String {
+        self.search.get(key).cloned().unwrap_or_default()
+    }
+
+    /// Toucher un onglet du bas. Celui du module affiché remonte d'abord en haut de sa liste (`listed` : une liste
+    /// est montrée ; `at_top` : elle y est déjà), puis ramène à l'accueil du module.
+    fn select_bottom(&mut self, key: &str, listed: bool, at_top: bool) -> Moved {
+        if key == self.tab && self.is_module_tab() {
+            if listed && !at_top {
+                self.scroll.remove(&self.key());
+                return Moved::Top;
+            }
+            self.stacks.insert(key.to_string(), vec![String::new()]);
+        }
+        self.tab = key.to_string();
+        if self.is_module_tab() {
+            self.stack();
+        }
+        Moved::Screen
+    }
+
+    /// Ouvre un écran d'un module (vide : son accueil, la pile de cet onglet repart de là) ; un écran poussé part du
+    /// haut.
+    fn open_module_path(&mut self, module: &str, path: &str) {
+        self.tab = module.to_string();
+        let stack = self.stack();
+        if path.is_empty() {
+            *stack = vec![String::new()];
+        } else if stack.last().map(String::as_str) != Some(path) {
+            stack.push(path.to_string());
+            self.scroll.remove(&(module.to_string(), path.to_string()));
+        }
+    }
+
+    /// Ouvre un sous-écran du module affiché : il part du haut. `false` : pas de module affiché.
+    fn open_path(&mut self, path: &str) -> bool {
+        if !self.is_module_tab() {
+            return false;
+        }
+        self.stack().push(path.to_string());
+        self.scroll.remove(&(self.tab.clone(), path.to_string()));
+        true
+    }
+
+    /// Passe à un onglet de l'écran : il remplace l'écran affiché dans la pile (le retour mène à ce qu'il y avait
+    /// dessous) et garde sa position dans la liste ; l'onglet affiché remonte en haut. `None` : pas de module affiché.
+    fn select_tab(&mut self, path: &str) -> Option<Moved> {
+        if !self.is_module_tab() {
+            return None;
+        }
+        if self.top_path() == path {
+            self.scroll.remove(&self.key());
+            return Some(Moved::Top);
+        }
+        let stack = self.stack();
+        match stack.last_mut() {
+            Some(top) => *top = path.to_string(),
+            None => stack.push(path.to_string()),
+        }
+        Some(Moved::Screen)
+    }
+
+    /// Retour : l'écran d'avant dans le module, sinon la vue d'ensemble ; d'une page de « Plus », « Plus ». `false` :
+    /// rien à quitter.
+    fn back(&mut self) -> bool {
+        if self.is_module_tab() {
+            let stack = self.stack();
+            if stack.len() > 1 {
+                stack.pop();
+            } else {
+                self.tab = "ensemble".into();
+            }
+            return true;
+        }
+        match self.tab.as_str() {
+            t if EXTRAS.contains(&t) => self.tab = "plus".into(),
+            "plus" => self.tab = "ensemble".into(),
+            _ => return false,
+        }
+        true
+    }
+
+    /// Un écran a disparu sur le PC (terminal fermé, entrée traitée) : s'il était affiché au-dessus d'un autre, retour
+    /// à celui-ci (`true`).
+    fn gone(&mut self, module: &str, path: &str) -> bool {
+        if self.tab != module {
+            return false;
+        }
+        let stack = self.stack();
+        if stack.len() > 1 && stack.last().map(String::as_str) == Some(path) {
+            stack.pop();
+            return true;
+        }
+        false
+    }
+
+    /// Développement : l'onglet et le chemin à ouvrir (`fawkes/t/3`).
+    fn goto(&mut self, goto: &str) {
+        let (tab, path) = goto.split_once('/').unwrap_or((goto, ""));
+        self.tab = tab.to_string();
+        let mut stack = vec![String::new()];
+        if !path.is_empty() {
+            stack.push(path.to_string());
+        }
+        self.stacks.insert(tab.to_string(), stack);
+    }
 }
 
 /// Les onglets du dernier écran qui en avait, avec son titre : montrés le temps qu'un onglet voisin arrive du PC.
@@ -138,8 +346,7 @@ pub struct Controller {
     commands: Vec<CommandCard>,
     screens: HashMap<(String, String), Screen>,
     missing: HashMap<(String, String), String>,
-    tab: String,
-    stacks: HashMap<String, Vec<String>>,
+    nav: Nav,
     followed: Option<Followed>,
     term: TermBuf,
     term_model: Rc<VecModel<TermRow>>,
@@ -149,11 +356,7 @@ pub struct Controller {
     /// L'écran dont les lignes sont affichées, et leurs clés et empreintes (voir [`view::patch`]).
     shown_for: Option<(String, String)>,
     shown: Vec<(String, u64)>,
-    /// La position de la liste de chaque écran quitté, rendue au retour ; un écran ouvert de nouveau part du haut.
-    scroll: HashMap<(String, String), f32>,
     scroll_seq: i32,
-    /// Le texte cherché dans chaque écran qui a une recherche (filtrée sur le téléphone).
-    search: HashMap<(String, String), String>,
     /// Les lignes des diffs passent à la ligne (le temps de la session).
     diff_wrap: bool,
     /// Ce qui attend a été reçu au moins une fois : sinon, la vue d'ensemble attend le PC.
@@ -167,9 +370,8 @@ pub struct Controller {
     bubbles: RefCell<Bubbles>,
     bubble_timer: slint::Timer,
     last_tabs: Option<Tabs>,
-    req: u32,
-    /// Les actions envoyées sans résultat du PC, par numéro de demande : pas de second envoi de la même.
-    pending: HashMap<u32, Pending>,
+    /// Les actions envoyées sans résultat du PC : pas de second envoi de la même.
+    pendings: Pendings,
     target: Option<Target>,
     /// Ce qui a déjà été signalé (bulle ou notification du système) : rien deux fois, et rien à la première connexion
     /// à un PC (l'état initial n'est pas une nouveauté). Après une coupure, ou un arrêt de l'application par Android,
@@ -276,8 +478,7 @@ impl Controller {
             commands: Vec::new(),
             screens: HashMap::new(),
             missing: HashMap::new(),
-            tab: "ensemble".into(),
-            stacks: HashMap::new(),
+            nav: Nav::new(),
             followed: None,
             term: TermBuf::default(),
             term_model,
@@ -285,9 +486,7 @@ impl Controller {
             models,
             shown_for: None,
             shown: Vec::new(),
-            scroll: HashMap::new(),
             scroll_seq: 0,
-            search: HashMap::new(),
             diff_wrap: false,
             got_overview: false,
             data_at: None,
@@ -296,8 +495,7 @@ impl Controller {
             bubbles: RefCell::default(),
             bubble_timer: slint::Timer::default(),
             last_tabs: None,
-            req: 0,
-            pending: HashMap::new(),
+            pendings: Pendings::default(),
             target: None,
             signalled: Signalled::default(),
             demo,
@@ -495,13 +693,7 @@ impl Controller {
                 self.followed = None;
                 platform::ask_notifications();
                 if let Some(goto) = self.goto.take() {
-                    let (tab, path) = goto.split_once('/').unwrap_or((&goto, ""));
-                    self.tab = tab.to_string();
-                    let mut stack = vec![String::new()];
-                    if !path.is_empty() {
-                        stack.push(path.to_string());
-                    }
-                    self.stacks.insert(tab.to_string(), stack);
+                    self.nav.goto(&goto);
                 }
                 self.refresh_all();
             }
@@ -533,7 +725,7 @@ impl Controller {
                 self.cards = modules;
                 self.refresh_modules();
                 // Les lignes de l'écran ne changent pas ; son titre, s'il n'est pas encore arrivé, est le nom du module.
-                if self.is_module_tab() && !self.screens.contains_key(&(self.tab.clone(), self.top_path())) {
+                if self.nav.is_module_tab() && !self.screens.contains_key(&self.nav.key()) {
                     self.refresh_screen();
                 }
             }
@@ -564,7 +756,7 @@ impl Controller {
             ToPhone::Screen { module, path, screen } => {
                 let key = (module, path);
                 self.missing.remove(&key);
-                let shown = self.is_shown(&key);
+                let shown = self.nav.is_shown(&key);
                 self.screens.insert(key, screen);
                 // Un écran qui n'est pas affiché (envoyé avant un changement d'écran) ne touche pas à la liste.
                 if shown {
@@ -573,16 +765,10 @@ impl Controller {
             }
             ToPhone::NoScreen { module, path, reason } => {
                 // L'écran ouvert a disparu (terminal fermé, entrée traitée) : retour à l'écran d'avant.
-                let stack = self.stacks.get_mut(&module);
-                if self.tab == module
-                    && let Some(stack) = stack
-                    && stack.len() > 1
-                    && stack.last() == Some(&path)
-                {
-                    stack.pop();
+                if self.nav.gone(&module, &path) {
                     self.toast(&reason, 1);
                 } else {
-                    let shown = self.is_shown(&(module.clone(), path.clone()));
+                    let shown = self.nav.is_shown(&(module.clone(), path.clone()));
                     self.missing.insert((module, path), reason);
                     if !shown {
                         return;
@@ -597,7 +783,7 @@ impl Controller {
                 }
             }
             ToPhone::Result { req, ok, message } => {
-                let done = self.pending.remove(&req);
+                let done = self.pendings.answer(req);
                 if !ok {
                     self.toast(&message, 4);
                     haptic_error();
@@ -610,7 +796,7 @@ impl Controller {
                     }
                 }
                 if let Some(p) = done
-                    && self.is_shown(&(p.module, p.path))
+                    && self.nav.is_shown(&(p.module, p.path))
                 {
                     self.refresh_screen();
                 }
@@ -817,28 +1003,13 @@ impl Controller {
         view::sync(&self.models.commands, items);
     }
 
-    fn is_module_tab(&self) -> bool {
-        self.tab != "ensemble" && self.tab != "plus" && !EXTRAS.contains(&self.tab.as_str())
-    }
-
-    fn top_path(&self) -> String {
-        self.stacks.get(&self.tab).and_then(|s| s.last().cloned()).unwrap_or_default()
-    }
-
-    /// Cet écran est celui qui est affiché.
-    fn is_shown(&self, key: &(String, String)) -> bool {
-        self.is_module_tab() && key.0 == self.tab && key.1 == self.top_path()
-    }
-
     /// Ce que le téléphone ajoute à cet écran : ses actions en cours, le pliage de ses bandeaux. Un bandeau plié qui
     /// devient plus grave se rouvre (« l'alerte gagne »), un bandeau plié qui se calme retient son nouveau ton (la
     /// prochaine alerte le rouvrira) : ces changements sont retenus.
     fn local(&mut self, key: &(String, String)) -> view::Local {
-        let pending = self.pending.values().filter(|p| p.module == key.0 && p.path == key.1);
-        let pending = pending.map(|p| p.act.clone()).collect();
-        let mut local = view::Local { pending, wrap: self.diff_wrap, ..Default::default() };
+        let mut local = view::Local { pending: self.pendings.acts(key), wrap: self.diff_wrap, ..Default::default() };
         if self.screens.get(key).is_some_and(|s| !s.search.is_empty()) {
-            local.search = self.search.get(key).cloned().unwrap_or_default();
+            local.search = self.nav.search_of(key);
         }
         let pc = self.store.prefs.current.clone().unwrap_or_default();
         let mut changed = Vec::new();
@@ -863,8 +1034,7 @@ impl Controller {
 
     /// Une recherche filtre cet écran : ses bandeaux restent ouverts, sans se plier.
     fn searching(&self, key: &(String, String)) -> bool {
-        self.screens.get(key).is_some_and(|s| !s.search.is_empty())
-            && self.search.get(key).is_some_and(|t| !t.trim().is_empty())
+        self.screens.get(key).is_some_and(|s| !s.search.is_empty()) && !self.nav.search_of(key).trim().is_empty()
     }
 
     /// Plie ou déplie des bandeaux de l'écran affiché (`None` : celui-ci seulement, à l'inverse de son état), sur le
@@ -932,7 +1102,7 @@ impl Controller {
     /// Le titre, les actions et le contenu de l'onglet courant ; ce que le PC doit suivre.
     fn refresh_screen(&mut self) {
         let Some(ui) = self.ui() else { return };
-        let tab = self.tab.clone();
+        let tab = self.nav.tab.clone();
         ui.set_tab(tab.as_str().into());
         let mut screen_follow = None;
         let mut term_follow = None;
@@ -950,9 +1120,9 @@ impl Controller {
             "commandes" => ("Commandes du PC".into(), String::new(), true, Vec::new()),
             "reglages" => ("Réglages".into(), String::new(), true, Vec::new()),
             module => {
-                let path = self.top_path();
+                let path = self.nav.top_path();
                 let key = (module.to_string(), path.clone());
-                let stack_len = self.stacks.get(module).map_or(1, Vec::len);
+                let stack_len = self.nav.stacks.get(module).map_or(1, Vec::len);
                 screen_follow = Some(key.clone());
                 let name = self.card(module).map(|c| c.name.clone()).unwrap_or_else(|| module.to_string());
                 match self.screens.get(&key) {
@@ -975,14 +1145,14 @@ impl Controller {
                 }
             }
         };
-        let module_tab = self.is_module_tab();
-        let key = (tab.clone(), self.top_path());
+        let module_tab = self.nav.is_module_tab();
+        let key = self.nav.key();
         ui.set_loading(module_tab && !self.screens.contains_key(&key));
         ui.set_missing(self.missing.get(&key).cloned().unwrap_or_default().into());
         ui.set_screen_title(title.as_str().into());
         ui.set_subtitle(subtitle.as_str().into());
         ui.set_search_hint(search.into());
-        let path = self.top_path();
+        let path = self.nav.top_path();
         let items = tabs.iter().map(|t| TabItem {
             label: t.label.as_str().into(),
             path: t.path.as_str().into(),
@@ -1047,7 +1217,7 @@ impl Controller {
         }
         self.models.rows.set_vec(items.iter().map(|i| view::ui_row(i, &local)).collect::<Vec<_>>());
         self.shown = items.iter().map(|i| (i.key.clone(), i.sig)).collect();
-        let y = self.scroll.get(&key).copied().unwrap_or(0.0);
+        let y = self.nav.scroll_of(&key);
         self.shown_for = Some(key);
         self.scroll_to(y);
     }
@@ -1062,7 +1232,7 @@ impl Controller {
     /// menu ⋯ perd « Tout replier » le temps de la recherche).
     pub(crate) fn search_edited(&mut self, text: &str) {
         let Some(key) = self.shown_for.clone() else { return };
-        self.search.insert(key, text.to_string());
+        self.nav.search.insert(key, text.to_string());
         self.refresh_screen();
         self.scroll_to(0.0);
     }
@@ -1070,11 +1240,7 @@ impl Controller {
     /// Retient la position de la liste de l'écran affiché, avant d'en changer.
     fn remember_scroll(&mut self) {
         let Some(ui) = self.ui() else { return };
-        if let Some(key) = self.shown_for.clone()
-            && self.is_shown(&key)
-        {
-            self.scroll.insert(key, ui.get_screen_scroll());
-        }
+        self.nav.remember(self.shown_for.as_ref(), ui.get_screen_scroll());
     }
 
     /// Met la liste de l'écran à cette position (0 : en haut).
@@ -1161,67 +1327,38 @@ impl Controller {
 
     pub(crate) fn nav_select(&mut self, key: &str) {
         self.remember_scroll();
-        if key == self.tab && self.is_module_tab() {
-            // Toucher l'onglet du module courant remonte en haut de la liste, puis ramène à son accueil.
-            let at_top = self.ui().is_none_or(|u| u.get_screen_scroll() > -1.0);
-            if self.shown_for.is_some() && !at_top {
-                self.scroll.remove(&(self.tab.clone(), self.top_path()));
-                self.scroll_to(0.0);
-                return;
-            }
-            self.stacks.insert(key.to_string(), vec![String::new()]);
+        // Toucher l'onglet du module courant remonte en haut de la liste, puis ramène à son accueil.
+        let at_top = self.ui().is_none_or(|u| u.get_screen_scroll() > -1.0);
+        match self.nav.select_bottom(key, self.shown_for.is_some(), at_top) {
+            Moved::Top => self.scroll_to(0.0),
+            Moved::Screen => self.refresh_screen(),
         }
-        self.tab = key.to_string();
-        if self.is_module_tab() {
-            self.stacks.entry(key.to_string()).or_insert_with(|| vec![String::new()]);
-        }
-        self.refresh_screen();
     }
 
     /// Ouvre un écran d'un module (vide : son accueil, la pile de cet onglet repart de là).
     pub(crate) fn open_module_path(&mut self, module: &str, path: &str) {
         self.remember_scroll();
-        self.tab = module.to_string();
-        let stack = self.stacks.entry(module.to_string()).or_insert_with(|| vec![String::new()]);
-        if path.is_empty() {
-            *stack = vec![String::new()];
-        } else if stack.last().map(String::as_str) != Some(path) {
-            stack.push(path.to_string());
-            self.scroll.remove(&(module.to_string(), path.to_string()));
-        }
+        self.nav.open_module_path(module, path);
         self.refresh_all();
     }
 
     /// Ouvre un sous-écran du module courant : il part du haut.
     pub(crate) fn open_path(&mut self, path: &str) {
-        if !self.is_module_tab() {
-            return;
-        }
         self.remember_scroll();
-        let stack = self.stacks.entry(self.tab.clone()).or_insert_with(|| vec![String::new()]);
-        stack.push(path.to_string());
-        self.scroll.remove(&(self.tab.clone(), path.to_string()));
-        self.refresh_screen();
+        if self.nav.open_path(path) {
+            self.refresh_screen();
+        }
     }
 
     /// Passe à un onglet de l'écran : il remplace l'écran affiché dans la pile (le retour mène à ce qu'il y avait
     /// dessous) et garde sa position dans la liste. L'onglet affiché : remonte en haut.
     pub(crate) fn select_tab(&mut self, path: &str) {
-        if !self.is_module_tab() {
-            return;
-        }
-        if self.top_path() == path {
-            self.scroll.remove(&(self.tab.clone(), path.to_string()));
-            self.scroll_to(0.0);
-            return;
-        }
         self.remember_scroll();
-        let stack = self.stacks.entry(self.tab.clone()).or_insert_with(|| vec![String::new()]);
-        match stack.last_mut() {
-            Some(top) => *top = path.to_string(),
-            None => stack.push(path.to_string()),
+        match self.nav.select_tab(path) {
+            Some(Moved::Top) => self.scroll_to(0.0),
+            Some(Moved::Screen) => self.refresh_screen(),
+            None => {}
         }
-        self.refresh_screen();
     }
 
     /// Toucher une notification : l'écran du module où elle mène ; sans écran, son texte entier (ou de nouveau
@@ -1255,22 +1392,9 @@ impl Controller {
             }
             _ => {}
         }
-        if self.is_module_tab() {
-            self.remember_scroll();
-            let stack = self.stacks.entry(self.tab.clone()).or_insert_with(|| vec![String::new()]);
-            if stack.len() > 1 {
-                stack.pop();
-                self.refresh_screen();
-                return true;
-            }
-            self.tab = "ensemble".into();
-            self.refresh_screen();
-            return true;
-        }
-        match self.tab.as_str() {
-            t if EXTRAS.contains(&t) => self.tab = "plus".into(),
-            "plus" => self.tab = "ensemble".into(),
-            _ => return false,
+        self.remember_scroll();
+        if !self.nav.back() {
+            return false;
         }
         self.refresh_screen();
         true
@@ -1283,23 +1407,18 @@ impl Controller {
             "@deplier" => return self.fold_bands(None, true),
             _ => {}
         }
-        if !self.is_module_tab() || a.busy {
+        if !self.nav.is_module_tab() || a.busy {
             return;
         }
         if !self.online {
             self.toast("Hors ligne : l'action n'est pas partie.", 3);
             return;
         }
-        let (module, path, act) = (self.tab.clone(), self.top_path(), a.id.to_string());
-        // Une seule fois tant que le PC n'a pas répondu (deux touchers : deux Pull dans la file de DragonTree).
-        if self.pending.values().any(|p| p.module == module && p.path == path && p.act == act) {
-            return;
-        }
-        self.req += 1;
-        let req = self.req;
+        let (module, path) = self.nav.key();
+        // Une seule fois tant que le PC n'a pas répondu.
+        let Some(req) = self.pendings.send(&module, &path, &a.id) else { return };
         let input = (a.has_input).then(|| input.to_string());
-        self.send(ToPc::Action { req, module: module.clone(), path: path.clone(), action: act.clone(), input });
-        self.pending.insert(req, Pending { module, path, act });
+        self.send(ToPc::Action { req, module, path, action: a.id.to_string(), input });
         slint::Timer::single_shot(ANSWER_WITHIN, move || {
             with(|c| c.no_answer(req));
         });
@@ -1308,10 +1427,10 @@ impl Controller {
 
     /// Le PC n'a pas donné le résultat d'une action à temps : elle redevient possible.
     fn no_answer(&mut self, req: u32) {
-        let Some(p) = self.pending.remove(&req) else { return };
+        let Some(p) = self.pendings.answer(req) else { return };
         self.toast("Le PC n'a pas répondu.", 4);
         haptic_error();
-        if self.is_shown(&(p.module, p.path)) {
+        if self.nav.is_shown(&(p.module, p.path)) {
             self.refresh_screen();
         }
     }
@@ -1321,8 +1440,8 @@ impl Controller {
             self.toast("Hors ligne : la commande n'est pas partie.", 3);
             return;
         }
-        self.req += 1;
-        self.send(ToPc::Command { req: self.req, module: c.module.to_string(), id: c.id.to_string() });
+        let req = self.pendings.next();
+        self.send(ToPc::Command { req, module: c.module.to_string(), id: c.id.to_string() });
         self.toast(&format!("« {} » envoyée au PC", c.title), 2);
     }
 
@@ -1469,11 +1588,8 @@ impl Controller {
         self.expanded_notes.clear();
         self.screens.clear();
         self.missing.clear();
-        self.stacks.clear();
-        self.scroll.clear();
-        self.search.clear();
-        self.pending.clear();
-        self.tab = "ensemble".into();
+        self.nav = Nav::new();
+        self.pendings.sent.clear();
         self.followed = None;
         self.term = TermBuf::default();
         self.term_model.set_vec(Vec::new());
@@ -1858,6 +1974,118 @@ mod tests {
         assert_eq!(b.next().map(|(t, _)| t), Some("Push refusé".into()));
         assert_eq!(bubble_time(4), Duration::from_secs(6));
         assert!(bubble_time(2) < bubble_time(4));
+    }
+
+    fn key(module: &str, path: &str) -> (String, String) {
+        (module.into(), path.into())
+    }
+
+    /// Une action ne part qu'une fois tant que le PC n'a pas répondu (deux touchers : un seul Pull) ; la même ailleurs
+    /// part ; le résultat la rend possible de nouveau, et un résultat arrivé après le délai ne fait plus rien.
+    #[test]
+    fn an_action_is_sent_once_until_its_result() {
+        let mut p = Pendings::default();
+        assert_eq!(p.send("dragontree", "depot/eyrie", "pull"), Some(1));
+        assert_eq!(p.send("dragontree", "depot/eyrie", "pull"), None, "déjà en cours");
+        assert_eq!(p.send("dragontree", "depot/ozmo", "pull"), Some(2), "un autre dépôt");
+        assert_eq!(p.send("dragontree", "depot/eyrie", "push"), Some(3));
+        let acts = p.acts(&key("dragontree", "depot/eyrie"));
+        assert_eq!(acts, HashSet::from(["pull".to_string(), "push".to_string()]), "grisées dans cet écran");
+
+        let done = p.answer(1);
+        assert_eq!(done.map(|d| (d.module, d.path, d.act)), Some(key3("dragontree", "depot/eyrie", "pull")));
+        assert_eq!(p.acts(&key("dragontree", "depot/eyrie")), HashSet::from(["push".to_string()]));
+        assert_eq!(p.send("dragontree", "depot/eyrie", "pull"), Some(4), "de nouveau possible");
+        assert_eq!(p.answer(1), None, "le délai passé, puis le résultat : une seule fois");
+        assert_eq!(p.next(), 5, "les commandes ont leur numéro à elles, jamais celui d'une action en cours");
+    }
+
+    fn key3(a: &str, b: &str, c: &str) -> (String, String, String) {
+        (a.into(), b.into(), c.into())
+    }
+
+    fn stack(nav: &Nav, module: &str) -> Vec<String> {
+        nav.stacks.get(module).cloned().unwrap_or_default()
+    }
+
+    /// Un onglet d'écran remplace l'écran affiché dans la pile : le retour mène à ce qu'il y avait dessous ; toucher
+    /// l'onglet affiché remonte en haut de sa liste.
+    #[test]
+    fn a_screen_tab_replaces_the_top_of_the_stack() {
+        let mut nav = Nav::new();
+        nav.open_module_path("dragontree", "depot/eyrie");
+        assert_eq!(stack(&nav, "dragontree"), ["", "depot/eyrie"]);
+        assert_eq!(nav.select_tab("depot/eyrie/historique"), Some(Moved::Screen));
+        assert_eq!(stack(&nav, "dragontree"), ["", "depot/eyrie/historique"]);
+        assert!(nav.is_shown(&key("dragontree", "depot/eyrie/historique")));
+        assert!(!nav.is_shown(&key("dragontree", "depot/eyrie")), "une liste reçue pour l'autre onglet attend");
+        assert_eq!(nav.select_tab("depot/eyrie/historique"), Some(Moved::Top));
+        assert!(nav.back());
+        assert_eq!((nav.tab.as_str(), nav.top_path()), ("dragontree", String::new()), "l'accueil du module");
+        assert!(nav.back());
+        assert_eq!(nav.tab, "ensemble");
+        assert_eq!(nav.select_tab("x"), None, "pas d'onglet hors d'un module");
+        assert!(!nav.back(), "rien à quitter : l'application se ferme");
+    }
+
+    /// Toucher l'onglet du bas du module affiché remonte d'abord en haut de sa liste, puis ramène à son accueil.
+    #[test]
+    fn retapping_the_bottom_tab_goes_up_then_home() {
+        let mut nav = Nav::new();
+        assert_eq!(nav.select_bottom("fawkes", false, true), Moved::Screen);
+        assert!(nav.open_path("t/3"));
+        nav.remember(Some(&key("fawkes", "t/3")), -400.0);
+        assert_eq!(nav.select_bottom("fawkes", true, false), Moved::Top);
+        assert_eq!(stack(&nav, "fawkes"), ["", "t/3"], "on reste sur l'écran");
+        assert_eq!(nav.scroll_of(&key("fawkes", "t/3")), 0.0);
+        assert_eq!(nav.select_bottom("fawkes", true, true), Moved::Screen);
+        assert_eq!(stack(&nav, "fawkes"), [""], "en haut : l'accueil du module");
+        assert_eq!(nav.select_bottom("plus", true, false), Moved::Screen, "un autre onglet");
+        assert!(!nav.open_path("t/3"), "pas de sous-écran hors d'un module");
+        assert!(nav.back());
+        assert_eq!(nav.tab, "ensemble");
+    }
+
+    /// Chaque écran garde sa position dans la liste et son texte cherché, rendus au retour ; un écran ouvert de
+    /// nouveau part du haut ; chaque onglet d'écran garde la sienne ; seule la liste affichée est retenue.
+    #[test]
+    fn each_screen_keeps_its_scroll_and_a_new_one_starts_at_the_top() {
+        let mut nav = Nav::new();
+        nav.select_bottom("fawkes", false, true);
+        let home = key("fawkes", "");
+        nav.remember(Some(&home), -300.0);
+        nav.search.insert(home.clone(), "claude".into());
+        nav.open_path("t/3");
+        assert_eq!(nav.scroll_of(&key("fawkes", "t/3")), 0.0, "un écran poussé part du haut");
+        nav.remember(Some(&key("fawkes", "t/3")), -50.0);
+        nav.remember(Some(&home), -999.0);
+        assert_eq!(nav.scroll_of(&home), -300.0, "pas affiché : rien de retenu");
+        nav.back();
+        assert_eq!((nav.scroll_of(&home), nav.search_of(&home).as_str()), (-300.0, "claude"));
+        nav.open_path("t/3");
+        assert_eq!(nav.scroll_of(&key("fawkes", "t/3")), 0.0, "ouvert de nouveau : du haut");
+
+        nav.open_module_path("dragontree", "depot/eyrie");
+        nav.remember(Some(&key("dragontree", "depot/eyrie")), -120.0);
+        nav.select_tab("depot/eyrie/historique");
+        nav.remember(Some(&key("dragontree", "depot/eyrie/historique")), -80.0);
+        nav.select_tab("depot/eyrie");
+        assert_eq!(nav.scroll_of(&key("dragontree", "depot/eyrie")), -120.0, "chaque onglet garde la sienne");
+        assert_eq!(nav.scroll_of(&key("dragontree", "depot/eyrie/historique")), -80.0);
+    }
+
+    /// Un écran affiché qui disparaît sur le PC ramène à celui d'en dessous ; un autre ne change rien.
+    #[test]
+    fn a_vanished_screen_returns_to_the_one_below() {
+        let mut nav = Nav::new();
+        nav.open_module_path("fawkes", "t/3");
+        assert!(!nav.gone("fawkes", "t/4"));
+        assert!(!nav.gone("patronus", "t/3"));
+        assert!(nav.gone("fawkes", "t/3"));
+        assert_eq!(stack(&nav, "fawkes"), [""]);
+        assert!(!nav.gone("fawkes", ""), "l'accueil reste");
+        nav.goto("owlery/pr/12");
+        assert_eq!((nav.tab.as_str(), stack(&nav, "owlery")), ("owlery", vec![String::new(), "pr/12".into()]));
     }
 
     #[test]
