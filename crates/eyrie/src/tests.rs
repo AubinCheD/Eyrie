@@ -216,6 +216,9 @@ fn a_panicking_module_is_stopped_and_the_others_go_on() {
     assert!(s.core.slot("carnet").unwrap().is_running(), "les autres continuent");
     assert!(ctx.global_style().visuals.dark_mode, "le style de la suite est rétabli");
     assert!(s.core.journal.lines.iter().any(|l| l.text.contains("s'est arrêté")));
+    // Sa notification mène, sur le téléphone, à l'écran du module (« Relancer le module »).
+    let crash = s.core.notes.items.iter().find(|(n, _)| n.title.contains("s'est arrêté")).map(|(n, _)| n);
+    assert_eq!(crash.and_then(|n| n.path.as_deref()), Some("@module boum"), "{crash:?}");
 }
 
 // --- Fermeture en séquence ---------------------------------------------------------------------

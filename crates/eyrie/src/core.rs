@@ -283,12 +283,11 @@ fn conclude(slot: &mut Slot, host: &Host, kind: CallKind, journal: &mut Journal,
     if let Some(msg) = &observed.panic {
         slot.stats.panics += 1;
         journal.push(slot.info.id, Tone::Danger, format!("{} s'est arrêté : {msg}", slot.info.name));
-        host.notify(Notification::new(
-            "suite",
-            format!("{} {}", slot.info.name, tr("s'est arrêté")),
-            msg.clone(),
-            Tone::Danger,
-        ));
+        // Sur le téléphone, elle mène à l'écran du module : « Relancer le module ».
+        host.notify(
+            Notification::new("suite", format!("{} {}", slot.info.name, tr("s'est arrêté")), msg.clone(), Tone::Danger)
+                .path(format!("@module {}", slot.info.id)),
+        );
         slot.state = SlotState::Crashed(msg.clone());
     }
 }

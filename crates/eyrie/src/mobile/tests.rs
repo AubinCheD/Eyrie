@@ -458,20 +458,25 @@ fn a_notification_leads_the_phone_to_its_screen() {
     let host = h.state().core.host.clone();
     host.notify(Notification::new("factice", "Une chose attend", "à voir", Tone::Warn).path("detail"));
     host.notify(Notification::new("factice", "Pour information", "rien à ouvrir", Tone::Info));
+    // Une note de la suite qui mène à l'écran d'un module (celui d'un module arrêté : « Relancer le module »).
+    host.notify(Notification::new("suite", "Factice s'est arrêté", "boum", Tone::Danger).path("@module factice"));
+    host.notify(Notification::new("suite", "Voir le détail", "", Tone::Info).path("@module factice detail"));
     h.run_steps(2);
     let notes = with_phone(
         &mut h,
         |_| {},
         |c| {
             until(c, |m| match m {
-                ToPhone::Notes { notes, .. } if notes.len() >= 2 => Some(notes),
+                ToPhone::Notes { notes, .. } if notes.len() >= 4 => Some(notes),
                 _ => None,
             })
         },
     );
-    let path = |title: &str| notes.iter().find(|n| n.title == title).map(|n| n.path.clone());
-    assert_eq!(path("Une chose attend"), Some(Some("detail".into())), "{notes:?}");
-    assert_eq!(path("Pour information"), Some(None), "nulle part : le téléphone la déplie");
+    let path = |title: &str| notes.iter().find(|n| n.title == title).map(|n| (n.module.clone(), n.path.clone()));
+    assert_eq!(path("Une chose attend"), Some(("factice".into(), Some("detail".into()))), "{notes:?}");
+    assert_eq!(path("Pour information"), Some(("factice".into(), None)), "nulle part : le téléphone la déplie");
+    assert_eq!(path("Factice s'est arrêté"), Some(("factice".into(), Some(String::new()))));
+    assert_eq!(path("Voir le détail"), Some(("factice".into(), Some("detail".into()))));
 }
 
 /// Se construit seulement quand on le lui permet ; sans écran mobile : le pont montre son écran générique.

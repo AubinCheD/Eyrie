@@ -584,14 +584,22 @@ fn push_light(core: &mut Core) {
             .items
             .iter()
             .take(60)
-            .map(|(n, read)| Note {
-                module: n.module.clone(),
-                title: n.title.clone(),
-                body: n.body.clone(),
-                tone: tone(n.tone),
-                at: n.at.duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
-                read: *read,
-                path: n.path.clone(),
+            .map(|(n, read)| {
+                // « @module <id> [<chemin>] » : elle mène à l'écran d'un autre module (la suite, à celui d'un module
+                // arrêté) ; le téléphone ouvre l'écran du module de la note.
+                let (module, path) = match n.path.as_deref().and_then(suite_mobile::msg::module_target) {
+                    Some((m, p)) => (m.to_string(), Some(p.to_string())),
+                    None => (n.module.clone(), n.path.clone()),
+                };
+                Note {
+                    module,
+                    title: n.title.clone(),
+                    body: n.body.clone(),
+                    tone: tone(n.tone),
+                    at: n.at.duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+                    read: *read,
+                    path,
+                }
             })
             .collect();
         let unread = core.notes.unread() as u32;

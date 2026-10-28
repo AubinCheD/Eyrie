@@ -45,7 +45,8 @@ pub struct Notification {
     pub tone: Tone,
     pub at: SystemTime,
     /// L'écran du module où elle mène sur le téléphone, chemin absolu dans le module (`t/12` : la session Claude qui
-    /// attend ; `""` : son accueil). `None` : nulle part, le téléphone la déplie.
+    /// attend ; `""` : son accueil), ou l'écran d'un autre module (`@module <id> [<chemin>]` : la suite mène à celui
+    /// d'un module arrêté). `None` : nulle part, le téléphone la déplie.
     pub path: Option<String>,
 }
 
