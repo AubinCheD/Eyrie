@@ -764,6 +764,14 @@ impl Controller {
             Ok(veilleur::Answer::Refused(reason)) => {
                 self.toast(&format!("Démarrage refusé : {reason}"), 4);
                 haptic_error();
+                // Une preuve refusée : la clé gardée ne sert plus (appareil appairé de nouveau, clé du veilleur
+                // changée). Retirée, « Démarrer » n'est plus proposé, même après un redémarrage de l'application, avant
+                // la clé du prochain accueil : pas de preuves fausses en série, que le veilleur finit par bloquer.
+                if reason == veilleur::PROOF_REFUSED
+                    && let Some(id) = self.store.prefs.current.clone()
+                {
+                    self.store.set_wake(&id, None);
+                }
                 self.start = Start::Refused(reason);
             }
             Err(e) => {

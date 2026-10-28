@@ -176,6 +176,17 @@ impl Store {
         self.save();
     }
 
+    /// Remplace (ou retire) la clé de démarrage d'un PC, et l'enregistre ; `false` : rien n'a changé.
+    pub fn set_wake(&mut self, id: &str, wake: Option<Wake>) -> bool {
+        let Some(p) = self.pcs.iter_mut().find(|p| p.id == id) else { return false };
+        if p.wake == wake {
+            return false;
+        }
+        p.wake = wake;
+        self.save();
+        true
+    }
+
     /// Le choix fait pour un bandeau d'un écran de ce PC.
     pub fn folded(&self, pc: &str, module: &str, path: &str, band: &str) -> Option<&Folded> {
         self.prefs.folds.get(&fold_key(pc, module, path, band))
@@ -273,6 +284,42 @@ mod tests {
         s.forget("a");
         let json = std::fs::read_to_string(dir.join("pcs.json")).unwrap();
         assert!(!json.contains(&hex(&[7; 32])), "oublié avec le PC");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Une clé que le veilleur refuse (« preuve refusée ») est retirée, et le reste après un redémarrage de
+    /// l'application : « Démarrer Eyrie » ne revient qu'avec la clé du prochain accueil.
+    #[test]
+    fn a_refused_wake_key_stays_forgotten_after_a_restart() {
+        let dir = std::env::temp_dir().join(format!("eyrie-mobile-wake-refused-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut s = Store::open(&dir);
+        let key = WakeKey { port: 4748, secret: vec![7; 32], device: "appareil-1".into() };
+        let wake = Some(Wake::from_key(&key));
+        let pc = |id: &str| Pc {
+            id: id.into(),
+            name: "PC".into(),
+            host: "suite-pc".into(),
+            ip: String::new(),
+            port: 4747,
+            key: hex(&[id.as_bytes()[0]; 32]),
+            paired_at: 1,
+            notes_seen: 0,
+            wake: wake.clone(),
+        };
+        s.add(pc("b"));
+        s.add(pc("a"));
+        assert!(!s.set_wake("a", wake.clone()), "la même : rien à écrire");
+        assert!(s.set_wake("a", None));
+        assert!(!s.set_wake("inconnu", None));
+        let back = Store::open(&dir);
+        assert_eq!(back.current().map(|p| p.id.as_str()), Some("a"));
+        assert_eq!(back.current().and_then(|p| p.wake.as_ref()), None, "après un redémarrage aussi");
+        assert_eq!(
+            back.pcs.iter().find(|p| p.id == "b").and_then(|p| p.wake.as_ref()),
+            wake.as_ref(),
+            "l'autre PC la garde"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
