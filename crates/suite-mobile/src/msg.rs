@@ -254,11 +254,14 @@ pub enum ToPhone {
     },
 }
 
-/// De quoi demander au veilleur du PC de démarrer Eyrie : son port sur le tailnet et le secret de cet appareil.
+/// De quoi demander au veilleur du PC de démarrer Eyrie : son port sur le tailnet, le secret de cet appareil et
+/// l'identifiant que le PC lui a donné à l'appairage (le champ `appareil` de la demande).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WakeKey {
     pub port: u16,
     pub secret: Vec<u8>,
+    #[serde(default)]
+    pub device: String,
 }
 
 /// Drapeaux d'un [`FolderEntry`].

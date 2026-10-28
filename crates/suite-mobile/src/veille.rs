@@ -9,8 +9,9 @@
 //! 3. veilleur → téléphone : `{"ok":true,"etat":"demarrage"}` ou `{"ok":false,"raison":"…"}`.
 //!
 //! Chaque appareil a son secret, tiré d'une clé du PC (32 octets, chiffrée par DPAPI) et de sa clé publique : le PC le
-//! lui donne dans `Welcome` ([`crate::msg::WakeKey`]), le veilleur le recalcule. Retirer l'appareil le révoque. Le
-//! compagnon (Go) refait ces calculs ; les vecteurs des essais sont les mêmes des deux côtés.
+//! lui donne dans `Welcome` ([`crate::msg::WakeKey`], avec l'identifiant de l'appareil), le veilleur le recalcule.
+//! Retirer l'appareil le révoque. Le compagnon (Go) refait ces calculs ; les vecteurs des essais sont les mêmes des
+//! deux côtés.
 
 use blake2::Blake2sMac256;
 use blake2::digest::{KeyInit, Mac};
