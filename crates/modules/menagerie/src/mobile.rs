@@ -260,7 +260,9 @@ pub fn home(
     let unfold = open.len() <= PORTS_OPEN || public > 0;
     let mut band = Band::new("ports", "Ports ouverts").aside(open.len().to_string()).glyph("🔁").open(unfold);
     if public > 0 {
-        band = band.badge(format!("{public} visible(s) du réseau")).tone(Tone::Warn);
+        let seen =
+            if public == 1 { "1 visible du réseau".to_string() } else { format!("{public} visibles du réseau") };
+        band = band.badge(seen).tone(Tone::Warn);
     }
     s.band(band);
     if open.is_empty() {
@@ -676,7 +678,7 @@ mod tests {
             &Snapshot { services: services.clone(), scans: 1, ..Default::default() },
             &Jobs::default(),
         );
-        assert_eq!(bands(&s)[1].1, Fold::Open, "l'alerte dépliée");
+        assert_eq!(bands(&s)[1], ("ports", Fold::Open, "1 visible du réseau", Some(Tone::Warn)), "l'alerte dépliée");
         services[6].public = false;
         services.truncate(2);
         services[1].public = true;
@@ -687,7 +689,7 @@ mod tests {
             &Snapshot { services, scans: 1, ..Default::default() },
             &Jobs::default(),
         );
-        assert_eq!(bands(&s)[1], ("ports", Fold::Open, "1 visible(s) du réseau", Some(Tone::Warn)));
+        assert_eq!(bands(&s)[1], ("ports", Fold::Open, "1 visible du réseau", Some(Tone::Warn)));
     }
 
     #[test]

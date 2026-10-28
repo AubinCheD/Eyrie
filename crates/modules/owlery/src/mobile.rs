@@ -71,6 +71,10 @@ fn unread_text(n: usize) -> String {
     if n == 1 { "1 non lue".into() } else { format!("{n} non lues") }
 }
 
+fn entries_text(n: usize) -> String {
+    if n == 1 { "1 entrée".into() } else { format!("{n} entrées") }
+}
+
 /// Les groupes de la liste, comme sur le PC (non lues et lues ; ni terminées, ni reportées, ni dépôts ignorés).
 fn groups<'a>(inbox: &'a Inbox, rules: &Rules, by: GroupBy, now: i64) -> Vec<Group<'a>> {
     inbox.view(&Filter::default(), rules, by, now)
@@ -192,8 +196,8 @@ pub fn group(inbox: &Inbox, rules: &Rules, by: GroupBy, key: &str, now: i64) -> 
         return s;
     };
     let subtitle = match g.unread {
-        0 => format!("{} entrées", g.entries.len()),
-        n => format!("{} · {} entrées", unread_text(n), g.entries.len()),
+        0 => entries_text(g.entries.len()),
+        n => format!("{} · {}", unread_text(n), entries_text(g.entries.len())),
     };
     let mut s = Screen::new(&g.title).subtitle(subtitle).search("Chercher dans le groupe");
     if g.unread > 0 {
@@ -555,6 +559,9 @@ mod tests {
         assert_eq!(rows(&g).len(), 20);
         assert!(!g.search.is_empty());
         assert!(g.action_ids().contains("tout-lu:contoso/web"));
+        let (one, _) = sample(now);
+        let docs = group(&one, &Rules::default(), GroupBy::Repo, "contoso/docs", now);
+        assert_eq!(docs.subtitle, "1 entrée");
         let gone = group(&inbox, &rules, GroupBy::Repo, "contoso/parti", now);
         assert!(gone.blocks.iter().any(|b| matches!(b, Block::Empty { .. })));
     }

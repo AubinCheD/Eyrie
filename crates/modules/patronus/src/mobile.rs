@@ -629,7 +629,10 @@ fn act_with(e: &mut Engine, path: &str, action: &str, input: Option<&str>) -> Re
             "tout_arreter" => {
                 let n = e.running_count();
                 e.stop_all();
-                Ok(Some(format!("Arrêt demandé pour {n} exécution(s)")))
+                Ok(Some(match n {
+                    0 => "Rien ne tourne".into(),
+                    n => format!("Arrêt demandé pour {}", plural(n, "exécution", "exécutions")),
+                }))
             }
             "pause" | "reprendre" => {
                 e.set_paused(action == "pause", now());
@@ -855,6 +858,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("suite-patronus-telephone-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let mut e = Engine::open_headless(&dir, now());
+        assert_eq!(act(&mut e, "", "tout_arreter"), Ok(Some("Rien ne tourne".into())));
         assert_eq!(act(&mut e, "", "pause"), Ok(Some("En pause".into())));
         assert!(e.paused());
         assert_eq!(act(&mut e, "", "reprendre"), Ok(Some("Reprise".into())));
