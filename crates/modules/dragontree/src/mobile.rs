@@ -21,13 +21,13 @@
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
 
 use dragontree_app::DragonTreeApp;
 use dragontree_app::repo::{Refresh, RemoteOp, RepoTab};
-use dragontree_app::settings::{Settings, path_key};
+use dragontree_app::settings::{Settings, long_path_key, path_key};
 use dragontree_git::discovery::{FoundRepo, repo_head};
 use dragontree_git::{
     CancelToken, Commit, CommitInfo, DiffOptions, FileChange, FileState, Git, GraphLayout, HeadState, LogOptions,
@@ -399,22 +399,88 @@ fn read_state(git: &Result<Git, String>, path: &Path) -> RepoState {
     RepoState { branch, upstream: None, ahead: q.ahead, behind: q.behind, changes: q.dirty as usize, error }
 }
 
-/// Un dossier de dépôt désigné depuis le téléphone : un chemin absolu d'un disque du PC (ni réseau, ni `\\?\`, ni
-/// `..`), un dossier qui a un `.git` (dossier, ou fichier d'un worktree). Le pont l'a déjà contrôlé ; ceci n'en
-/// dépend pas.
-fn check_repo_dir(dir: &Path) -> Result<(), String> {
-    let text = dir.to_string_lossy();
-    let local = dir.is_absolute() && !text.starts_with(r"\\") && !text.starts_with("//");
-    if !local || dir.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
-        return Err("Chemin refusé : un dossier d'un disque du PC est attendu (C:\\…).".into());
+/// Des noms de dossiers où le téléphone ne fait jamais ouvrir de dépôt, où qu'ils soient (en minuscules).
+const FORBIDDEN_NAMES: [&str; 3] = [".ssh", "$recycle.bin", "system volume information"];
+
+/// Les dossiers où le téléphone ne fait pas ouvrir de dépôt (`docs/mobile.md` §5) : Windows, les programmes, les
+/// données des applications (celles d'Eyrie et de la suite comprises), et `profile`, celui de DragonTree.
+fn forbidden_zones(profile: Option<&Path>) -> Vec<PathBuf> {
+    let vars = ["SystemRoot", "windir", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "ProgramData"];
+    let vars = vars.into_iter().chain(["APPDATA", "LOCALAPPDATA"]);
+    let mut zones: Vec<PathBuf> =
+        vars.filter_map(|v| std::env::var_os(v).filter(|d| !d.is_empty())).map(PathBuf::from).collect();
+    if let Some(home) = std::env::var_os("USERPROFILE").filter(|h| !h.is_empty()) {
+        zones.push(Path::new(&home).join("AppData"));
     }
-    if !dir.is_dir() {
+    zones.push(suite_accounts::suite_dir());
+    zones.push(suite_accounts::local_suite_dir());
+    zones.extend(profile.map(Path::to_path_buf));
+    zones
+}
+
+/// Un chemin `X:\…` d'un disque : ni réseau, ni `\\?\` ou `\\.\`, ni flux (`:` après le lecteur), ni `..`, ni nom
+/// réservé de Windows (`CON`, `NUL`, `COM1`…, extension comprise).
+fn drive_path(text: &str) -> bool {
+    let reserved = |name: &str| {
+        let stem = name.split('.').next().unwrap_or_default().trim_end().to_ascii_uppercase();
+        let numbered = |p: &str| stem.strip_prefix(p).is_some_and(|n| matches!(n.as_bytes(), [b'1'..=b'9']));
+        matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL") || numbered("COM") || numbered("LPT")
+    };
+    let b = text.as_bytes();
+    let drive = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'\\' | b'/');
+    drive
+        && !text[2..].contains(':')
+        && Path::new(text).components().all(|c| match c {
+            Component::ParentDir => false,
+            Component::Normal(n) => !reserved(&n.to_string_lossy()),
+            _ => true,
+        })
+}
+
+/// `dir` résolu (noms courts, jonctions, liens), sans le préfixe `\\?\` ; `None` : il n'existe pas.
+fn resolved(dir: &Path) -> Option<PathBuf> {
+    let full = std::fs::canonicalize(dir).ok()?;
+    let text = full.to_string_lossy();
+    Some(PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(&text)))
+}
+
+/// `p` est `zone` ou en dessous (sans casse, séparateurs confondus).
+fn inside(p: &Path, zone: &Path) -> bool {
+    let (p, z) = (path_key(p), path_key(zone));
+    !z.is_empty() && (p == z || p.starts_with(&format!("{z}/")))
+}
+
+/// Un dossier de dépôt désigné depuis le téléphone, contrôlé ici même si le pont l'a fait avant (`docs/mobile.md` §5,
+/// à venir) : un chemin `X:\…` d'un disque du PC ([`drive_path`]) ; résolu (noms courts, jonctions, liens), un dossier
+/// local, hors des dossiers interdits `forbidden` et des [`FORBIDDEN_NAMES`] ; un dépôt git (un `.git`, dossier ou
+/// fichier d'un worktree). Rend le chemin résolu : c'est lui que DragonTree ouvre, pas l'endroit où une jonction
+/// changée entre-temps mènerait. (Le pont vérifie de plus que le lecteur est un disque fixe.)
+fn check_repo_dir(dir: &Path, forbidden: &[PathBuf]) -> Result<PathBuf, String> {
+    let refused = || "Chemin refusé : un dossier d'un disque du PC est attendu (C:\\…).".to_string();
+    if !drive_path(&dir.to_string_lossy()) {
+        return Err(refused());
+    }
+    let full = resolved(dir).ok_or_else(|| format!("{} n'est pas un dossier du PC.", dir.display()))?;
+    // Un lecteur réseau se résout en `\\?\UNC\…`.
+    if !drive_path(&full.to_string_lossy()) {
+        return Err(refused());
+    }
+    for p in [dir, full.as_path()] {
+        let named = p.components().any(|c| {
+            matches!(c, Component::Normal(n) if FORBIDDEN_NAMES.contains(&n.to_string_lossy().to_lowercase().as_str()))
+        });
+        let zoned = forbidden.iter().any(|z| inside(p, z) || resolved(z).is_some_and(|z| inside(p, &z)));
+        if named || zoned {
+            return Err(format!("{} : dossier protégé, refusé depuis le téléphone.", dir.display()));
+        }
+    }
+    if !full.is_dir() {
         return Err(format!("{} n'est pas un dossier du PC.", dir.display()));
     }
-    if !dir.join(".git").exists() {
+    if !full.join(".git").exists() {
         return Err(format!("{} n'est pas un dépôt git.", dir.display()));
     }
-    Ok(())
+    Ok(full)
 }
 
 /// Ce qu'un fichier lu de DragonTree (réglages, liste du scan) était quand il a été lu.
@@ -459,6 +525,8 @@ pub struct Phone {
     /// Dépôts que le téléphone a ouverts lui-même dans un onglet de DragonTree, pour les lire : ils restent rangés où
     /// ils étaient dans la liste.
     opened: HashSet<String>,
+    /// Les dossiers où le téléphone ne fait pas ouvrir de dépôt ([`forbidden_zones`]).
+    forbidden: Vec<PathBuf>,
     sweep: Arc<Mutex<Sweep>>,
     git: GitCell,
     reads: SharedReads,
@@ -480,6 +548,7 @@ impl Phone {
     /// `settings_path` : les réglages de DragonTree ; `scan_path` : la liste de son dernier scan.
     pub fn new(settings_path: PathBuf, scan_path: PathBuf) -> Phone {
         Phone {
+            forbidden: forbidden_zones(settings_path.parent()),
             settings_path,
             scan_path,
             checked: None,
@@ -665,17 +734,20 @@ impl Phone {
             .folder("Dépôt à ajouter", spec)
     }
 
-    /// Ajoute à DragonTree le dépôt du dossier `input` (choisi sur le PC dans le sélecteur du téléphone) et l'ouvre sur
-    /// le téléphone. Comme « Ouvrir un dépôt… » sur le PC : DragonTree l'affiche et le retient.
+    /// Ajoute à DragonTree le dépôt du dossier `input` (choisi sur le PC dans le sélecteur du téléphone, contrôlé par
+    /// [`check_repo_dir`]) et l'ouvre sur le téléphone. Comme « Ouvrir un dépôt… » sur le PC : DragonTree l'affiche
+    /// et le retient. Déjà dans la liste (sous une autre forme du même chemin, peut-être) : le téléphone l'ouvre.
     fn add(&mut self, app: &mut DragonTreeApp, input: Option<&str>) -> Result<(String, bool), String> {
-        let dir = PathBuf::from(input.map(str::trim).filter(|t| !t.is_empty()).ok_or("Aucun dossier choisi.")?);
-        check_repo_dir(&dir)?;
-        let key = repo_key(&dir);
-        if !self.repos(app).iter().any(|r| repo_key(&r.path) == key) {
-            app.show_repo(&dir);
-            self.added.retain(|p| repo_key(p) != key);
-            self.added.insert(0, dir);
+        let raw = input.map(str::trim).filter(|t| !t.is_empty()).ok_or("Aucun dossier choisi.")?;
+        let dir = check_repo_dir(Path::new(raw), &self.forbidden)?;
+        let long = long_path_key(&dir);
+        if let Some(known) = self.repos(app).into_iter().find(|r| long_path_key(&r.path) == long) {
+            return Ok((format!("{OPEN_PREFIX}depot/{}", repo_key(&known.path)), false));
         }
+        app.show_repo(&dir);
+        let key = repo_key(&dir);
+        self.added.retain(|p| repo_key(p) != key);
+        self.added.insert(0, dir);
         Ok((format!("{OPEN_PREFIX}depot/{key}"), false))
     }
 
@@ -1136,9 +1208,41 @@ mod tests {
         assert!(s.action_ids().contains("ajouter"), "aussi en bouton quand la liste est vide : {s:?}");
     }
 
+    /// Un chemin venu du téléphone : un dossier `X:\…` d'un disque, sans `..`, flux, nom réservé ni préfixe ; les
+    /// dossiers de Windows et des données des applications sont refusés, même désignés autrement.
+    #[test]
+    fn a_folder_from_the_phone_is_checked_on_the_pc() {
+        for good in [r"C:\dev\depot", "D:/sources/x", r"C:\dev\com10", r"C:\dev\console"] {
+            assert!(drive_path(good), "{good}");
+        }
+        for bad in [
+            r"\\serveur\partage",
+            r"\\?\C:\dev",
+            r"\\.\C:\dev",
+            "C:relatif",
+            r"C:\dev\..\x",
+            r"C:\dev\depot:flux",
+            r"C:\dev\nul",
+            r"C:\dev\COM1.txt",
+            "depot",
+            "",
+        ] {
+            assert!(!drive_path(bad), "{bad}");
+        }
+        let zones = forbidden_zones(None);
+        if let Some(windows) = std::env::var_os("SystemRoot") {
+            let e = check_repo_dir(Path::new(&windows), &zones).unwrap_err();
+            assert!(e.contains("protégé"), "{e}");
+        }
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            let e = check_repo_dir(Path::new(&local), &zones).unwrap_err();
+            assert!(e.contains("protégé"), "{e}");
+        }
+    }
+
     /// Un dépôt ajouté depuis le téléphone l'est par DragonTree (affiché sur le PC, comme « Ouvrir un dépôt… »), entre
     /// tout de suite dans la liste, et le téléphone l'ouvre. Un dossier qui n'est pas un dépôt, un chemin relatif ou
-    /// réseau sont refusés.
+    /// réseau, un dossier protégé (même par une jonction) sont refusés.
     #[test]
     fn an_existing_repo_is_added_by_dragontree_and_opened() {
         let Ok(git) = Git::discover() else { return };
@@ -1151,7 +1255,22 @@ mod tests {
         let mut phone = phone_scanning(&profile, &dir.join("ailleurs").join("autre"));
         let mut h = dragontree(&profile);
         h.step();
-        let key = repo_key(&repo);
+        // Le dépôt est dans le dossier temporaire, sous les données des applications : seul `repo` est protégé ici.
+        phone.forbidden = vec![repo.clone()];
+        let link = dir.join("lien");
+        let linked = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&repo)
+            .output()
+            .is_ok_and(|o| o.status.success());
+        for protected in [Some(&repo), linked.then_some(&link)].into_iter().flatten() {
+            let e = phone.action(h.state_mut(), "", "ajouter", Some(&protected.display().to_string())).unwrap_err();
+            assert!(e.contains("protégé"), "{}: {e}", protected.display());
+        }
+        phone.forbidden.clear();
+        // DragonTree ouvre le chemin résolu (forme longue d'un dossier temporaire en noms courts).
+        let key = repo_key(&resolved(&repo).unwrap());
         assert!(phone.screen(h.state_mut(), &format!("depot/{key}")).is_none(), "pas encore connu");
         let plain = dir.join("pas-un-depot");
         std::fs::create_dir_all(&plain).unwrap();
@@ -1159,8 +1278,14 @@ mod tests {
             assert!(phone.action(h.state_mut(), "", "ajouter", Some(&bad)).is_err(), "{bad}");
         }
         let (open, show) = phone.action(h.state_mut(), "", "ajouter", Some(&repo.display().to_string())).unwrap();
-        assert_eq!((open, show), (format!("{OPEN_PREFIX}depot/{key}"), false));
-        assert_eq!(h.state().active_repo_dir().map(path_key), Some(path_key(&repo)), "affiché par DragonTree");
+        assert_eq!((open.as_str(), show), (format!("{OPEN_PREFIX}depot/{key}").as_str(), false));
+        let shown = h.state().active_repo_dir().map(long_path_key);
+        assert_eq!(shown, Some(long_path_key(&repo)), "affiché par DragonTree");
+        if linked {
+            // Par la jonction : le même dépôt, déjà dans la liste.
+            let (again, _) = phone.action(h.state_mut(), "", "ajouter", Some(&link.display().to_string())).unwrap();
+            assert_eq!(again, open);
+        }
         let home = phone.screen(h.state_mut(), "").unwrap();
         assert!(home.opens().contains(&format!("depot/{key}")), "dans la liste tout de suite : {home:?}");
         let s = wait_screen(&mut h, &mut phone, &format!("depot/{key}"), "lisez-moi.txt");
