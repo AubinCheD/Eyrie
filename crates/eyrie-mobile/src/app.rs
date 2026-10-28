@@ -11,15 +11,15 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use suite_mobile::msg::{CommandCard, ModuleCard, Note, Rights, ToPc, ToPhone, Waiting};
 use suite_mobile::pairing::{self, Ticket};
 use suite_mobile::term::{Key, TermInput};
-use suite_mobile::ui::{Act, Block, Fold, Screen, Tone};
+use suite_mobile::ui::{Act, Block, Fold, Screen, Tab, Tone};
 
 use crate::net::{Link, NetEvent, PairEvent};
 use crate::store::{self, Pc, Store};
 use crate::tailnet::{self, Tailnet};
 use crate::termbuf::{self, TermBuf};
 use crate::{
-    AppWindow, CommandItem, ModuleItem, NavItem, NoteItem, PcItem, TermRow, TermSeg, Theme, UiAct, UiRow, WaitItem,
-    platform, view,
+    AppWindow, CommandItem, ModuleItem, NavItem, NoteItem, PcItem, TabItem, TermRow, TermSeg, Theme, UiAct, UiRow,
+    WaitItem, platform, view,
 };
 
 /// Les modules proposés dans la barre du bas tant que l'utilisateur n'a rien choisi.
@@ -57,6 +57,14 @@ struct Pending {
     module: String,
     path: String,
     act: String,
+}
+
+/// Les onglets du dernier écran qui en avait, avec son titre : montrés le temps qu'un onglet voisin arrive du PC.
+struct Tabs {
+    module: String,
+    tabs: Vec<Tab>,
+    title: String,
+    subtitle: String,
 }
 
 /// Deux vibrations brèves : un échec.
@@ -109,6 +117,7 @@ pub struct Controller {
     scroll_seq: i32,
     /// Le texte cherché dans chaque écran qui a une recherche (filtrée sur le téléphone).
     search: HashMap<(String, String), String>,
+    last_tabs: Option<Tabs>,
     req: u32,
     /// Les actions envoyées sans résultat du PC, par numéro de demande : pas de second envoi de la même.
     pending: HashMap<u32, Pending>,
@@ -129,6 +138,7 @@ pub struct Controller {
 struct Models {
     rows: Rc<VecModel<UiRow>>,
     acts: Rc<VecModel<UiAct>>,
+    tabs: Rc<VecModel<TabItem>>,
     nav: Rc<VecModel<NavItem>>,
     modules: Rc<VecModel<ModuleItem>>,
     waiting: Rc<VecModel<WaitItem>>,
@@ -142,6 +152,7 @@ impl Models {
         let m = Models {
             rows: Rc::default(),
             acts: Rc::default(),
+            tabs: Rc::default(),
             nav: Rc::default(),
             modules: Rc::default(),
             waiting: Rc::default(),
@@ -151,6 +162,7 @@ impl Models {
         };
         ui.set_rows(ModelRc::from(m.rows.clone()));
         ui.set_screen_acts(ModelRc::from(m.acts.clone()));
+        ui.set_tabs(ModelRc::from(m.tabs.clone()));
         ui.set_nav(ModelRc::from(m.nav.clone()));
         ui.set_modules(ModelRc::from(m.modules.clone()));
         ui.set_waiting(ModelRc::from(m.waiting.clone()));
@@ -224,6 +236,7 @@ impl Controller {
             scroll: HashMap::new(),
             scroll_seq: 0,
             search: HashMap::new(),
+            last_tabs: None,
             req: 0,
             pending: HashMap::new(),
             target: None,
@@ -799,6 +812,7 @@ impl Controller {
         let mut screen_follow = None;
         let mut term_follow = None;
         let mut search = String::new();
+        let mut tabs = Vec::new();
         let (title, subtitle, can_back, acts) = match tab.as_str() {
             "ensemble" => ("Ensemble".to_string(), String::new(), false, Vec::new()),
             "plus" => ("Plus".into(), String::new(), false, Vec::new()),
@@ -822,9 +836,17 @@ impl Controller {
                             term_follow = Some((module.to_string(), id.clone()));
                         }
                         search = s.search.clone();
+                        tabs = s.tabs.clone();
                         (s.title.clone(), s.subtitle.clone(), stack_len > 1, s.acts.clone())
                     }
-                    None => (name, String::new(), stack_len > 1, Vec::new()),
+                    // Un onglet voisin pas encore arrivé : les onglets et le titre de l'écran d'où l'on vient.
+                    None => match &self.last_tabs {
+                        Some(t) if t.module == module && t.tabs.iter().any(|t| t.path == path) => {
+                            tabs = t.tabs.clone();
+                            (t.title.clone(), t.subtitle.clone(), stack_len > 1, Vec::new())
+                        }
+                        _ => (name, String::new(), stack_len > 1, Vec::new()),
+                    },
                 }
             }
         };
@@ -832,9 +854,20 @@ impl Controller {
         let key = (tab.clone(), self.top_path());
         ui.set_loading(module_tab && !self.screens.contains_key(&key));
         ui.set_missing(self.missing.get(&key).cloned().unwrap_or_default().into());
-        ui.set_screen_title(title.into());
-        ui.set_subtitle(subtitle.into());
+        ui.set_screen_title(title.as_str().into());
+        ui.set_subtitle(subtitle.as_str().into());
         ui.set_search_hint(search.into());
+        let path = self.top_path();
+        let items = tabs.iter().map(|t| TabItem {
+            label: t.label.as_str().into(),
+            path: t.path.as_str().into(),
+            badge: t.badge.as_str().into(),
+            active: t.path == path,
+        });
+        view::sync(&self.models.tabs, items.collect());
+        if !tabs.is_empty() && self.screens.contains_key(&(tab.clone(), path)) {
+            self.last_tabs = Some(Tabs { module: tab.clone(), tabs, title, subtitle });
+        }
         ui.set_can_back(can_back);
         ui.set_show_pc(acts.iter().any(|a| a.id == "@pc"));
         let local = screen_follow.as_ref().map(|k| self.local(k)).unwrap_or_default();
@@ -1033,6 +1066,26 @@ impl Controller {
         let stack = self.stacks.entry(self.tab.clone()).or_insert_with(|| vec![String::new()]);
         stack.push(path.to_string());
         self.scroll.remove(&(self.tab.clone(), path.to_string()));
+        self.refresh_screen();
+    }
+
+    /// Passe à un onglet de l'écran : il remplace l'écran affiché dans la pile (le retour mène à ce qu'il y avait
+    /// dessous) et garde sa position dans la liste. L'onglet affiché : remonte en haut.
+    pub(crate) fn select_tab(&mut self, path: &str) {
+        if !self.is_module_tab() {
+            return;
+        }
+        if self.top_path() == path {
+            self.scroll.remove(&(self.tab.clone(), path.to_string()));
+            self.scroll_to(0.0);
+            return;
+        }
+        self.remember_scroll();
+        let stack = self.stacks.entry(self.tab.clone()).or_insert_with(|| vec![String::new()]);
+        match stack.last_mut() {
+            Some(top) => *top = path.to_string(),
+            None => stack.push(path.to_string()),
+        }
         self.refresh_screen();
     }
 
@@ -1479,6 +1532,9 @@ fn wire(ui: &AppWindow) {
     });
     ui.on_search_edited(|text| {
         with(|c| c.search_edited(&text));
+    });
+    ui.on_select_tab(|path| {
+        with(|c| c.select_tab(&path));
     });
     ui.on_open_url(|u| platform::open_url(&u));
     ui.on_haptic(platform::haptic);

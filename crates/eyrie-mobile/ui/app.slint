@@ -4,14 +4,14 @@
 import "fonts/Hack-Regular.ttf";
 import { Theme } from "theme.slint";
 import {
-    UiAct, UiRow, ModuleItem, WaitItem, NoteItem, CommandItem, PcItem, NavItem, TopBar, BottomNav, ActionSheet,
-    ConfirmDialog, Toast, ActButton, Icon
+    UiAct, UiRow, TabItem, ModuleItem, WaitItem, NoteItem, CommandItem, PcItem, NavItem, TopBar, BottomNav,
+    ActionSheet, ConfirmDialog, Toast, ActButton, Icon
 } from "widgets.slint";
 import { ScreenPage, OverviewPage, MorePage, NotesPage, CommandsPage, SettingsPage } from "pages.slint";
 import { TermView, TermRow } from "term.slint";
 import { Onboarding, CodeEntry, Pairing, Scanner } from "onboarding.slint";
 
-export { Theme, UiAct, UiRow, ModuleItem, WaitItem, NoteItem, CommandItem, PcItem, NavItem, TermRow }
+export { Theme, UiAct, UiRow, TabItem, ModuleItem, WaitItem, NoteItem, CommandItem, PcItem, NavItem, TermRow }
 export { TermSeg } from "term.slint";
 
 export component AppWindow inherits Window {
@@ -58,6 +58,8 @@ export component AppWindow inherits Window {
     // La recherche de l'écran (filtrée sur le téléphone) : texte d'invite (vide : pas de champ), texte cherché.
     in property <string> search-hint;
     in-out property <string> search-text;
+    // Les onglets de l'écran (des écrans voisins du module, entre lesquels on passe sans empiler).
+    in property <[TabItem]> tabs;
 
     // --- Terminal ---
     in property <[TermRow]> term-rows;
@@ -113,6 +115,7 @@ export component AppWindow inherits Window {
     callback run-act(UiAct, string);
     callback fold-band(string);
     callback search-edited(string);
+    callback select-tab(string);
     callback open-url(string);
     callback haptic();
     callback toggle-pin(string);
@@ -361,6 +364,11 @@ export component AppWindow inherits Window {
                         search-hint: root.search-hint;
                         search-text <=> root.search-text;
                         search-edited(t) => { root.search-edited(t); }
+                        tabs: root.tabs;
+                        select-tab(p) => {
+                            root.haptic();
+                            root.select-tab(p);
+                        }
                         open-path(p) => { root.open-path(p); }
                         act(a) => { root.start-act(a); }
                         menu(r) => { root.show-sheet(r.title, r.acts); }

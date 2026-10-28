@@ -47,6 +47,14 @@ export struct UiRow {
     busy: bool,
 }
 
+// Un onglet d'écran : son chemin dans le module ; `active` : l'écran affiché.
+export struct TabItem {
+    label: string,
+    path: string,
+    badge: string,
+    active: bool,
+}
+
 export struct ModuleItem {
     id: string,
     name: string,
@@ -280,6 +288,66 @@ export component Pill inherits Rectangle {
         font-weight: 700;
         horizontal-alignment: center;
         vertical-alignment: center;
+    }
+}
+
+// Les onglets d'un écran, sous la barre du haut : une rangée qui défile de côté si elle ne tient pas.
+export component ScreenTabs inherits Rectangle {
+    in property <[TabItem]> tabs;
+    callback selected(string);
+    height: 48px;
+    accessible-role: tab-list;
+    Flickable {
+        content-width: max(self.width, strip.preferred-width);
+        strip := HorizontalLayout {
+            padding-left: Theme.pad - 4px;
+            padding-right: Theme.pad - 4px;
+            alignment: start;
+            for t in root.tabs: Rectangle {
+                width: content.preferred-width;
+                accessible-role: tab;
+                accessible-label: t.badge != "" ? t.label + ", " + t.badge : t.label;
+                accessible-item-selected: t.active;
+                accessible-action-default => { root.selected(t.path); }
+                Rectangle {
+                    x: 4px;
+                    y: 6px;
+                    width: parent.width - 8px;
+                    height: parent.height - 12px;
+                    border-radius: self.height / 2;
+                    background: t.active ? Theme.accent-soft : ta.pressed ? Theme.pressed : transparent;
+                    animate background { duration: 120ms; }
+                }
+                content := HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    spacing: 6px;
+                    alignment: center;
+                    Text {
+                        text: t.label;
+                        color: t.active ? Theme.accent : Theme.text-dim;
+                        font-size: 14px;
+                        font-weight: t.active ? 700 : 500;
+                        vertical-alignment: center;
+                    }
+                    if t.badge != "": VerticalLayout {
+                        alignment: center;
+                        Pill {
+                            text: t.badge;
+                            tone: 1;
+                        }
+                    }
+                }
+                ta := TouchArea {
+                    clicked => { root.selected(t.path); }
+                }
+            }
+        }
+    }
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.border;
     }
 }
 
