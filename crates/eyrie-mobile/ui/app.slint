@@ -334,6 +334,7 @@ export component AppWindow inherits Window {
                         pc-name: root.pc-name;
                         link-text: root.link-text;
                         link-tone: root.link-state == 1 ? 2 : root.link-state == 3 ? 4 : 3;
+                        link-state: root.link-state;
                         waiting: root.waiting;
                         modules: root.modules;
                         notes: root.recent-notes;

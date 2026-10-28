@@ -288,6 +288,8 @@ export component OverviewPage inherits Rectangle {
     in property <string> pc-name;
     in property <string> link-text;
     in property <int> link-tone;
+    // 0 connexion en cours, 1 connecté, 2 hors ligne, 3 refusé.
+    in property <int> link-state;
     in property <[WaitItem]> waiting;
     in property <[ModuleItem]> modules;
     in property <[NoteItem]> notes;
@@ -300,6 +302,9 @@ export component OverviewPage inherits Rectangle {
     callback open-note(NoteItem);
     callback open-notes();
     property <length> card-w: (root.width - 3 * Theme.pad) / 2;
+    // Rien reçu encore du PC : ne pas dire « rien ne vous attend ». L'indicateur ne tourne que pendant la connexion
+    // (il redessine l'écran sans cesse) ; injoignable ou refusé, un état fixe le dit.
+    property <bool> trying: root.link-state == 0 || root.link-state == 1;
     Flickable {
         content-height: col.preferred-height;
         col := VerticalLayout {
@@ -382,13 +387,22 @@ export component OverviewPage inherits Rectangle {
                             tint: Theme.ok;
                             size: 20px;
                         }
-                        if !root.waiting-known: VerticalLayout {
+                        if !root.waiting-known && root.trying: VerticalLayout {
                             alignment: center;
                             Busy { }
                         }
+                        if !root.waiting-known && !root.trying: VerticalLayout {
+                            alignment: center;
+                            Icon {
+                                kind: root.link-state == 3 ? "close" : "pc";
+                                tint: root.link-state == 3 ? Theme.danger : Theme.text-faint;
+                                size: 20px;
+                            }
+                        }
                         Text {
-                            // Rien reçu encore : ne pas dire « rien ne vous attend ».
-                            text: root.waiting-known ? "Rien ne vous attend." : "En attente du PC…";
+                            text: root.waiting-known ? "Rien ne vous attend."
+                                : root.trying ? "En attente du PC…"
+                                : root.link-state == 3 ? "Accès refusé par le PC." : "PC injoignable.";
                             color: Theme.text-dim;
                             font-size: 14px;
                             vertical-alignment: center;

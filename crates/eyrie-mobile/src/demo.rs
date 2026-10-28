@@ -1,7 +1,8 @@
 //! Démonstration sans PC (`EYRIE_MOBILE_DEMO=<scène>`), pour les captures et la mise au point de l'interface :
 //! `ensemble`, `fawkes`, `recherche`, `terminal`, `patronus`, `depot`, `menu`, `erreur`, `erreur-lue`, `historique`,
-//! `diff`, `diff-retour`, `plus`, `notes`, `reglages`, `attente`, `accueil`, `commandes`, `accueil-tailscale`, `code`,
-//! `appairage`, `hors-ligne`. Suffixe `+clair` ou `+sombre` : le thème (sinon celui du système).
+//! `diff`, `diff-retour`, `plus`, `notes`, `reglages`, `attente`, `injoignable`, `refus`, `accueil`, `commandes`,
+//! `accueil-tailscale`, `code`, `appairage`, `hors-ligne`. Suffixe `+clair` ou `+sombre` : le thème (sinon celui du
+//! système).
 
 use slint::ComponentHandle;
 use suite_mobile::msg::{Badge, CommandCard, ModuleCard, Note, ToPhone, Waiting};
@@ -351,9 +352,15 @@ pub fn play(ui: &AppWindow, scene: &str) {
     if let Some(t) = theme {
         ui.global::<Theme>().set_choice(t);
     }
-    // Avant toute donnée du PC : la vue d'ensemble l'attend.
-    if scene == "attente" {
-        with(|c| c.demo_offline());
+    // Avant toute donnée du PC : la vue d'ensemble l'attend pendant la connexion, sinon dit pourquoi rien n'arrive.
+    let link = match scene {
+        "attente" => Some((0, "Connexion à PORTABLE-AUBIN…")),
+        "injoignable" => Some((2, "Hors ligne (PC injoignable) · nouvel essai dans 4 s")),
+        "refus" => Some((3, "Ce téléphone n'est plus autorisé sur ce PC.")),
+        _ => None,
+    };
+    if let Some((state, text)) = link {
+        with(|c| c.demo_link("PORTABLE-AUBIN", state, text));
         return;
     }
     let feed = |m: ToPhone| {

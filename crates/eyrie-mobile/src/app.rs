@@ -1608,6 +1608,14 @@ impl Controller {
         self.set_link(2, "Hors ligne (PC injoignable) · nouvel essai dans 4 s");
     }
 
+    /// Démonstration : la liaison à ce PC dans cet état (0 connexion en cours, 2 hors ligne, 3 refusée), avant toute
+    /// donnée.
+    pub(crate) fn demo_link(&mut self, pc: &str, state: i32, text: &str) {
+        self.online = false;
+        self.pc_name = pc.to_string();
+        self.set_link(state, text);
+    }
+
     /// L'application revient au premier plan : on se reconnecte tout de suite si besoin.
     pub fn resumed(&self) {
         if !self.online
