@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -135,6 +136,53 @@ func TestASecondCompanionOnTheSameNodeIsRefused(t *testing.T) {
 			t.Fatalf("le nœud libéré ne se reprend pas : %v", err)
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// statusTo envoie les lignes d'état dans `buf` le temps de l'essai.
+func statusTo(t *testing.T, buf *bytes.Buffer) {
+	saved := status
+	status = &statusLines{w: buf}
+	t.Cleanup(func() { status = saved })
+}
+
+// Le veilleur sans dossier du pont mobile ne démarre pas (code 2), et dit pourquoi.
+func TestAStandbyNeedsTheMobileFolder(t *testing.T) {
+	var buf bytes.Buffer
+	statusTo(t, &buf)
+	if code := run([]string{"--veille", "--dir", t.TempDir()}); code != exitUsage {
+		t.Fatalf("code de sortie : %d", code)
+	}
+	if !strings.Contains(buf.String(), "--mobile") {
+		t.Fatalf("ligne d'état : %q", buf.String())
+	}
+}
+
+// Un veilleur qui échoue après avoir pris le nœud (ici, un état du nœud indéchiffrable) le laisse dans son dossier
+// (veille-echec.json) et dans son journal : lancé à l'ouverture de session, personne ne l'écoutait.
+func TestAStandbyThatFailsLeavesWhy(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "noeud.dpapi"), []byte("pas du DPAPI"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	statusTo(t, &buf)
+	if code := run([]string{"--veille", "--dir", dir, "--mobile", t.TempDir()}); code != exitFailed {
+		t.Fatalf("code de sortie : %d", code)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, standbyFailFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var why standbyFailure
+	if err := json.Unmarshal(raw, &why); err != nil || why.At == 0 || !strings.Contains(why.Message, "indéchiffrable") {
+		t.Fatalf("%s : %q %v", standbyFailFile, raw, err)
+	}
+	if logs, _ := os.ReadFile(filepath.Join(dir, "journal.txt")); !strings.Contains(string(logs), "échec : état du nœud") {
+		t.Fatalf("journal : %q", logs)
+	}
+	if !strings.Contains(buf.String(), "indéchiffrable") {
+		t.Fatalf("ligne d'état : %q", buf.String())
 	}
 }
 

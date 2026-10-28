@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"eyrie-tailnet/noeud"
 
@@ -91,6 +92,19 @@ func emit(fields map[string]string) {
 
 func fail(msg string) {
 	emit(map[string]string{"state": "error", "message": msg})
+}
+
+// standbyFailFile : dans le dossier du nœud, pourquoi le veilleur n'a pas démarré la dernière fois. Lancé à
+// l'ouverture de session, il n'a souvent personne à qui le dire : Eyrie le montre quand elle ne le trouve pas. Écrit
+// seulement par le compagnon qui tient le verrou du nœud (pas pour « nœud déjà tenu »), effacé quand le veilleur est
+// en route.
+const standbyFailFile = "veille-echec.json"
+
+// standbyFailure : le contenu de standbyFailFile, une ligne JSON.
+type standbyFailure struct {
+	// Secondes Unix.
+	At      int64  `json:"at"`
+	Message string `json:"message"`
 }
 
 // control applique une consigne d'Eyrie (une ligne) : une consigne de relais (`relais.go`), ou {"arret":true},
@@ -163,6 +177,16 @@ func run(args []string) int {
 			fmt.Fprintf(logFile, format+"\n", args...)
 		}
 	}
+	// Un échec va aussi au journal du nœud, et, pour le veilleur, que personne n'écoute peut-être, à standbyFailFile.
+	failed := func(msg string) int {
+		logf("échec : %s", msg)
+		fail(msg)
+		if *standby {
+			line, _ := json.Marshal(standbyFailure{At: time.Now().Unix(), Message: msg})
+			_ = os.WriteFile(filepath.Join(*dir, standbyFailFile), append(line, '\n'), 0o600)
+		}
+		return exitFailed
+	}
 
 	emit(map[string]string{"state": "starting"})
 	ctx, cancel := context.WithCancel(context.Background())
@@ -170,8 +194,7 @@ func run(args []string) int {
 	relay := &relay{}
 	exe, err := os.Executable()
 	if err != nil {
-		fail("exécutable du compagnon : " + err.Error())
-		return exitFailed
+		return failed("exécutable du compagnon : " + err.Error())
 	}
 	// Le dossier du compagnon : celui d'eyrie.exe.
 	here := filepath.Dir(exe)
@@ -179,8 +202,7 @@ func run(args []string) int {
 		// L'entrée standard est ignorée : Eyrie se rattache par le tube, avant même que le nœud soit en route.
 		ln, err := listenControl(*dir)
 		if err != nil {
-			fail("tube de contrôle : " + err.Error())
-			return exitFailed
+			return failed("tube de contrôle : " + err.Error())
 		}
 		allowed := []string{filepath.Join(here, "eyrie.exe"), filepath.Join(here, "eyrie-tailnet.exe")}
 		// Les lignes d'état ne vont plus qu'à l'Eyrie rattachée.
@@ -211,26 +233,22 @@ func run(args []string) int {
 	// La clé du nœud n'est jamais écrite en clair (voir etat.go).
 	store, err := openStateStore(*dir)
 	if err != nil {
-		fail(err.Error())
-		return exitFailed
+		return failed(err.Error())
 	}
 	srv := &tsnet.Server{Dir: *dir, Store: store, Hostname: *hostname, Logf: logf, UserLogf: logf}
 	defer srv.Close()
 	if err := srv.Start(); err != nil {
-		fail("démarrage : " + err.Error())
-		return exitFailed
+		return failed("démarrage : " + err.Error())
 	}
 	lc, err := srv.LocalClient()
 	if err != nil {
-		fail("client local : " + err.Error())
-		return exitFailed
+		return failed("client local : " + err.Error())
 	}
 	go noeud.Suivre(ctx, lc, emit)
 
 	ln, err := srv.Listen("tcp", fmt.Sprintf(":%d", *port))
 	if err != nil {
-		fail("écoute sur le tailnet : " + err.Error())
-		return exitFailed
+		return failed("écoute sur le tailnet : " + err.Error())
 	}
 	who := func(ctx context.Context, addr string) (identity, error) {
 		who, err := lc.WhoIs(ctx, addr)
@@ -250,10 +268,10 @@ func run(args []string) int {
 	if *standby {
 		wl, err := srv.Listen("tcp", fmt.Sprintf(":%d", wakePort))
 		if err != nil {
-			fail("écoute sur le tailnet : " + err.Error())
-			return exitFailed
+			return failed("écoute sur le tailnet : " + err.Error())
 		}
 		go newWaker(*mobile, filepath.Join(here, "eyrie.exe"), who, logf).serve(ctx, wl)
+		_ = os.Remove(filepath.Join(*dir, standbyFailFile))
 	}
 
 	<-ctx.Done()
