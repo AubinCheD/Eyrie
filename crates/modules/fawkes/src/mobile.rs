@@ -299,20 +299,34 @@ pub fn screen(app: &mut App, path: &str, _cx: &mut Cx) -> Option<Screen> {
 
 /// L'accueil : un bandeau par groupe, dans l'ordre du PC, groupes vides compris.
 fn home(st: &AppState, seen: &HashMap<TermId, Seen>) -> Screen {
-    let mut s = Screen::new("Fawkes");
+    let mut s = Screen::new("Fawkes").act(Act::screen("Nouveau terminal", "nouveau").glyph("➕"));
     if st.terminals.len() > SEARCH_FROM {
         s = s.search("Chercher un terminal");
     }
-    let waiting = st.terminals.iter().filter(|t| seen.get(&t.id).is_some_and(|s| s.state == State::Waiting)).count();
-    if waiting > 0 {
-        let text = if waiting == 1 {
-            "Une session Claude attend une réponse.".to_string()
-        } else {
-            format!("{waiting} sessions Claude attendent une réponse.")
-        };
-        s.note(text, Tone::Warn);
+    // En tête, les sessions Claude qui attendent, chacune à un toucher de son terminal ; elles restent aussi dans leur
+    // groupe (une autre clé : une ligne par clé dans l'écran).
+    let waiting: Vec<(&Group, &TermSpec)> = st
+        .groups
+        .iter()
+        .flat_map(|g| g.terminals.iter().filter_map(|id| st.term(*id)).map(move |t| (g, t)))
+        .filter(|(_, t)| seen.get(&t.id).is_some_and(|s| s.state == State::Waiting))
+        .collect();
+    if !waiting.is_empty() {
+        s.band(
+            Band::new("attend", "Claude attend").fixed().glyph("✳").tone(Tone::Warn).aside(waiting.len().to_string()),
+        );
     }
-    s.row(Row::new("Nouveau terminal").glyph("➕").subtitle("Shell ou Claude, dans un dossier récent").open("nouveau"));
+    for (g, t) in waiting {
+        let mut row = Row::new(t.display_title())
+            .key(format!("attend:{}", t.id))
+            .subtitle(format!("{} · {}", g.name, short_path(&t.cwd)))
+            .color(rgb(t.color.unwrap_or(g.color)))
+            .glyph("✳")
+            .tone(Tone::Warn)
+            .open(format!("t/{}", t.id));
+        row.acts = term_acts(t, seen.get(&t.id).unwrap_or(&UNSEEN));
+        s.row(row);
+    }
     for g in &st.groups {
         let terms: Vec<&TermSpec> = g.terminals.iter().filter_map(|id| st.term(*id)).collect();
         let n = tally(&terms, seen);
@@ -748,6 +762,36 @@ mod tests {
         // Le geste visible est aussi dans le menu : la liste blanche du pont l'accepte de l'un ou de l'autre.
         let menu: Vec<&str> = asleep.acts.iter().map(|a| a.id.as_str()).collect();
         assert!(menu.contains(&"reveiller:3") && !menu.contains(&"veille:3"));
+    }
+
+    /// Les sessions qui attendent sont en tête, dans un bandeau qui ne se plie pas, chacune à un toucher de son
+    /// terminal ; elles restent aussi dans leur groupe. « Nouveau terminal » est dans la barre du haut.
+    #[test]
+    fn waiting_sessions_come_first_and_stay_in_their_group() {
+        let (mut st, mut seen) = three_groups();
+        st.groups[2].terminals.push(4);
+        st.terminals.push(term(4, 7));
+        seen.insert(4, claude(State::Waiting));
+        seen.insert(1, claude(State::Waiting));
+        let s = home(&st, &seen);
+        let first = &bands(&s)[0];
+        assert_eq!((first.0.as_str(), first.3, first.5), ("attend", Fold::No, Some(Tone::Warn)));
+        assert_eq!(first.2, "2");
+        let top: Vec<(&str, Option<&str>)> =
+            rows_under(&s, "attend").iter().map(|r| (r.key.as_str(), r.open.as_deref())).collect();
+        assert_eq!(top, [("attend:1", Some("t/1")), ("attend:4", Some("t/4"))], "dans l'ordre du PC");
+        assert!(rows_under(&s, "g7").iter().any(|r| r.key == "4"), "toujours dans son groupe");
+        let ozmo = bands(&s).into_iter().find(|b| b.0 == "g7").unwrap();
+        assert_eq!((ozmo.3, ozmo.4.as_str()), (Fold::Open, "1 attend"), "un groupe qui attend s'ouvre");
+        let keys: Vec<&str> =
+            s.blocks.iter().filter_map(|b| if let Block::Row(r) = b { Some(r.key.as_str()) } else { None }).collect();
+        let unique: std::collections::BTreeSet<&str> = keys.iter().copied().collect();
+        assert_eq!(unique.len(), keys.len(), "une ligne par clé");
+        let bar: Vec<_> = s.acts.iter().map(|a| (a.label.as_str(), a.open.as_deref(), a.reaches_pc())).collect();
+        assert_eq!(bar, [("Nouveau terminal", Some("nouveau"), false)]);
+        assert!(s.blocks.iter().all(|b| !matches!(b, Block::Row(r) if r.open.as_deref() == Some("nouveau"))));
+        let (calm, calm_seen) = three_groups();
+        assert!(bands(&home(&calm, &calm_seen)).iter().all(|b| b.0 != "attend"), "rien n'attend : pas de bandeau");
     }
 
     #[test]
