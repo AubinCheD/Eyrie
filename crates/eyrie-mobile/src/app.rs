@@ -8,7 +8,7 @@ use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
-use suite_mobile::msg::{CommandCard, ModuleCard, Note, Rights, ToPc, ToPhone, Waiting};
+use suite_mobile::msg::{CommandCard, ModuleCard, Note, Rights, ToPc, ToPhone, Waiting, module_target};
 use suite_mobile::pairing::{self, Ticket};
 use suite_mobile::term::{Key, TermInput};
 use suite_mobile::ui::{Act, Block, Fold, Screen, Tab, Tone};
@@ -240,11 +240,28 @@ impl Nav {
         true
     }
 
+    /// Ouvre ce que désigne un toucher (`Row.open`, `Act.open`) : un sous-écran du module affiché, ou l'écran d'un autre
+    /// module (« @module <id> [<chemin>] » : son onglet, puis cet écran ; rien n'est envoyé au PC). `false` : rien.
+    fn open(&mut self, open: &str) -> bool {
+        match module_target(open) {
+            Some((module, path)) => {
+                self.open_module_path(module, path);
+                true
+            }
+            None => self.open_path(open),
+        }
+    }
+
     /// Passe à un onglet de l'écran : il remplace l'écran affiché dans la pile (le retour mène à ce qu'il y avait
-    /// dessous) et garde sa position dans la liste ; l'onglet affiché remonte en haut. `None` : pas de module affiché.
+    /// dessous) et garde sa position dans la liste ; l'onglet affiché remonte en haut. Un onglet vers un autre module
+    /// (« @module … ») l'ouvre, comme un lien. `None` : pas de module affiché.
     fn select_tab(&mut self, path: &str) -> Option<Moved> {
         if !self.is_module_tab() {
             return None;
+        }
+        if let Some((module, path)) = module_target(path) {
+            self.open_module_path(module, path);
+            return Some(Moved::Screen);
         }
         if self.top_path() == path {
             self.scroll.remove(&self.key());
@@ -1342,10 +1359,11 @@ impl Controller {
         self.refresh_all();
     }
 
-    /// Ouvre un sous-écran du module courant : il part du haut.
+    /// Ouvre un sous-écran du module courant (il part du haut), ou l'écran d'un autre module (« @module <id>
+    /// [<chemin>] »), sans rien envoyer au PC.
     pub(crate) fn open_path(&mut self, path: &str) {
         self.remember_scroll();
-        if self.nav.open_path(path) {
+        if self.nav.open(path) {
             self.refresh_screen();
         }
     }
@@ -2086,6 +2104,30 @@ mod tests {
         assert!(!nav.gone("fawkes", ""), "l'accueil reste");
         nav.goto("owlery/pr/12");
         assert_eq!((nav.tab.as_str(), stack(&nav, "owlery")), ("owlery", vec![String::new(), "pr/12".into()]));
+    }
+
+    /// « @module <id> [<chemin>] » dans `Row.open`, `Act.open` ou `Tab.path` : l'onglet de cet autre module, puis cet
+    /// écran (son accueil sans chemin) ; la pile du module d'où l'on vient reste, et rien d'autre n'est un lien.
+    #[test]
+    fn a_link_opens_the_screen_of_another_module() {
+        let mut nav = Nav::new();
+        nav.open_module_path("grimoire", "profil/perso");
+        assert!(nav.open("@module gringotts compte/perso"));
+        assert_eq!(
+            (nav.tab.as_str(), stack(&nav, "gringotts")),
+            ("gringotts", vec![String::new(), "compte/perso".into()])
+        );
+        assert_eq!(stack(&nav, "grimoire"), ["", "profil/perso"], "le module d'où l'on vient garde sa pile");
+        assert!(nav.back());
+        assert_eq!((nav.tab.as_str(), nav.top_path()), ("gringotts", String::new()), "retour : l'accueil du module");
+
+        nav.open_module_path("owlery", "item/3");
+        assert_eq!(nav.select_tab("@module fawkes"), Some(Moved::Screen), "un onglet vers un autre module");
+        assert_eq!((nav.tab.as_str(), stack(&nav, "fawkes")), ("fawkes", vec![String::new()]));
+        assert!(nav.open("t/3"), "un chemin du module affiché");
+        assert_eq!(stack(&nav, "fawkes"), ["", "t/3"]);
+        assert!(nav.open("@module fawkes nouveau"), "le même module : l'écran s'empile");
+        assert_eq!(stack(&nav, "fawkes"), ["", "t/3", "nouveau"]);
     }
 
     #[test]

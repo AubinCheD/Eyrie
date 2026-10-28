@@ -17,7 +17,8 @@ export struct UiAct {
     input-value: string,
     multiline: bool,
     url: string,
-    // Action propre au téléphone : ouvrir ce sous-écran du module (rien n'est envoyé au PC).
+    // Action propre au téléphone : ouvrir ce sous-écran du module, ou celui d'un autre (« @module <id> [<chemin>] ») ;
+    // rien n'est envoyé au PC.
     open: string,
     busy: bool,
 }

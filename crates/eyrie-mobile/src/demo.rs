@@ -1,8 +1,8 @@
 //! Démonstration sans PC (`EYRIE_MOBILE_DEMO=<scène>`), pour les captures et la mise au point de l'interface :
 //! `ensemble`, `fawkes`, `recherche`, `terminal`, `patronus`, `depot`, `menu`, `erreur`, `erreur-lue`, `erreur-longue`,
 //! `historique`, `diff`, `diff-retour`, `plus`, `notes`, `reglages`, `attente`, `injoignable`, `refus`, `accueil`,
-//! `commandes`, `accueil-tailscale`, `code`, `appairage`, `hors-ligne`. Suffixe `+clair` ou `+sombre` : le thème
-//! (sinon celui du système).
+//! `commandes`, `accueil-tailscale`, `code`, `appairage`, `hors-ligne`, `lien` (l'écran d'un autre module). Suffixe
+//! `+clair` ou `+sombre` : le thème (sinon celui du système).
 
 use slint::ComponentHandle;
 use suite_mobile::msg::{Badge, CommandCard, ModuleCard, Note, ToPhone, Waiting};
@@ -525,6 +525,25 @@ pub fn play(ui: &AppWindow, scene: &str) {
         }
         "hors-ligne" => {
             with(|c| c.demo_offline());
+        }
+        // Un lien de Grimoire vers Gringotts : l'écran de Gringotts s'ouvre sur le téléphone, rien n'est envoyé au PC.
+        "lien" => {
+            let mut grimoire = Screen::new("Grimoire");
+            grimoire.row(
+                Row::new("Limites du compte perso")
+                    .subtitle("5 h 38 % · semaine 61 %")
+                    .glyph("💰")
+                    .open("@module gringotts compte/perso"),
+            );
+            feed(ToPhone::Screen { module: "grimoire".into(), path: String::new(), screen: grimoire });
+            let mut account = Screen::new("Compte perso").subtitle("Gringotts");
+            account.meter("5 heures", 0.38, "38 % · reprise à 17:40", Tone::Ok);
+            account.meter("Semaine", 0.61, "61 % · reprise lundi", Tone::Warn);
+            feed(ToPhone::Screen { module: "gringotts".into(), path: "compte/perso".into(), screen: account });
+            with(|c| {
+                c.nav_select("grimoire");
+                c.open_path("@module gringotts compte/perso");
+            });
         }
         // `ecran:<module>:<fichier.json>` : un écran enregistré (par l'essai d'un module), montré dans son module.
         s if s.starts_with("ecran:") => {
