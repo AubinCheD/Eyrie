@@ -79,8 +79,9 @@ pub enum Drive {
 pub struct Env {
     /// Dossiers interdits, et tout ce qu'ils contiennent : tels qu'écrits et résolus.
     forbidden: Vec<PathBuf>,
-    /// Le dossier des profils (`C:\Users`) et celui de l'utilisateur : les autres profils sont interdits.
-    profiles: Option<(PathBuf, PathBuf)>,
+    /// Le dossier des profils (`C:\Users`) et celui de l'utilisateur, sous ses noms long et court
+    /// (`C:\Users\CLBR-A~1`) : les autres profils sont interdits.
+    profiles: Option<(PathBuf, Vec<PathBuf>)>,
     /// L'accès rapide : libellé et dossier, montré s'il existe et passe le contrôle.
     quick: Vec<(String, PathBuf)>,
     drive: fn(char) -> Drive,
@@ -103,7 +104,7 @@ impl Env {
         forbidden.push(suite_accounts::suite_dir());
         forbidden.push(suite_accounts::local_suite_dir());
         forbidden.extend(data.iter().map(|d| d.to_path_buf()));
-        let profiles = home.as_ref().and_then(|h| Some((resolved_or(h.parent()?), resolved_or(h))));
+        let profiles = home.as_ref().and_then(|h| Some((resolved_or(h.parent()?), forms(h))));
         let mut quick = Vec::new();
         quick.extend(home.clone().map(|h| ("Dossier personnel".to_string(), h)));
         quick.extend(dirs::desktop_dir().map(|d| ("Bureau".to_string(), d)));
@@ -163,6 +164,39 @@ fn resolved(p: &Path) -> Option<PathBuf> {
 
 fn resolved_or(p: &Path) -> PathBuf {
     resolved(p).unwrap_or_else(|| p.to_path_buf())
+}
+
+/// Un dossier sous ses noms long et court : résolu, puis son dernier nom en 8.3 (`C:\Users\CLBR-A~1`), puis tout en
+/// 8.3, quand ils diffèrent. Le contrôle d'avant la résolution reconnaît ainsi le profil de l'utilisateur écrit court.
+fn forms(p: &Path) -> Vec<PathBuf> {
+    let long = resolved_or(p);
+    let mut out = vec![long.clone()];
+    if let Some(short) = short_name(&long) {
+        if let (Some(parent), Some(name)) = (long.parent(), short.file_name()) {
+            out.push(parent.join(name));
+        }
+        out.push(short);
+    }
+    let mut seen = BTreeSet::new();
+    out.retain(|f| seen.insert(key(f)));
+    out
+}
+
+/// Le nom court (8.3) d'un chemin existant, s'il en a un.
+#[cfg(windows)]
+fn short_name(p: &Path) -> Option<PathBuf> {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+    let wide: Vec<u16> = p.as_os_str().encode_wide().chain([0]).collect();
+    let mut buf = vec![0u16; MAX_PATH_LEN + 1];
+    // SAFETY : chaîne terminée par zéro ; le tampon a la taille annoncée.
+    let n = unsafe { GetShortPathNameW(wide.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) } as usize;
+    (n > 0 && n < buf.len()).then(|| PathBuf::from(std::ffi::OsString::from_wide(&buf[..n])))
+}
+
+#[cfg(not(windows))]
+fn short_name(_: &Path) -> Option<PathBuf> {
+    None
 }
 
 /// La clé d'un chemin pour comparer : sans casse, `/` pour séparateur, sans `/` final.
@@ -248,8 +282,10 @@ fn protected(env: &Env, p: &Path) -> bool {
         |c| matches!(c, Component::Normal(n) if FORBIDDEN_NAMES.contains(&n.to_string_lossy().to_lowercase().as_str())),
     );
     let zoned = env.forbidden.iter().any(|z| inside(p, z));
-    let other_profile =
-        env.profiles.as_ref().is_some_and(|(all, mine)| inside(p, all) && key(p) != key(all) && !inside(p, mine));
+    let other_profile = env
+        .profiles
+        .as_ref()
+        .is_some_and(|(all, mine)| inside(p, all) && key(p) != key(all) && !mine.iter().any(|m| inside(p, m)));
     named || zoned || other_profile
 }
 
@@ -839,7 +875,7 @@ mod tests {
         let root = long(root);
         Env {
             forbidden: with_resolved(vec![root.join("zone")]),
-            profiles: Some((root.join("profils"), root.join("profils").join("moi"))),
+            profiles: Some((root.join("profils"), vec![root.join("profils").join("moi")])),
             quick: Vec::new(),
             drive: fake_drive,
             drives: fake_drives,
@@ -937,6 +973,29 @@ mod tests {
         assert_eq!(check(&env, &at("libre").replace('\\', "/")).unwrap(), long(&root.join("libre")));
     }
 
+    /// Le profil de l'utilisateur écrit sous son nom court (`C:\Users\CLBR-A~1\DEV`) est le sien : permis, rendu sous
+    /// son nom long ; un autre profil, même écrit court, reste interdit.
+    #[test]
+    fn the_short_name_of_the_users_own_profile_is_allowed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = long(tmp.path());
+        let (mine, other) = (root.join("profils").join("utilisateur-du-pc"), root.join("profils").join("autre-compte"));
+        mkdir(&mine.join("projets"));
+        mkdir(&other.join("secrets"));
+        let short = |p: &Path| short_name(p).and_then(|s| s.file_name().map(|n| p.with_file_name(n)));
+        let (Some(mine_short), Some(other_short)) = (short(&mine), short(&other)) else { return };
+        if key(&mine_short) == key(&mine) {
+            eprintln!("pas de noms courts sur ce volume : essai sauté");
+            return;
+        }
+        let env = Env { profiles: Some((root.join("profils"), forms(&mine))), ..env(&root) };
+        let projects = mine_short.join("projets");
+        assert_eq!(check(&env, &projects.to_string_lossy()), Ok(mine.join("projets")));
+        let secrets = other_short.join("secrets");
+        assert!(check(&env, &secrets.to_string_lossy()).unwrap_err().contains("protégé"));
+        assert!(check(&env, &other.join("secrets").to_string_lossy()).unwrap_err().contains("protégé"));
+    }
+
     #[test]
     fn the_real_pc_protects_windows_and_the_application_data() {
         let env = Env::system(&[]);
@@ -948,6 +1007,11 @@ mod tests {
         assert!(check(&env, &local).unwrap_err().contains("protégé"));
         // Le dossier temporaire de l'utilisateur, même sous son nom court.
         assert!(check(&env, &std::env::temp_dir().to_string_lossy()).unwrap_err().contains("protégé"));
+        // Son profil, sous son nom court s'il en a un (`C:\Users\CLBR-A~1`).
+        let home = dirs::home_dir().unwrap();
+        for form in forms(&home) {
+            assert_eq!(check(&env, &form.to_string_lossy()), Ok(resolved_or(&home)), "{}", form.display());
+        }
     }
 
     #[test]
