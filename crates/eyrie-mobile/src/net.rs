@@ -1,7 +1,8 @@
 //! La liaison avec le PC, dans son propre fil : connexion, salut, lecture, envoi, `Ping` toutes les 15 s (45 s sans
 //! rien du PC : coupée), et reconnexion avec un délai croissant (1 s, 2 s… 30 s), immédiate quand l'application
 //! revient au premier plan ou que le téléphone se reconnecte à Tailscale (`kick`). Un refus du PC (appareil retiré,
-//! autre compte Tailscale) n'est pas réessayé en boucle. Abandonnée (PC changé ou oublié), plus rien n'en sort.
+//! autre compte Tailscale) n'est pas réessayé en boucle ; « Eyrie se ferme », même pendant le salut, n'en est pas un.
+//! Abandonnée (PC changé ou oublié), plus rien n'en sort.
 //!
 //! Coupée, la liaison dit ce qu'elle sait du PC (voir [`crate::veilleur`]) : après une connexion ratée, le nœud du
 //! téléphone (hors ligne ? PC hors du tailnet ?), puis le veilleur du PC (Eyrie fermée, en démarrage, accès coupé), au
@@ -232,6 +233,11 @@ fn run(
                         reason
                     }
                 }
+            }
+            // Eyrie se ferme pendant le salut : comme pendant la connexion, pas un refus.
+            Err(Failure::Closing(reason)) => {
+                watch.closing();
+                reason
             }
             Err(Failure::Refused(reason)) => {
                 on(NetEvent::Refused(reason));
@@ -688,6 +694,66 @@ mod tests {
         assert_eq!(pc.requests.load(Ordering::SeqCst), 1);
         drop(link);
         assert_eq!(pc.sessions.join().unwrap(), 2);
+    }
+
+    /// Eyrie qui se ferme pendant le salut (son adieu avant tout accueil) : comme pendant la connexion, « Eyrie se
+    /// ferme » est dit tout de suite et la liaison réessaie après le temps qu'elle se ferme, sans attendre
+    /// « Réessayer » ; rouverte, elle accueille le téléphone.
+    #[test]
+    fn a_closing_eyrie_during_the_hello_is_retried_not_refused() {
+        let pc = Keypair::generate();
+        let pc_key = pc.public;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let server = std::thread::spawn(move || {
+            for (n, s) in listener.incoming().enumerate() {
+                let mut s = s.unwrap();
+                let (t, _) = channel::accept(&mut s, &pc).unwrap();
+                let (mut r, mut w) = t.split(s.try_clone().unwrap(), s);
+                let _hello: ToPc = r.recv().unwrap();
+                if n == 0 {
+                    w.send(&ToPhone::Bye { reason: "Eyrie se ferme.".into(), closing: true }).unwrap();
+                    continue;
+                }
+                w.send(&welcome(None)).unwrap();
+                std::thread::sleep(Duration::from_millis(200));
+                return;
+            }
+        });
+        let (tx, rx) = mpsc::channel();
+        let tuning = Tuning { silence: SILENCE, pace: QUICK };
+        let link = Link::start_with(peer(addr, pc_key, Keypair::generate()), tuning, move |ev| {
+            let _ = tx.send(ev);
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let next = || rx.recv_timeout(deadline.saturating_duration_since(Instant::now())).expect("rien de la liaison");
+        let closed_at = loop {
+            match next() {
+                NetEvent::Offline { reason, retry_in, away } => {
+                    assert_eq!(reason, "Eyrie se ferme.");
+                    assert_eq!(away, Away { reach: Reach::Unknown, closed: true, starting: false });
+                    assert_eq!(retry_in, QUICK.closing);
+                    break Instant::now();
+                }
+                NetEvent::Connecting => {}
+                other => panic!("pas un refus, ni rien d'autre avant « Eyrie se ferme » : {other:?}"),
+            }
+        };
+        loop {
+            match next() {
+                NetEvent::Connecting => {
+                    let first_try = closed_at.elapsed();
+                    assert!(
+                        first_try >= QUICK.closing - Duration::from_millis(30),
+                        "reconnexion trop tôt : {first_try:?}"
+                    );
+                }
+                NetEvent::Online(_) => break,
+                other => panic!("la liaison se reconnecte d'elle-même : {other:?}"),
+            }
+        }
+        drop(link);
+        server.join().unwrap();
     }
 
     /// Le PC active son veilleur pendant la connexion : son nouvel accueil donne la clé de démarrage, qui part vers

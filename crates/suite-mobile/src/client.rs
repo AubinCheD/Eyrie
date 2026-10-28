@@ -87,23 +87,30 @@ pub struct Connection {
     pub peer: Peer,
 }
 
-/// Pourquoi une étape a échoué : le PC a refusé (inutile de réessayer tel quel), ou la connexion s'est rompue.
+/// Pourquoi une étape a échoué : le PC a refusé (inutile de réessayer tel quel), Eyrie se ferme sur le PC
+/// (`Bye { closing }` : à réessayer, le temps qu'elle se ferme), ou la connexion s'est rompue.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Failure {
     Refused(String),
+    Closing(String),
     Broken(String),
 }
 
 impl std::fmt::Display for Failure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Failure::Refused(s) | Failure::Broken(s) => f.write_str(s),
+            Failure::Refused(s) | Failure::Closing(s) | Failure::Broken(s) => f.write_str(s),
         }
     }
 }
 
 fn broken(e: impl std::fmt::Display) -> Failure {
     Failure::Broken(e.to_string())
+}
+
+/// L'adieu du PC : Eyrie se ferme (à réessayer), ou il coupe l'accès mobile, révoque l'appareil (un refus).
+fn bye(reason: String, closing: bool) -> Failure {
+    if closing { Failure::Closing(reason) } else { Failure::Refused(reason) }
 }
 
 /// Ce que dit le PC à un appareil appairé.
@@ -186,7 +193,8 @@ pub fn hello(conn: &mut Connection, pc_key: &[u8; 32], device: &str, model: &str
         ToPhone::Welcome { .. } => {
             Err(Failure::Refused("Eyrie et l'application n'ont pas la même version du protocole".into()))
         }
-        ToPhone::Refused { reason } | ToPhone::Bye { reason, .. } => Err(Failure::Refused(reason)),
+        ToPhone::Refused { reason } => Err(Failure::Refused(reason)),
+        ToPhone::Bye { reason, closing } => Err(bye(reason, closing)),
         other => Err(broken(format!("réponse inattendue : {other:?}"))),
     }
 }
@@ -219,7 +227,8 @@ pub fn pair(
             }
             Ok(sas)
         }
-        ToPhone::Refused { reason } | ToPhone::Bye { reason, .. } => Err(Failure::Refused(reason)),
+        ToPhone::Refused { reason } => Err(Failure::Refused(reason)),
+        ToPhone::Bye { reason, closing } => Err(bye(reason, closing)),
         other => Err(broken(format!("réponse inattendue : {other:?}"))),
     }
 }
@@ -228,7 +237,59 @@ pub fn pair(
 pub fn wait_paired(conn: &mut Connection) -> Result<String, Failure> {
     match conn.rx.recv::<ToPhone>().map_err(broken)? {
         ToPhone::Paired { pc } => Ok(pc),
-        ToPhone::Refused { reason } | ToPhone::Bye { reason, .. } => Err(Failure::Refused(reason)),
+        ToPhone::Refused { reason } => Err(Failure::Refused(reason)),
+        ToPhone::Bye { reason, closing } => Err(bye(reason, closing)),
         other => Err(broken(format!("réponse inattendue : {other:?}"))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::TcpListener;
+    use std::thread::JoinHandle;
+
+    use super::*;
+
+    /// Un PC qui répond `answer` dès la poignée de main faite, puis lit jusqu'à ce que le téléphone ferme.
+    fn pc_answering(answer: ToPhone) -> (Connection, [u8; 32], JoinHandle<()>) {
+        let pc = Keypair::generate();
+        let pc_key = pc.public;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let server = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let (t, _) = channel::accept(&mut s, &pc).unwrap();
+            let (mut r, mut w) = t.split(s.try_clone().unwrap(), s);
+            w.send(&answer).unwrap();
+            while r.recv::<ToPc>().is_ok() {}
+        });
+        let conn = open(&[addr], &Keypair::generate(), Duration::from_secs(5)).unwrap();
+        (conn, pc_key, server)
+    }
+
+    /// Eyrie qui se ferme pendant le salut ou l'appairage (`Bye { closing }`) n'est pas un refus : le téléphone
+    /// réessaie, le temps qu'elle se ferme. Un adieu sans fermeture (accès coupé, appareil retiré) en est un.
+    #[test]
+    fn a_closing_eyrie_is_not_a_refusal() {
+        type Step = fn(&mut Connection, &[u8; 32]) -> Result<(), Failure>;
+        let steps: [(&str, Step); 3] = [
+            ("hello", |c, k| hello(c, k, "x", "y").map(drop)),
+            ("pair", |c, _| pair(c, b"code", None, "x", "y").map(drop)),
+            ("wait_paired", |c, _| wait_paired(c).map(drop)),
+        ];
+        let bye = |closing| ToPhone::Bye { reason: "Eyrie se ferme.".into(), closing };
+        let refused = ToPhone::Refused { reason: "appareil retiré".into() };
+        for (answer, want) in [
+            (bye(true), Failure::Closing("Eyrie se ferme.".into())),
+            (bye(false), Failure::Refused("Eyrie se ferme.".into())),
+            (refused, Failure::Refused("appareil retiré".into())),
+        ] {
+            for (name, step) in steps {
+                let (mut conn, pc_key, server) = pc_answering(answer.clone());
+                assert_eq!(step(&mut conn, &pc_key), Err(want.clone()), "{name} : {answer:?}");
+                drop(conn);
+                server.join().unwrap();
+            }
+        }
     }
 }
