@@ -140,6 +140,21 @@ fn a_module_can_be_stopped_and_started_again() {
     assert!(h.state().core.slot("carnet").unwrap().is_running());
 }
 
+/// « Montre-moi » (« Montrer sur le PC » depuis le téléphone) rend d'abord la fenêtre réduite : Windows ne donne pas le
+/// premier plan à une fenêtre réduite. (Les fenêtres détachées, dessinées dans la principale par egui_kittest, ne se
+/// voient pas ici.)
+#[test]
+fn showing_a_module_restores_its_minimized_window_before_focusing_it() {
+    use egui::ViewportCommand::{Focus, Minimized};
+    let mut h = suite();
+    h.state().core.host.show("carnet");
+    h.step();
+    let commands = &h.output().viewport_output[&egui::ViewportId::ROOT].commands;
+    let at = |c: &egui::ViewportCommand| commands.iter().position(|x| x == c);
+    let (restore, focus) = (at(&Minimized(false)), at(&Focus));
+    assert!(restore.is_some() && restore < focus, "{commands:?}");
+}
+
 /// Un module qui panique à l'affichage.
 struct Boom {
     info: ModuleInfo,

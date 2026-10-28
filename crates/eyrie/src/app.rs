@@ -558,7 +558,7 @@ impl Suite {
                     layout::activate(t, tile);
                 }
                 if window != 0 {
-                    ctx.send_viewport_cmd_to(crate::windows::viewport_id(window), ViewportCommand::Focus);
+                    raise(ctx, crate::windows::viewport_id(window));
                 }
             }
             None => {
@@ -828,7 +828,7 @@ impl Suite {
                 self.core.slot(&m).and_then(|s| s.module()).and_then(|m| m.views().first().map(|v| v.id.clone()))
             {
                 self.reveal(ctx, Pane::module(&m, &view));
-                ctx.send_viewport_cmd(ViewportCommand::Focus);
+                raise(ctx, egui::ViewportId::ROOT);
             }
         }
         if let Some(key) = out.settings {
@@ -1122,6 +1122,13 @@ pub fn data_mode(mode: ModuleData, dir: &std::path::Path, id: &str) -> DataMode 
         ModuleData::Shared => DataMode::Shared,
         ModuleData::Trial => DataMode::Trial(dir.join("essai").join(id)),
     }
+}
+
+/// Ramène une fenêtre au premier plan. Réduite, elle est d'abord rendue : Windows ne donne pas le premier plan à une
+/// fenêtre réduite (« Montrer sur le PC » depuis le téléphone, qui ne voit pas l'écran du PC).
+fn raise(ctx: &egui::Context, viewport: egui::ViewportId) {
+    ctx.send_viewport_cmd_to(viewport, ViewportCommand::Minimized(false));
+    ctx.send_viewport_cmd_to(viewport, ViewportCommand::Focus);
 }
 
 /// Toutes les vues principales des modules disponibles, plus la vue d'ensemble.
