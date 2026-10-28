@@ -117,6 +117,17 @@ fn status(app: &App, base: &ModuleStatus) -> ModuleStatus {
     s
 }
 
+/// « Claude attend une réponse » pour les sessions qui viennent de se mettre à attendre. Sur le téléphone, elle mène
+/// à la session (`t/<id>`), ou à l'accueil de Fawkes, où elles sont en tête, s'il y en a plusieurs.
+fn waiting_note(new: &[(fawkes::model::TermId, String)]) -> Notification {
+    let titles: Vec<&str> = new.iter().map(|(_, title)| title.as_str()).collect();
+    let path = match new {
+        [(id, _)] => format!("t/{id}"),
+        _ => String::new(),
+    };
+    Notification::new(ID, "Claude attend une réponse", titles.join(", "), Tone::Warn).path(path)
+}
+
 /// Ce qu'une demande `ouvrir` donne au shell, contrôlé avant d'atteindre Fawkes : la demande vient d'un autre module,
 /// qui peut la tirer de données qu'il ne maîtrise pas (une forge…). `dir` : un dossier existant sur un lecteur local ou
 /// mappé (`X:\…`), jamais un chemin réseau (`\\serveur\…`, que le simple fait de le sonder ouvrirait en SMB) ; `resume` :
@@ -193,15 +204,15 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
     let module = Embedded::new(info(), bcx.host.clone(), app)
         .after_logic(move |app, cx| {
             let now = &app.ui.waiting;
-            let new: Vec<String> = app
+            let new: Vec<(fawkes::model::TermId, String)> = app
                 .st
                 .terminals
                 .iter()
                 .filter(|t| now.contains(&t.id) && !waiting_before.contains(&t.id))
-                .map(|t| t.display_title())
+                .map(|t| (t.id, t.display_title()))
                 .collect();
             if !new.is_empty() && app.st.settings.notify_windows {
-                cx.host.notify(Notification::new(ID, "Claude attend une réponse", new.join(", "), Tone::Warn));
+                cx.host.notify(waiting_note(&new));
             }
             waiting_before = now.clone();
         })
@@ -294,6 +305,15 @@ mod tests {
         for dir in [r"\\hote.invalid\partage", "//hote.invalid/partage", "relatif", r"C:\n'existe\pas", ""] {
             assert!(super::check_open(dir, None).is_err(), "{dir}");
         }
+    }
+
+    /// Touchée sur le téléphone, la notification mène à la session qui attend ; à l'accueil s'il y en a plusieurs.
+    #[test]
+    fn claude_waiting_leads_to_its_session_on_the_phone() {
+        let one = super::waiting_note(&[(12, "ozmo".into())]);
+        assert_eq!((one.body.as_str(), one.path.as_deref()), ("ozmo", Some("t/12")));
+        let two = super::waiting_note(&[(12, "ozmo".into()), (3, "diapaz".into())]);
+        assert_eq!((two.body.as_str(), two.path.as_deref()), ("ozmo, diapaz", Some("")));
     }
 
     #[test]
