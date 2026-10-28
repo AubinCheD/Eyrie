@@ -29,6 +29,10 @@
 //! « Cloner un dépôt… » ouvre un brouillon (`clonage.rs`, écran `cloner/<n>`) que DragonTree clone sans fenêtre
 //! (`clone_remote`) ; ses clonages en cours et ce qu'ils ont donné s'affichent en tête de la liste, avec « Annuler ».
 //! Le dépôt cloné est ouvert par DragonTree dans un onglet de fond : celui du téléphone, refermé comme les autres.
+//!
+//! Les pull requests (`pull_requests.rs`, écrans `pr…`, et l'onglet Plus d'un dépôt) sont celles que DragonTree lit sur
+//! les comptes de la suite, sa fenêtre fermée (`refresh_pull_requests`) : relues quand le téléphone les regarde et
+//! qu'elles ont plus de 5 min, ou sur « Actualiser ».
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -38,6 +42,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use dragontree_app::DragonTreeApp;
 use dragontree_app::clone::HostJob;
+use dragontree_app::pull_requests::PullRequestsSnapshot;
 use dragontree_app::repo::{Refresh, RemoteOp, RepoTab};
 use dragontree_app::repo_list::{QuickStatus, RepoDirectory};
 use dragontree_app::settings::{Settings, long_path_key, path_key};
@@ -56,6 +61,7 @@ use crate::clonage::{self, JobView};
 use crate::depot::{self, RepoView, file_key};
 use crate::historique::{self, LogPage, LogView, Marks};
 use crate::liste::{self, Entry, JOB_SHOWN, Job, Listed, RepoState, repo_key};
+use crate::pull_requests::{self, RepoPullRequests};
 
 /// L'état des dépôts que DragonTree n'a pas ouverts est relu au plus toutes les 30 s tant que le téléphone regarde la
 /// liste ; ceux des bandeaux pliés au départ, toutes les 5 min.
@@ -779,8 +785,10 @@ impl Phone {
         let entries: Vec<Entry> = repos.into_iter().map(|r| self.entry(app, &dir, r)).collect();
         let add = self.add_act(&entries, &dir);
         let mut s = liste::home(&entries, busy, Some(add));
-        // « Cloner un dépôt… » juste après « Ajouter » (les deux en icônes dans la barre), et sur la liste vide.
+        // « Cloner un dépôt… » juste après « Ajouter » (les deux en icônes dans la barre), et sur la liste vide ; les
+        // pull requests au menu.
         s.acts.insert(1, clonage::clone_act());
+        s.acts.push(pull_requests::list_act());
         if let Some(Block::Buttons { acts }) = s.blocks.iter_mut().find(|b| matches!(b, Block::Buttons { .. })) {
             acts.push(clonage::clone_act());
         }
@@ -931,6 +939,29 @@ impl Phone {
         }
         d.target = (!d.folder.is_empty()).then(|| check_clone_target(&d.parent, &d.folder, forbidden));
         Ok((String::new(), false))
+    }
+
+    /// Les pull requests que DragonTree a lues, relues en fond (`refresh_pull_requests`, sa fenêtre fermée) quand elles
+    /// ont plus de 5 min, comme sa fenêtre ouverte, ou qu'un compte n'a jamais été lu ; sans compte, rien n'est lu.
+    fn pull_requests(&mut self, app: &mut DragonTreeApp) -> PullRequestsSnapshot {
+        let snap = app.pull_requests();
+        let every = dragontree_app::pull_requests::REFRESH_EVERY;
+        let due = snap.refreshed.is_none_or(|t| t.elapsed() >= every) || snap.accounts.iter().any(|a| !a.read);
+        if !snap.accounts.is_empty() && !snap.loading && due && app.refresh_pull_requests() {
+            return app.pull_requests();
+        }
+        snap
+    }
+
+    /// Un écran des pull requests (`pr`, `pr/miennes`, `pr/a-relire`) ; une pull request mène au dépôt sur le téléphone
+    /// quand l'une de ses copies locales est dans la liste.
+    fn pull_requests_screen(&mut self, app: &mut DragonTreeApp, path: &str, now: i64) -> Screen {
+        let snap = self.pull_requests(app);
+        let listed: HashSet<String> = self.repos(app).iter().map(|r| repo_key(&r.path)).collect();
+        let open = |p: &dragontree_app::pull_requests::ListedPullRequest| {
+            p.local.iter().map(|l| repo_key(l)).find(|k| listed.contains(k)).map(|k| format!("depot/{k}"))
+        };
+        pull_requests::screen(path, &snap, open, now)
     }
 
     /// Les dépôts que DragonTree a fini de cloner pour le téléphone sont dans des onglets de fond : ceux du téléphone,
@@ -1187,6 +1218,9 @@ impl Phone {
         if path.starts_with("cloner/") {
             return self.clone_screen(app, path);
         }
+        if pull_requests::is_screen(path) {
+            return Some(self.pull_requests_screen(app, path, unix_now()));
+        }
         let rest = path.strip_prefix("depot/")?;
         let (key, sub) = rest.split_once('/').unwrap_or((rest, ""));
         let listed = self.find(app, key)?;
@@ -1248,11 +1282,16 @@ impl Phone {
                     view.pending = lock(&self.reads).get(key).and_then(|r| r.pending.get(&full).cloned());
                 }
             }
+            ["plus"] => {
+                let snap = self.pull_requests(app);
+                view.pull_requests = RepoPullRequests::of(&snap, &repo);
+            }
             _ => {}
         }
+        let t = app.repo_tab(&repo)?;
         let job = self.job(key, Some(t));
         let busy = job.as_ref().is_some_and(Job::running);
-        let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+        let now = unix_now();
         // Les chemins des sous-écrans sont absolus dans le module : le téléphone les demande tels quels.
         let base = format!("depot/{key}");
         let mut screen = match parts.as_slice() {
@@ -1290,6 +1329,15 @@ impl Phone {
     ) -> Result<(String, bool), String> {
         if action == "cloner" || action.starts_with("annuler-clone:") || path.starts_with("cloner/") {
             return self.clone_action(app, path, action, input);
+        }
+        if pull_requests::is_screen(path) {
+            if action != "actualiser" {
+                return Err("action inconnue".into());
+            }
+            if !app.refresh_pull_requests() {
+                return Err("DragonTree lit déjà les pull requests.".into());
+            }
+            return Ok(("DragonTree relit les pull requests…".into(), false));
         }
         let in_repo = path.strip_prefix("depot/").map(|r| r.split_once('/').map_or(r, |(k, _)| k).to_string());
         if action == "ajouter" && in_repo.is_none() {
@@ -1456,6 +1504,11 @@ impl Phone {
     }
 }
 
+/// Maintenant, en secondes Unix.
+fn unix_now() -> i64 {
+    SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
 /// Le clonage `job` de DragonTree tourne encore.
 fn cloning(app: &DragonTreeApp, job: Option<u64>) -> bool {
     job.is_some_and(|id| app.host_jobs().iter().any(|j| j.id == id && j.result.is_none()))
@@ -1472,6 +1525,7 @@ fn clone_note(j: &HostJob, listed: &HashSet<String>) -> Block {
 #[cfg(test)]
 mod tests {
     use dragontree_app::StartOptions;
+    use dragontree_forges::{Account, ForgeError, ForgeKind, PullRequest, PullRequestList, RepoLocation};
     use egui_kittest::Harness;
     use suite_sdk::mobile::ui::Block;
 
@@ -1887,7 +1941,7 @@ mod tests {
             let s = settle(h, phone, &path).unwrap_or_else(|| panic!("l'écran « {path} » n'existe pas sur le PC"));
             for open in s.opens() {
                 assert!(
-                    open.is_empty() || open.starts_with("depot/"),
+                    open.is_empty() || open.starts_with("depot/") || pull_requests::is_screen(&open),
                     "« {path} » ouvre « {open} », un chemin qui n'est pas absolu dans le module"
                 );
                 assert!(
@@ -2490,12 +2544,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Un compte GitHub de la suite, sans jeton, dans les comptes du profil d'essai de DragonTree.
-    fn seed_github(profile: &Path, id: &str) -> dragontree_forges::Account {
-        let account = dragontree_forges::Account {
+    /// Un compte de la suite (`kind` sur `host`), sans jeton, dans les comptes du profil d'essai de DragonTree.
+    fn seed_account(profile: &Path, id: &str, kind: ForgeKind, host: &str) -> Account {
+        let account = Account {
             id: id.into(),
-            kind: dragontree_forges::ForgeKind::GitHub,
-            host: "github.com".into(),
+            kind,
+            host: host.into(),
             username: "ada".into(),
             display_name: String::new(),
             orgs: Vec::new(),
@@ -2540,7 +2594,7 @@ mod tests {
         std::fs::create_dir_all(&protected).unwrap();
         let profile = dir.join("profil");
         let mut phone = phone_for(&profile, &shown);
-        let ada = seed_github(&profile, "aaaaaaaaaaaaaaaa");
+        let ada = seed_account(&profile, "aaaaaaaaaaaaaaaa", ForgeKind::GitHub, "github.com");
         let mut h = dragontree(&profile);
         h.state_mut().show_repo(&shown);
         // Le dossier temporaire est sous les données des applications : seul `protected` est protégé ici.
@@ -2673,6 +2727,102 @@ mod tests {
         let s = phone.screen(h.state_mut(), path).unwrap();
         assert_eq!(ids(&s), ["cloner"], "{s:?}");
         assert!(act(&mut phone, &mut h, "url", "https://exemple.org/x.git").is_err());
+        drop(h);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Les pull requests des comptes d'essai, sans réseau : sur GitHub, une de l'utilisateur sur `contoso/northwind`
+    /// et une à relire ailleurs ; GitLab refuse le jeton.
+    fn fake_forges(account: &Account) -> Result<PullRequestList, ForgeError> {
+        let pr = |title: &str, owner: &str, repo: &str, number: u64| PullRequest {
+            account_id: account.id.clone(),
+            url: format!("https://github.com/{owner}/{repo}/pull/{number}"),
+            repo: RepoLocation::GitHub { host: "github.com".into(), owner: owner.into(), repo: repo.into() },
+            number,
+            title: title.into(),
+            author: "ada".into(),
+            draft: false,
+            reviewers: vec![],
+            created_by_me: false,
+            review_requested: false,
+            updated_at: Some("2026-10-20T08:00:00Z".into()),
+            source_branch: Some("feature/x".into()),
+            target_branch: Some("main".into()),
+        };
+        if account.kind != ForgeKind::GitHub {
+            return Err(ForgeError::Unauthorized);
+        }
+        let mut mine = pr("Ajoute la page d'accueil", "contoso", "northwind", 12);
+        mine.created_by_me = true;
+        let mut review = pr("Corrige les remises", "fabrikam", "billing", 42);
+        review.review_requested = true;
+        Ok(PullRequestList { prs: vec![mine, review], failed_orgs: vec![] })
+    }
+
+    /// Les pull requests de tous les comptes, lues par DragonTree sa fenêtre fermée : un bandeau par compte (un jeton
+    /// refusé dit à sa place), « À relire » en onglet ; celle d'un dépôt cloné mène à lui, et elle est dans son onglet
+    /// Plus. « Actualiser » les fait relire.
+    #[test]
+    fn the_pull_requests_are_read_by_dragontree_with_its_window_closed() {
+        let Ok(git) = Git::discover() else { return };
+        let dir = std::env::temp_dir().join(format!("suite-dragontree-pr-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let repo = dir.join("northwind");
+        new_repo(&git, &repo);
+        sh(&git, &repo, &["remote", "add", "origin", "https://github.com/contoso/northwind.git"]);
+        let profile = dir.join("profil");
+        let mut phone = phone_for(&profile, &repo);
+        seed_account(&profile, "compte-github", ForgeKind::GitHub, "github.com");
+        seed_account(&profile, "compte-gitlab", ForgeKind::GitLab, "gitlab.com");
+        dragontree_forges::secrets::use_vaults(
+            Arc::new(suite_accounts::MemoryVault::default()),
+            Arc::new(suite_accounts::MemoryVault::default()),
+        );
+        let start = StartOptions {
+            profile_dir: Some(profile.clone()),
+            accounts_dir: Some(profile.join("comptes")),
+            screenshot_after: Duration::ZERO,
+            lang: Some(dragontree_i18n::Lang::Fr),
+            pull_request_source: Some(fake_forges),
+            ..Default::default()
+        };
+        let mut h: H = Harness::builder()
+            .with_size(eframe::egui::vec2(1200.0, 800.0))
+            .build_eframe(move |cc| DragonTreeApp::new(cc, start));
+        step_until(&mut h, |h| h.state().pull_requests().accounts.len() == 2);
+
+        let s = wait_screen(&mut h, &mut phone, pull_requests::ALL, "Corrige les remises");
+        let tabs: Vec<&str> = s.tabs.iter().map(|t| t.path.as_str()).collect();
+        assert_eq!(tabs, [pull_requests::ALL, pull_requests::MINE, pull_requests::TO_REVIEW]);
+        assert!(
+            s.blocks
+                .iter()
+                .any(|b| matches!(b, Block::Note { tone: Tone::Danger, text, .. } if text.contains("Accès refusé"))),
+            "le jeton refusé par GitLab, à sa place : {s:?}"
+        );
+        // La copie locale du dépôt de la première, relue par DragonTree : elle mène au dépôt sur le téléphone.
+        let key = repo_key(&repo);
+        let s = wait_screen(&mut h, &mut phone, pull_requests::ALL, &format!("depot/{key}"));
+        let northwind = rows(&s).into_iter().find(|r| r.title == "Ajoute la page d'accueil").cloned().unwrap();
+        assert!(
+            northwind.acts.iter().any(|a| a.open.as_deref() == Some(format!("depot/{key}").as_str())),
+            "{northwind:?}"
+        );
+        assert_eq!(
+            northwind.tap.as_ref().and_then(|a| a.url.as_deref()),
+            Some("https://github.com/contoso/northwind/pull/12"),
+            "ouverte dans le navigateur du téléphone"
+        );
+        let review = phone.screen(h.state_mut(), pull_requests::TO_REVIEW).unwrap();
+        let titles: Vec<String> = rows(&review).into_iter().map(|r| r.title.clone()).collect();
+        assert_eq!(titles, ["Corrige les remises"]);
+        let plus = wait_screen(&mut h, &mut phone, &format!("depot/{key}/plus"), "Ajoute la page d'accueil");
+        assert!(plus.opens().contains(pull_requests::ALL) && !format!("{plus:?}").contains("Corrige les remises"));
+
+        let (text, show) = phone.action(h.state_mut(), pull_requests::ALL, "actualiser", None).unwrap();
+        assert!(text.contains("relit") && !show, "{text}");
+        assert!(phone.action(h.state_mut(), pull_requests::ALL, "actualiser", None).is_err(), "déjà en cours");
+        assert!(h.state().pull_requests().loading);
         drop(h);
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -14,7 +14,7 @@
 //! - le titre « <dépôt> — DragonTree » devient le titre du module ;
 //! - **téléphone** (`mobile`) : ses dépôts et un client git presque complet, menés par DragonTree lui-même (ses
 //!   onglets, sa file d'opérations, ses comptes, ses notifications et son bandeau de conflits sur le PC) ; un dépôt
-//!   cloné depuis le téléphone l'est par lui (`clonage`) ;
+//!   cloné depuis le téléphone l'est par lui (`clonage`), et ses pull requests sont celles qu'il lit (`pull_requests`) ;
 //! - **masqué, il vit** (`background_tick`) : surveillance du disque, fetch automatique et enregistrement de ses
 //!   réglages, que son `ui` faisait seul.
 
@@ -24,6 +24,7 @@ pub mod depot;
 pub mod historique;
 pub mod liste;
 pub mod mobile;
+pub mod pull_requests;
 
 use std::cell::RefCell;
 use std::rc::Rc;

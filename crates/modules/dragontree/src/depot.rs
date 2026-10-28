@@ -9,7 +9,8 @@
 //! - **Branches** (`branches`, et le détail d'une branche `branche/<b>` : `branches.rs`) : la courante, les locales
 //!   par date et par dossier, les distantes par remote ;
 //! - **Plus** (`plus`) : remises (appliquer, appliquer et retirer, jeter), étiquettes (les plus récentes ; toutes dans
-//!   `etiquettes`, par pages), worktrees (supprimer, élaguer), remotes et leurs URL, afficher sur le PC.
+//!   `etiquettes`, par pages), worktrees (supprimer, élaguer), remotes et leurs URL, pull requests du dépôt (toutes :
+//!   `pull_requests.rs`), afficher sur le PC.
 //!
 //! Les détails s'empilent : `modifs` (toutes les modifications ; indexer, désindexer, annuler, valider ou corriger le
 //! dernier commit, mettre de côté), `fichier/<f>` (le diff d'un fichier), `commit/<id>` (message, fichiers,
@@ -98,6 +99,8 @@ pub struct RepoView {
     pub pending: Option<Pending>,
     /// La branche distante (`origin/x`) dont le téléphone a demandé la suppression sur le serveur, tant qu'elle tourne.
     pub deleting: Option<String>,
+    /// Les pull requests du dépôt que DragonTree a lues (onglet Plus) ; `None` : sans compte, ou sur un autre écran.
+    pub pull_requests: Option<crate::pull_requests::RepoPullRequests>,
     /// Lignes demandées de la liste par pages de l'écran.
     pub count: usize,
     /// Commit (identifiant complet) → ses informations et ses fichiers.
@@ -878,6 +881,9 @@ pub fn more(base: &str, v: &RepoView, now: i64, busy: bool) -> Screen {
             ));
         }
         s.row(row);
+    }
+    if let Some(prs) = &v.pull_requests {
+        crate::pull_requests::repo_band(&mut s, prs, now);
     }
     s.band(Band::new("", "DragonTree"));
     s.buttons(vec![Act::new("pc", "Afficher dans DragonTree sur le PC").glyph("🖥️")]);
