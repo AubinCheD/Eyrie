@@ -1603,11 +1603,17 @@ export component ConfirmDialog inherits Rectangle {
     }
 }
 
-// Une bulle en bas de l'écran.
+// Une bulle en bas de l'écran : trois lignes au plus ; dépliée (une erreur touchée), le texte entier.
 export component Toast inherits Rectangle {
     in property <string> text;
     in property <int> tone;
-    height: label.preferred-height + 24px;
+    in property <bool> expanded;
+    in property <length> max-text: 400px;
+    callback tapped();
+    height: min(label.preferred-height, root.expanded ? root.max-text : 3 * 1.2 * 14px) + 24px;
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.text;
+    accessible-action-default => { root.tapped(); }
     border-radius: 14px;
     background: Theme.dark ? #3a3e48 : #2b2f36;
     drop-shadow-blur: 12px;
@@ -1615,19 +1621,32 @@ export component Toast inherits Rectangle {
     HorizontalLayout {
         padding-left: 14px;
         padding-right: 16px;
+        padding-top: 12px;
+        padding-bottom: 12px;
         spacing: 10px;
+        VerticalLayout {
+            alignment: start;
+            padding-top: 6px;
+            Rectangle {
+                width: 8px;
+                height: 8px;
+                border-radius: 4px;
+                background: Theme.tone(root.tone);
+            }
+        }
         Rectangle {
-            width: 8px;
-            height: 8px;
-            border-radius: 4px;
-            background: Theme.tone(root.tone);
+            clip: true;
+            label := Text {
+                y: 0;
+                width: parent.width;
+                text: root.text;
+                color: #f2f3f5;
+                font-size: 14px;
+                wrap: word-wrap;
+            }
         }
-        label := Text {
-            text: root.text;
-            color: #f2f3f5;
-            font-size: 14px;
-            wrap: word-wrap;
-            vertical-alignment: center;
-        }
+    }
+    TouchArea {
+        clicked => { root.tapped(); }
     }
 }

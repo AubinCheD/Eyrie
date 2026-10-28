@@ -52,6 +52,43 @@ struct Signalled {
     waiting: Option<std::collections::HashSet<String>>,
 }
 
+/// Bulles en attente au plus (les plus anciennes, hors erreurs, cèdent leur place).
+const BUBBLES_MAX: usize = 4;
+
+/// Les bulles : une à la fois, chacune pour tout son temps (une nouvelle ne coupe pas celle qui est montrée).
+#[derive(Default)]
+struct Bubbles {
+    queue: std::collections::VecDeque<(String, i32)>,
+    showing: Option<(String, i32)>,
+}
+
+impl Bubbles {
+    /// Ajoute une bulle (une seule fois la même) ; `true` : rien n'est montré, elle peut l'être tout de suite.
+    fn push(&mut self, text: &str, tone: i32) -> bool {
+        let same = |(t, _): &(String, i32)| t == text;
+        if self.showing.as_ref().is_some_and(same) || self.queue.iter().any(same) {
+            return false;
+        }
+        if self.queue.len() >= BUBBLES_MAX {
+            let drop = self.queue.iter().position(|(_, tone)| *tone != 4).unwrap_or(0);
+            self.queue.remove(drop);
+        }
+        self.queue.push_back((text.to_string(), tone));
+        self.showing.is_none()
+    }
+
+    /// La bulle suivante, désormais montrée.
+    fn next(&mut self) -> Option<(String, i32)> {
+        self.showing = self.queue.pop_front();
+        self.showing.clone()
+    }
+}
+
+/// Le temps d'une bulle : une erreur reste plus longtemps.
+fn bubble_time(tone: i32) -> Duration {
+    Duration::from_millis(if tone == 4 { 6000 } else { 3200 })
+}
+
 /// Une action envoyée au PC, en attente de son résultat : son bouton est grisé, avec un indicateur.
 struct Pending {
     module: String,
@@ -126,6 +163,9 @@ pub struct Controller {
     age_timer: slint::Timer,
     /// Les notifications dépliées (sans écran où mener, le toucher montre leur texte entier).
     expanded_notes: std::collections::HashSet<String>,
+    /// Les bulles à montrer, une à la fois, et le temps de celle qui l'est.
+    bubbles: RefCell<Bubbles>,
+    bubble_timer: slint::Timer,
     last_tabs: Option<Tabs>,
     req: u32,
     /// Les actions envoyées sans résultat du PC, par numéro de demande : pas de second envoi de la même.
@@ -253,6 +293,8 @@ impl Controller {
             data_at: None,
             age_timer: slint::Timer::default(),
             expanded_notes: Default::default(),
+            bubbles: RefCell::default(),
+            bubble_timer: slint::Timer::default(),
             last_tabs: None,
             req: 0,
             pending: HashMap::new(),
@@ -343,12 +385,42 @@ impl Controller {
         ui.set_data_age(age.into());
     }
 
+    /// Une bulle : montrée tout de suite, ou après celles qui attendent (chacune garde tout son temps).
     pub fn toast(&self, text: &str, tone: i32) {
-        if let Some(ui) = self.ui() {
+        if self.bubbles.borrow_mut().push(text, tone) {
+            self.next_bubble();
+        }
+    }
+
+    fn next_bubble(&self) {
+        let Some(ui) = self.ui() else { return };
+        let next = self.bubbles.borrow_mut().next();
+        let Some((text, tone)) = next else {
             ui.set_toast_visible(false);
-            ui.set_toast_text(text.into());
-            ui.set_toast_tone(tone);
-            ui.set_toast_visible(true);
+            return;
+        };
+        ui.set_toast_text(text.into());
+        ui.set_toast_tone(tone);
+        ui.set_toast_expanded(false);
+        ui.set_toast_visible(true);
+        self.bubble_timer.start(slint::TimerMode::SingleShot, bubble_time(tone), || {
+            with(|c| c.next_bubble());
+        });
+    }
+
+    /// Toucher une bulle : une erreur se déplie pour être lue en entière (elle reste alors, 30 s au plus) ; sinon, ou
+    /// déjà dépliée, elle s'en va.
+    pub(crate) fn toast_tapped(&self) {
+        let Some(ui) = self.ui() else { return };
+        let tone = self.bubbles.borrow().showing.as_ref().map(|(_, tone)| *tone);
+        if tone == Some(4) && !ui.get_toast_expanded() {
+            ui.set_toast_expanded(true);
+            self.bubble_timer.start(slint::TimerMode::SingleShot, Duration::from_secs(30), || {
+                with(|c| c.next_bubble());
+            });
+        } else {
+            self.bubble_timer.stop();
+            self.next_bubble();
         }
     }
 
@@ -1615,6 +1687,9 @@ fn wire(ui: &AppWindow) {
     ui.on_open_extra(|what| {
         with(|c| c.nav_select(&what));
     });
+    ui.on_toast_tapped(|| {
+        with(|c| c.toast_tapped());
+    });
     ui.on_open_note(|n| {
         with(|c| c.open_note(&n));
     });
@@ -1738,6 +1813,26 @@ mod tests {
 
     fn note(title: &str, body: &str, tone: Tone, at: u64) -> Note {
         Note { module: "patronus".into(), title: title.into(), body: body.into(), tone, at, read: false, path: None }
+    }
+
+    /// Les bulles passent l'une après l'autre, sans doublon ; quand trop attendent, les plus anciennes cèdent leur
+    /// place, sauf les erreurs ; une erreur reste plus longtemps.
+    #[test]
+    fn bubbles_wait_their_turn() {
+        let mut b = Bubbles::default();
+        assert!(b.push("Fetch terminé", 2), "rien n'est montré : tout de suite");
+        assert_eq!(b.next(), Some(("Fetch terminé".into(), 2)));
+        assert!(!b.push("Push refusé", 4), "attend la fin de la précédente");
+        assert!(!b.push("Push refusé", 4), "une seule fois");
+        assert!(!b.push("Fetch terminé", 2), "déjà montrée");
+        for i in 0..4 {
+            b.push(&format!("info {i}"), 1);
+        }
+        let waiting: Vec<&str> = b.queue.iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(waiting, ["Push refusé", "info 1", "info 2", "info 3"], "l'erreur reste");
+        assert_eq!(b.next().map(|(t, _)| t), Some("Push refusé".into()));
+        assert_eq!(bubble_time(4), Duration::from_secs(6));
+        assert!(bubble_time(2) < bubble_time(4));
     }
 
     #[test]

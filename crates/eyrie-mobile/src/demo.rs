@@ -1,7 +1,7 @@
 //! Démonstration sans PC (`EYRIE_MOBILE_DEMO=<scène>`), pour les captures et la mise au point de l'interface :
-//! `ensemble`, `fawkes`, `recherche`, `terminal`, `patronus`, `depot`, `menu`, `historique`, `diff`, `diff-retour`,
-//! `plus`, `notes`, `reglages`, `attente`, `accueil`, `commandes`, `accueil-tailscale`, `code`, `appairage`,
-//! `hors-ligne`. Suffixe `+clair` ou `+sombre` : le thème (sinon celui du système).
+//! `ensemble`, `fawkes`, `recherche`, `terminal`, `patronus`, `depot`, `menu`, `erreur`, `erreur-lue`, `historique`,
+//! `diff`, `diff-retour`, `plus`, `notes`, `reglages`, `attente`, `accueil`, `commandes`, `accueil-tailscale`, `code`,
+//! `appairage`, `hors-ligne`. Suffixe `+clair` ou `+sombre` : le thème (sinon celui du système).
 
 use slint::ComponentHandle;
 use suite_mobile::msg::{Badge, CommandCard, ModuleCard, Note, ToPhone, Waiting};
@@ -154,6 +154,14 @@ fn patronus_home() -> Screen {
     );
     s
 }
+
+/// Une erreur de git telle que le PC la rend.
+const PUSH_REFUSED: &str = concat!(
+    "Push refusé : ! [rejected] mobile-ergonomie -> mobile-ergonomie (fetch first). error: failed to push some refs ",
+    "to 'https://dev.azure.com/xelya/Eyrie/_git/Eyrie'. hint: Updates were rejected because the remote contains work ",
+    "that you do not have locally. This is usually caused by another repository pushing to the same ref. hint: You ",
+    "may want to first integrate the remote changes (e.g., 'git pull ...') before pushing again."
+);
 
 /// Un dépôt de DragonTree, avec ses onglets.
 fn depot(title: &str) -> Screen {
@@ -434,6 +442,17 @@ pub fn play(ui: &AppWindow, scene: &str) {
             with(|c| {
                 c.open_module_path("dragontree", "depot/eyrie");
                 c.run_act(&UiAct { id: "fetch".into(), ..Default::default() }, "");
+            });
+        }
+        // Une erreur longue du PC, puis dépliée d'un toucher.
+        "erreur" | "erreur-lue" => {
+            with(|c| {
+                c.open_module_path("dragontree", "depot/eyrie");
+                c.toast(PUSH_REFUSED, 4);
+                c.toast("Fetch terminé", 2);
+                if scene == "erreur-lue" {
+                    c.toast_tapped();
+                }
             });
         }
         // Le menu ⋯ de l'écran d'un dépôt, ouvert.

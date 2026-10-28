@@ -108,9 +108,11 @@ export component AppWindow inherits Window {
     in property <int> text-size;
 
     // --- Bulle ---
+    // La bulle montrée (son temps est tenu par le code) ; une erreur touchée se déplie.
     in property <string> toast-text;
     in property <int> toast-tone;
-    in-out property <bool> toast-visible;
+    in property <bool> toast-visible;
+    in property <bool> toast-expanded;
 
     // --- Vers le code ---
     callback nav-select(string);
@@ -127,6 +129,7 @@ export component AppWindow inherits Window {
     callback toggle-pin(string);
     callback open-extra(string);
     callback notes-read();
+    callback toast-tapped();
     callback open-note(NoteItem);
     callback run-command(CommandItem);
     callback filter-edited(string);
@@ -561,10 +564,8 @@ export component AppWindow inherits Window {
         y: parent.height - root.bottom-inset - (root.terminal-mode ? 170px : 84px) - self.height;
         text: root.toast-text;
         tone: root.toast-tone;
-    }
-    Timer {
-        interval: 3200ms;
-        running: root.toast-visible;
-        triggered => { root.toast-visible = false; }
+        expanded: root.toast-expanded;
+        max-text: parent.height * 0.6;
+        tapped => { root.toast-tapped(); }
     }
 }
