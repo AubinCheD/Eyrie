@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use suite_mobile::channel::Keypair;
+use suite_mobile::msg::WakeKey;
 
 /// Un PC appairé.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -26,6 +27,38 @@ pub struct Pc {
     /// à la reconnexion, même après un arrêt de l'application, ce qui est arrivé entre-temps est signalé.
     #[serde(default)]
     pub notes_seen: u64,
+    /// De quoi demander au veilleur du PC de démarrer Eyrie quand elle est fermée : donné par le PC à chaque
+    /// connexion (`Welcome.wake`, remplacé ou retiré à chaque fois), parti avec le PC oublié.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wake: Option<Wake>,
+}
+
+/// La clé de démarrage d'un PC (voir `suite_mobile::veille`), gardée comme l'identité du téléphone : dans le stockage
+/// privé de l'application, exclu des sauvegardes.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Wake {
+    /// Le port du veilleur sur le tailnet.
+    pub port: u16,
+    /// Le secret de cet appareil (hexadécimal).
+    pub secret: String,
+    /// L'identifiant que le PC a donné à cet appareil (le champ `appareil` de la demande).
+    #[serde(default)]
+    pub device: String,
+}
+
+impl Wake {
+    pub fn from_key(k: &WakeKey) -> Wake {
+        Wake { port: k.port, secret: hex(&k.secret), device: k.device.clone() }
+    }
+
+    /// La clé, si elle sert : un secret de 32 octets et l'identifiant de l'appareil.
+    pub fn key(&self) -> Option<WakeKey> {
+        let secret = from_hex(&self.secret).filter(|s| s.len() == 32)?;
+        if self.port == 0 || self.device.is_empty() {
+            return None;
+        }
+        Some(WakeKey { port: self.port, secret, device: self.device.clone() })
+    }
 }
 
 impl Pc {
@@ -190,6 +223,7 @@ mod tests {
             key: hex(&[3; 32]),
             paired_at: 1,
             notes_seen: 0,
+            wake: None,
         });
         s.prefs.theme = 2;
         s.pcs[0].notes_seen = 1_700_000_000;
@@ -202,6 +236,41 @@ mod tests {
         let mut s = back;
         s.forget("a");
         assert!(s.current().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// La clé de démarrage d'un PC est gardée avec lui, et part avec lui ; une clé sans secret de 32 octets, sans
+    /// port ou sans identifiant d'appareil ne sert pas.
+    #[test]
+    fn a_pcs_wake_key_is_kept_with_it() {
+        let dir = std::env::temp_dir().join(format!("eyrie-mobile-wake-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut s = Store::open(&dir);
+        let key = WakeKey { port: 4748, secret: vec![7; 32], device: "appareil-1".into() };
+        s.add(Pc {
+            id: "a".into(),
+            name: "PC".into(),
+            host: "suite-pc".into(),
+            ip: String::new(),
+            port: 4747,
+            key: hex(&[3; 32]),
+            paired_at: 1,
+            notes_seen: 0,
+            wake: Some(Wake::from_key(&key)),
+        });
+        let back = Store::open(&dir);
+        assert_eq!(back.current().and_then(|p| p.wake.as_ref()).and_then(Wake::key), Some(key.clone()));
+        let json = std::fs::read_to_string(dir.join("pcs.json")).unwrap();
+        assert!(json.contains(&hex(&[7; 32])), "dans le stockage privé, avec le PC : {json}");
+
+        assert_eq!(Wake { device: String::new(), ..Wake::from_key(&key) }.key(), None, "sans appareil");
+        assert_eq!(Wake { port: 0, ..Wake::from_key(&key) }.key(), None, "sans port");
+        assert_eq!(Wake { secret: hex(&[7; 31]), ..Wake::from_key(&key) }.key(), None, "secret tronqué");
+
+        let mut s = back;
+        s.forget("a");
+        let json = std::fs::read_to_string(dir.join("pcs.json")).unwrap();
+        assert!(!json.contains(&hex(&[7; 32])), "oublié avec le PC");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

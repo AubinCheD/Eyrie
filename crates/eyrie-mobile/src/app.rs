@@ -15,7 +15,7 @@ use suite_mobile::ui::{Act, Block, Fold, Screen, Tab, Tone};
 
 use crate::net::{Link, NetEvent, PairEvent};
 use crate::picker::{Answer, Picker};
-use crate::store::{self, Pc, Store};
+use crate::store::{self, Pc, Store, Wake};
 use crate::tailnet::{self, Tailnet};
 use crate::termbuf::{self, TermBuf};
 use crate::{
@@ -755,11 +755,14 @@ impl Controller {
                 self.rights = w.rights;
                 self.pc_name = w.pc;
                 self.eyrie = w.eyrie;
+                // La clé de démarrage : remplacée (ou retirée) à chaque accueil.
+                let wake = w.wake.as_ref().map(Wake::from_key);
                 if let Some(pc) = self.store.prefs.current.clone()
                     && let Some(p) = self.store.pcs.iter_mut().find(|p| p.id == pc)
-                    && p.name != self.pc_name
+                    && (p.name != self.pc_name || p.wake != wake)
                 {
                     p.name = self.pc_name.clone();
+                    p.wake = wake;
                     self.store.save();
                 }
                 self.set_link(1, "Connecté");
@@ -1880,6 +1883,7 @@ impl Controller {
                     key: store::hex(&key),
                     paired_at: now(),
                     notes_seen: 0,
+                    wake: None,
                 });
                 self.pc_name = pc;
                 ui.set_pairing_stage(2);
