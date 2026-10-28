@@ -11,6 +11,7 @@ package main
 import (
 	"errors"
 	"strings"
+	"unicode"
 
 	"golang.org/x/sys/windows"
 )
@@ -18,10 +19,63 @@ import (
 // errNodeHeld : un autre compagnon tient déjà le nœud.
 var errNodeHeld = errors.New("nœud déjà tenu par un autre compagnon")
 
-// dirKey nomme un dossier pour un objet du noyau, comme `dir_key` de crates/suite-sdk/src/instance.rs : barres
-// obliques, sans barre finale, minuscules.
+// dirKey nomme un dossier pour un objet du noyau, exactement comme `dir_key` de crates/suite-sdk/src/instance.rs :
+// barres obliques, sans barre finale, minuscules de Rust (rustLower).
 func dirKey(dir string) string {
-	return strings.ToLower(strings.TrimRight(strings.ReplaceAll(dir, `\`, "/"), "/"))
+	return rustLower(strings.TrimRight(strings.ReplaceAll(dir, `\`, "/"), "/"))
+}
+
+// rustLower : `str::to_lowercase` de Rust. strings.ToLower en diffère pour deux lettres : İ (U+0130) donne « i »
+// suivi du point suscrit (U+0307), et Σ en fin de mot donne ς. Sinon, pour un profil comme C:\Users\ΝΙΚΟΣ, Eyrie
+// chercherait le verrou et le tube du veilleur sous un autre nom, ne les trouverait pas et lancerait un second
+// compagnon, refusé. Vérifié sur tout Unicode contre Rust 1.99 (Go 1.27).
+func rustLower(s string) string {
+	rs := []rune(s)
+	var b strings.Builder
+	b.Grow(len(s))
+	for i, r := range rs {
+		switch r {
+		case 'İ':
+			b.WriteString("i\u0307")
+		case 'Σ':
+			// Fin de mot (Final_Sigma d'Unicode) : une lettre à casse avant, aucune après, les signes sans casse
+			// (accents, apostrophe, point…) passés.
+			if casedNext(rs[:i], true) && !casedNext(rs[i+1:], false) {
+				b.WriteRune('ς')
+			} else {
+				b.WriteRune('σ')
+			}
+		default:
+			b.WriteRune(unicode.ToLower(r))
+		}
+	}
+	return b.String()
+}
+
+// casedNext : la première lettre de `rs` (la dernière si `backwards`) qui n'est pas ignorée par la casse
+// (Case_Ignorable) a-t-elle une casse (Cased) ?
+func casedNext(rs []rune, backwards bool) bool {
+	for k := range rs {
+		r := rs[k]
+		if backwards {
+			r = rs[len(rs)-1-k]
+		}
+		if !caseIgnorable(r) {
+			return unicode.In(r, unicode.Lu, unicode.Ll, unicode.Lt, unicode.Other_Lowercase, unicode.Other_Uppercase)
+		}
+	}
+	return false
+}
+
+// caseIgnorable : la propriété Case_Ignorable d'Unicode (DerivedCoreProperties), absente du paquet unicode : marques,
+// formats, lettres et symboles modificatifs, et les signes Word_Break MidLetter, MidNumLet et Single_Quote.
+func caseIgnorable(r rune) bool {
+	switch r {
+	case '\'', '.', ':', 0xb7, 0x387, 0x55f, 0x5f4, 0x2018, 0x2019, 0x2024, 0x2027, 0xfe13, 0xfe52, 0xfe55, 0xff07,
+		0xff0e, 0xff1a:
+		return true
+	}
+	return unicode.In(r, unicode.Mn, unicode.Me, unicode.Cf, unicode.Lm, unicode.Sk)
 }
 
 // lockName : le nom du verrou du nœud dont l'état est dans `dir`.

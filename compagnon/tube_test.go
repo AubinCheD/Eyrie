@@ -25,6 +25,15 @@ func TestThePipeIsNamedFromTheNodeKey(t *testing.T) {
 	if pipeName(`c:/users/exemple/appdata/local/eyriesuite/eyrie/tailnet/`) != name {
 		t.Fatal("le nom dépend de la casse ou de la barre finale")
 	}
+	// Hors ASCII aussi (dir_key de Rust, puis BLAKE2s).
+	for dir, want := range map[string]string{
+		`C:\Users\ΝΙΚΟΣ\AppData\Local\EyrieSuite\Eyrie\tailnet`: `\\.\pipe\eyrie-tailnet-c18cd2cf7b942306`,
+		`C:\Users\İrem\AppData\Local\EyrieSuite\Eyrie\tailnet\`: `\\.\pipe\eyrie-tailnet-cddb792376a64c8a`,
+	} {
+		if got := pipeName(dir); got != want {
+			t.Errorf("%s : %s, attendu %s", dir, got, want)
+		}
+	}
 }
 
 type standbyFixture struct {

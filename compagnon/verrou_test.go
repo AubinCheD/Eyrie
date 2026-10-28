@@ -65,6 +65,21 @@ func TestTheLockIsNamedLikeSuiteSdk(t *testing.T) {
 	}
 }
 
+// Les minuscules sont celles de Rust (str::to_lowercase), pas celles de strings.ToLower : sigma final, İ. Vecteurs
+// calculés par `dir_key` de suite-sdk (Rust 1.99).
+func TestTheKeyLowercasesLikeRust(t *testing.T) {
+	for dir, want := range map[string]string{
+		`C:\Users\ΝΙΚΟΣ\AppData\Local\EyrieSuite\Eyrie\tailnet`:   "c:/users/νικος/appdata/local/eyriesuite/eyrie/tailnet",
+		`C:\Users\İrem\AppData\Local\EyrieSuite\Eyrie\tailnet\`:   "c:/users/i\u0307rem/appdata/local/eyriesuite/eyrie/tailnet",
+		`D:\ΟΣ.Ν\Σ\ΑΣ'Β\tailnet`:                                  "d:/οσ.ν/σ/ασ'β/tailnet",
+		`C:\Users\Exemple\AppData\Local\EyrieSuite\Eyrie\tailnet`: "c:/users/exemple/appdata/local/eyriesuite/eyrie/tailnet",
+	} {
+		if got := dirKey(dir); got != want {
+			t.Errorf("%s : %q, attendu %q", dir, got, want)
+		}
+	}
+}
+
 // Un second compagnon sur le même nœud (même dossier, à la casse et à la barre finale près) dit pourquoi il ne
 // démarre pas et sort avec le code 3 ; le nœud libéré se reprend.
 func TestASecondCompanionOnTheSameNodeIsRefused(t *testing.T) {
