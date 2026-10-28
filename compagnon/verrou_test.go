@@ -34,6 +34,8 @@ func helper(role string) int {
 		os.Stdout.WriteString("tenu\n")
 		_, _ = io.Copy(io.Discard, os.Stdin)
 		return 0
+	case "lance":
+		return helperLaunched()
 	}
 	return 9
 }
