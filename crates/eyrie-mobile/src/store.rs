@@ -21,6 +21,10 @@ pub struct Pc {
     pub key: String,
     #[serde(default)]
     pub paired_at: u64,
+    /// Notifications du PC déjà vues par le téléphone, jusqu'à cet instant (secondes Unix ; 0 : jamais connecté) :
+    /// à la reconnexion, même après un arrêt de l'application, ce qui est arrivé entre-temps est signalé.
+    #[serde(default)]
+    pub notes_seen: u64,
 }
 
 impl Pc {
@@ -143,13 +147,16 @@ mod tests {
             port: 4747,
             key: hex(&[3; 32]),
             paired_at: 1,
+            notes_seen: 0,
         });
         s.prefs.theme = 2;
+        s.pcs[0].notes_seen = 1_700_000_000;
         s.save();
         let back = Store::open(&dir);
         assert_eq!(back.identity, me, "la même identité : le PC la reconnaît");
         assert_eq!(back.current().map(|p| p.addresses()), Some(vec!["100.1.2.3:4747".into(), "suite-pc:4747".into()]));
         assert_eq!(back.prefs.theme, 2);
+        assert_eq!(back.current().map(|p| p.notes_seen), Some(1_700_000_000), "vu jusque-là, même après un arrêt");
         let mut s = back;
         s.forget("a");
         assert!(s.current().is_none());

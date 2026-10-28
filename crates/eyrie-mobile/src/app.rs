@@ -11,7 +11,7 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use suite_mobile::msg::{CommandCard, ModuleCard, Note, Rights, ToPc, ToPhone, Waiting};
 use suite_mobile::pairing::{self, Ticket};
 use suite_mobile::term::{Key, TermInput};
-use suite_mobile::ui::Screen;
+use suite_mobile::ui::{Screen, Tone};
 
 use crate::net::{Link, NetEvent, PairEvent};
 use crate::store::{self, Pc, Store};
@@ -86,8 +86,9 @@ pub struct Controller {
     term_dark: Option<bool>,
     req: u32,
     target: Option<Target>,
-    /// Ce qui a déjà été signalé (bulle ou notification du système) : rien deux fois, et rien à la connexion (l'état
-    /// initial n'est pas une nouveauté).
+    /// Ce qui a déjà été signalé (bulle ou notification du système) : rien deux fois, et rien à la première connexion
+    /// à un PC (l'état initial n'est pas une nouveauté). Après une coupure, ou un arrêt de l'application par Android,
+    /// ce qui est arrivé sur le PC entre-temps l'est.
     signalled: Signalled,
     /// Démonstration (captures) : rien n'est envoyé.
     demo: bool,
@@ -204,6 +205,7 @@ impl Controller {
     fn connect(&mut self, pc: &Pc) {
         self.link = None;
         self.online = false;
+        self.signalled = Signalled { notes_until: (pc.notes_seen > 0).then_some(pc.notes_seen), waiting: None };
         let Some(key) = pc.key_bytes() else { return };
         let (device, model) = self.device();
         self.link = Some(Link::start(pc.addresses(), key, self.store.identity.clone(), device, model, |ev| {
@@ -301,9 +303,9 @@ impl Controller {
                     self.store.save();
                 }
                 self.set_link(1, "Connecté");
-                // Tout est renvoyé par le PC ; l'écran suivi est redemandé.
+                // Tout est renvoyé par le PC ; l'écran suivi est redemandé. Ce qui a déjà été signalé est gardé : ce
+                // qui est arrivé pendant la coupure le sera.
                 self.followed = None;
-                self.signalled = Signalled::default();
                 platform::ask_notifications();
                 if let Some(goto) = self.goto.take() {
                     let (tab, path) = goto.split_once('/').unwrap_or((&goto, ""));
@@ -445,12 +447,21 @@ impl Controller {
                 }) {
                     platform::notify(&format!("note:{}:{}", n.at, n.title), &n.title, &n.body);
                 }
-            } else if let Some(n) = fresh.first() {
-                let text = if n.body.is_empty() { n.title.clone() } else { format!("{} : {}", n.title, n.body) };
-                self.toast(&text, view::tone(Some(n.tone)));
+            } else if let Some((text, tone)) = notes_toast(&fresh) {
+                self.toast(&text, view::tone(Some(tone)));
             }
         }
-        self.signalled.notes_until = Some(self.signalled.notes_until.unwrap_or(0).max(latest));
+        // 1 au moins : connecté une fois, même sans notification.
+        let until = self.signalled.notes_until.unwrap_or(0).max(latest).max(1);
+        self.signalled.notes_until = Some(until);
+        // Gardé avec le PC : après un arrêt de l'application, la reconnexion signale ce qui est arrivé entre-temps.
+        if let Some(id) = self.store.prefs.current.clone()
+            && let Some(p) = self.store.pcs.iter_mut().find(|p| p.id == id)
+            && p.notes_seen < until
+        {
+            p.notes_seen = until;
+            self.store.save();
+        }
     }
 
     // --- Ce que l'on montre ---
@@ -976,6 +987,7 @@ impl Controller {
                     port: t.port,
                     key: store::hex(&key),
                     paired_at: now(),
+                    notes_seen: 0,
                 });
                 self.pc_name = pc;
                 ui.set_pairing_stage(2);
@@ -1161,6 +1173,25 @@ impl Controller {
     }
 }
 
+/// La bulle pour les notifications arrivées (les plus récentes d'abord) : la notification elle-même, ou leur nombre et
+/// la plus récente, au ton de la plus grave.
+fn notes_toast(fresh: &[&Note]) -> Option<(String, Tone)> {
+    let first = fresh.first()?;
+    let grave = |t: &Tone| match t {
+        Tone::Danger => 3,
+        Tone::Warn => 2,
+        Tone::Ok => 1,
+        Tone::Info => 0,
+    };
+    let tone = fresh.iter().map(|n| n.tone).max_by_key(grave).unwrap_or_default();
+    let text = match fresh.len() {
+        1 if first.body.is_empty() => first.title.clone(),
+        1 => format!("{} : {}", first.title, first.body),
+        n => format!("{n} nouvelles notifications sur le PC · {}", first.title),
+    };
+    Some((text, tone))
+}
+
 fn target_of(t: &Ticket) -> Target {
     Target {
         addrs: t.addresses(),
@@ -1308,4 +1339,27 @@ fn wire(ui: &AppWindow) {
             ui.set_term_zoom(z);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn note(title: &str, body: &str, tone: Tone, at: u64) -> Note {
+        Note { module: "patronus".into(), title: title.into(), body: body.into(), tone, at, read: false }
+    }
+
+    #[test]
+    fn what_happened_meanwhile_is_told_in_one_bubble() {
+        assert_eq!(notes_toast(&[]), None);
+        let one = note("Build terminé", "en 3 min", Tone::Ok, 10);
+        assert_eq!(notes_toast(&[&one]), Some(("Build terminé : en 3 min".into(), Tone::Ok)));
+        // Plusieurs pendant l'absence : leur nombre, la plus récente, le ton de la plus grave.
+        let failed = note("Tests en échec", "", Tone::Danger, 8);
+        let info = note("Rappel", "", Tone::Info, 5);
+        assert_eq!(
+            notes_toast(&[&one, &failed, &info]),
+            Some(("3 nouvelles notifications sur le PC · Build terminé".into(), Tone::Danger))
+        );
+    }
 }

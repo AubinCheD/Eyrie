@@ -168,6 +168,12 @@ Fawkes, Owlery, Menagerie, Patronus et DragonTree) : `close_terminal`, `remote_c
   jusqu'à 30 s, immédiate au retour au premier plan et quand le téléphone se reconnecte à Tailscale). Une coupure
   sans fermeture (changement de réseau, PC en veille) se voit au plus tard après 45 s sans rien du PC, qui répond
   `Pong` à chaque `Ping` (toutes les 15 s).
+- **Rattrapage** (« ce n'est pas grave tant qu'on remet à jour les infos avec tout ce qui s'est passé sur le PC entre
+  temps », 28/10) : à chaque connexion, le PC renvoie tout son état. Ça couvre les modules et leurs pastilles, ce qui
+  attend, les 60 dernières notifications (lues ou non), les commandes, l'écran ouvert et le terminal suivi (500 lignes
+  d'historique). Le téléphone garde, pour chaque PC, jusqu'où il a vu les notifications, même après un arrêt de
+  l'application par Android. Celles arrivées entre-temps et non lues sur le PC sont signalées d'une bulle : la
+  notification elle-même, ou leur nombre et la plus récente.
 - **Notifications** : une bulle quand une notification arrive du PC ; sur Android, en arrière-plan, une
   notification du système pour ce qui se met à attendre (session Claude…) et pour les alertes, tant que
   l'application tourne (pas de service au premier plan : Android peut couper le réseau au bout d'un moment).
