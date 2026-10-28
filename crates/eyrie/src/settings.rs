@@ -80,6 +80,9 @@ pub struct SettingsState {
     /// Nom du nœud Tailscale en cours de saisie (appliqué à la validation : chaque changement
     /// relance le compagnon).
     tailnet_host: Option<String>,
+    /// « Se connecter à Tailscale » cliqué avant que le nœud ne tourne : son lien de connexion
+    /// s'ouvre dès qu'il le donne.
+    tailnet_login: bool,
     /// Compte dont le retrait attend confirmation (il vaut pour toute la suite).
     confirm_remove: Option<String>,
     /// Fenêtre détachée où les réglages s'affichent (limités à Eyrie et à ses modules) ; `None` : la principale.
@@ -100,6 +103,7 @@ impl Default for SettingsState {
             new_orgs: String::new(),
             shortcut_edit: Default::default(),
             tailnet_host: None,
+            tailnet_login: false,
             confirm_remove: None,
             window: None,
             drawn: None,
@@ -527,9 +531,18 @@ fn tailscale(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui) {
     ui.heading("Tailscale");
     hint(ui, p, tr("Un seul nœud pour toute la suite, pour la synchro avec le mobile."));
     ui.add_space(6.0);
+    if !suite.core.st.tailnet.enabled {
+        // Un seul geste : le nœud démarre, puis son lien de connexion s'ouvre dans le navigateur.
+        if ui.button(tr("Se connecter à Tailscale")).clicked() {
+            suite.core.st.tailnet.enabled = true;
+            suite.shell.settings.tailnet_login = true;
+        }
+        hint(ui, p, tr("Eyrie démarre son propre nœud, puis ouvre la page de connexion de Tailscale (Google, Microsoft, GitHub…)."));
+        ui.add_space(4.0);
+    }
     ui.checkbox(&mut suite.core.st.tailnet.enabled, tr("Rejoindre mon tailnet"));
     ui.horizontal(|ui| {
-        ui.label(tr("Nom du nœud"));
+        ui.label(tr("Nom du nœud (facultatif)"));
         let draft = suite.shell.settings.tailnet_host.get_or_insert_with(|| suite.core.st.tailnet.hostname.clone());
         let r = ui.add(egui::TextEdit::singleline(draft).hint_text(crate::tailnet::hostname(&Default::default())));
         if r.lost_focus() {
@@ -549,14 +562,17 @@ fn tailscale(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui) {
     ui.label(RichText::new(line).color(color));
     match suite.core.tailnet.state() {
         Some(suite_fawkes::tailnet::TailnetState::NeedsLogin(url)) => {
-            if ui.button(tr("Se connecter à Tailscale")).clicked() {
+            let asked = std::mem::take(&mut suite.shell.settings.tailnet_login);
+            if asked || ui.button(tr("Se connecter à Tailscale")).clicked() {
                 ui.ctx().open_url(egui::OpenUrl::new_tab(url));
             }
         }
         Some(suite_fawkes::tailnet::TailnetState::Running { name, ip }) => {
+            suite.shell.settings.tailnet_login = false;
             ui.label(RichText::new(format!("http://{name}  ·  {ip}")).monospace());
         }
         Some(suite_fawkes::tailnet::TailnetState::Failed(e)) => {
+            suite.shell.settings.tailnet_login = false;
             ui.label(RichText::new(e).color(p.danger));
         }
         _ => {}
