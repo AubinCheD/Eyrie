@@ -17,8 +17,13 @@ use owlery::model::{Ci, Item, Kind, Status};
 use suite_sdk::mobile::msg::MODULE_PREFIX;
 use suite_sdk::mobile::ui::{Act, Band, Row, Screen, Tone};
 
-/// Entrées montrées par groupe dans l'accueil ; toutes sont sur l'écran du groupe (`groupe/<clé>`).
+/// Entrées montrées dans l'accueil par groupe qui a des non lues ; toutes sont sur l'écran du groupe (`groupe/<clé>`).
 const PER_GROUP: usize = 15;
+/// … par groupe tout lu (plié au départ).
+const PER_READ_GROUP: usize = 5;
+/// Entrées montrées dans l'accueil en tout (chacune porte son menu, l'écran est renvoyé à chaque geste) : au-delà, un
+/// groupe n'a plus que la ligne qui mène à son écran.
+const HOME_ROWS: usize = 100;
 
 /// Gestes qu'Owlery garde à annuler (son `UNDO_DEPTH`, privé) : au-delà, les plus anciens ne s'annulent plus.
 const UNDO_KEPT: usize = 50;
@@ -171,7 +176,8 @@ fn group_band(g: &Group, key: &str, by: GroupBy) -> Band {
 }
 
 /// L'accueil : un bandeau par groupe, dans l'ordre du PC (ceux qui ont des non lues d'abord) ; au-delà de
-/// `PER_GROUP` entrées, une ligne mène à l'écran du groupe.
+/// `PER_GROUP` entrées (`PER_READ_GROUP` dans un groupe tout lu), ou de `HOME_ROWS` dans tout l'accueil, une ligne
+/// mène à l'écran du groupe.
 pub fn home(inbox: &Inbox, rules: &Rules, by: GroupBy, now: i64) -> Screen {
     let view = groups(inbox, rules, by, now);
     let unread: usize = view.iter().map(|g| g.unread).sum();
@@ -185,17 +191,23 @@ pub fn home(inbox: &Inbox, rules: &Rules, by: GroupBy, now: i64) -> Screen {
     if view.is_empty() {
         s.empty("Boîte de réception vide.");
     }
+    let mut room = HOME_ROWS;
     for g in &view {
         let key = group_key(g, by);
         s.band(group_band(g, &key, by));
-        for (item, status) in g.entries.iter().take(PER_GROUP) {
+        let per = if g.unread > 0 { PER_GROUP } else { PER_READ_GROUP };
+        let shown = g.entries.len().min(per).min(room);
+        room -= shown;
+        for (item, status) in g.entries.iter().take(shown) {
             s.row(item_row(item, *status, by, now));
         }
-        let more = g.entries.len().saturating_sub(PER_GROUP);
-        if more > 0 {
-            let title = if more == 1 { "1 autre…".to_string() } else { format!("{more} autres…") };
-            s.row(Row::new(title).key(format!("{key}/autres")).glyph("…").open(format!("groupe/{key}")));
-        }
+        let title = match (shown, g.entries.len() - shown) {
+            (_, 0) => continue,
+            (0, n) => entries_text(n) + "…",
+            (_, 1) => "1 autre…".to_string(),
+            (_, n) => format!("{n} autres…"),
+        };
+        s.row(Row::new(title).key(format!("{key}/autres")).glyph("…").open(format!("groupe/{key}")));
     }
     s
 }
@@ -592,6 +604,48 @@ mod tests {
         assert_eq!(docs.subtitle, "1 entrée");
         let gone = group(&inbox, &rules, GroupBy::Repo, "contoso/parti", now);
         assert!(gone.blocks.iter().any(|b| matches!(b, Block::Empty { .. })));
+    }
+
+    /// Beaucoup de dépôts : un groupe tout lu (plié) montre moins d'entrées, et l'accueil entier en garde au plus
+    /// `HOME_ROWS` ; le reste est sur l'écran de chaque groupe.
+    #[test]
+    fn the_home_stays_small_with_many_repos() {
+        let now = 1_800_000_000;
+        let mut inbox = Inbox::default();
+        for r in 0..8 {
+            for n in 0..15 {
+                let id = format!("r{r}-{n}");
+                let i = entry(&id, Kind::Mention, &format!("contoso/d{r}"), n, now - (r * 100 + n) as i64, None);
+                inbox.items.insert(id, i);
+            }
+        }
+        for n in 0..8 {
+            let i = entry(&format!("lue{n}"), Kind::Mention, "contoso/lu", n, now - 9000, None);
+            inbox.marks.insert(i.id.clone(), Mark::new(Status::Read, &i, None));
+            inbox.items.insert(i.id.clone(), i);
+        }
+        let s = home(&inbox, &Rules::default(), GroupBy::Repo, now);
+        let r = rows(&s);
+        let entries = r.iter().filter(|r| r.glyph != "…").count();
+        assert_eq!(entries, HOME_ROWS);
+        let more: Vec<(&str, &str)> = r
+            .iter()
+            .filter(|r| r.glyph == "…")
+            .map(|r| (r.title.as_str(), r.open.as_deref().unwrap_or_default()))
+            .collect();
+        assert_eq!(
+            more,
+            [
+                ("5 autres…", "groupe/contoso/d6"),
+                ("15 entrées…", "groupe/contoso/d7"),
+                ("8 entrées…", "groupe/contoso/lu")
+            ]
+        );
+        // Seul, le groupe tout lu montre ses cinq plus récentes.
+        inbox.items.retain(|id, _| id.starts_with("lue"));
+        let s = home(&inbox, &Rules::default(), GroupBy::Repo, now);
+        let titles: Vec<&str> = rows(&s).iter().map(|r| r.title.as_str()).collect();
+        assert_eq!(titles, ["PR 0", "PR 1", "PR 2", "PR 3", "PR 4", "3 autres…"]);
     }
 
     #[test]
