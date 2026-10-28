@@ -29,6 +29,9 @@ const DEFAULT_PINS: [&str; 8] =
     ["fawkes", "patronus", "owlery", "menagerie", "gringotts", "dragontree", "grimoire", "carnet"];
 const EXTRAS: [&str; 3] = ["notes", "commandes", "reglages"];
 const TEXT_SIZES: [f32; 3] = [1.0, 1.35, 1.7];
+/// Le zoom du terminal permis (pincement, A− et A+) ; 1 : ajusté à la largeur.
+const ZOOM_MIN: f32 = 0.6;
+const ZOOM_MAX: f32 = 3.0;
 /// Une action sans résultat du PC passé ce délai : « Le PC n'a pas répondu ».
 const ANSWER_WITHIN: Duration = Duration::from_secs(15);
 /// Le filtre du sélecteur de dossiers part au PC quand la saisie s'arrête ce temps.
@@ -37,6 +40,20 @@ const FILTER_AFTER: Duration = Duration::from_millis(350);
 const HOLD_FOLD: Duration = Duration::from_secs(6);
 /// « Démarrer Eyrie » sans réponse de la liaison passé ce délai (elle se connectait, ou sondait) : on le dit.
 const START_WITHIN: Duration = Duration::from_secs(30);
+
+/// Le zoom du terminal gardé : celui du dernier pincement, sinon celui de la taille choisie dans les réglages.
+fn term_zoom(prefs: &store::Prefs) -> f32 {
+    if prefs.term_zoom > 0.0 {
+        prefs.term_zoom.clamp(ZOOM_MIN, ZOOM_MAX)
+    } else {
+        TEXT_SIZES[prefs.text_size.clamp(0, 2) as usize]
+    }
+}
+
+/// La taille des réglages qui correspond à ce zoom ; -1 : aucune (un pincement l'a réglé entre deux).
+fn size_choice(zoom: f32) -> i32 {
+    TEXT_SIZES.iter().position(|s| (s - zoom).abs() < 0.02).map_or(-1, |i| i as i32)
+}
 
 fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
@@ -535,8 +552,9 @@ impl Controller {
         ui.set_logo(crate::logo());
         ui.set_fingerprint(pairing::fingerprint(&store.identity.public).into());
         ui.global::<Theme>().set_choice(store.prefs.theme);
-        ui.set_text_size(store.prefs.text_size);
-        ui.set_term_zoom(TEXT_SIZES[store.prefs.text_size.clamp(0, 2) as usize]);
+        let zoom = term_zoom(&store.prefs);
+        ui.set_text_size(size_choice(zoom));
+        ui.set_term_zoom(zoom);
         let name =
             if store.prefs.device_name.is_empty() { platform::device_name() } else { store.prefs.device_name.clone() };
         ui.set_device_name(name.into());
@@ -1933,6 +1951,22 @@ impl Controller {
         self.term_input(TermInput::Key(Key::Enter));
     }
 
+    /// Le zoom du terminal laissé par un pincement (ou A−, A+) : gardé pour la prochaine fois.
+    fn term_zoomed(&mut self, zoom: f32) {
+        let zoom = zoom.clamp(ZOOM_MIN, ZOOM_MAX);
+        if let Some(ui) = self.ui() {
+            ui.set_term_zoom(zoom);
+            ui.set_text_size(size_choice(zoom));
+        }
+        if (self.store.prefs.term_zoom - zoom).abs() > f32::EPSILON {
+            self.store.prefs.term_zoom = zoom;
+            if size_choice(zoom) >= 0 {
+                self.store.prefs.text_size = size_choice(zoom);
+            }
+            self.store.save();
+        }
+    }
+
     fn term_reply(&self, i: usize) {
         if let Some(r) = self.term.replies.get(i) {
             self.term_input(r.input.clone());
@@ -2326,17 +2360,8 @@ fn wire(ui: &AppWindow) {
             c.term_dark = None;
         });
     });
-    let weak = ui.as_weak();
-    ui.on_set_text_size(move |i| {
-        let i = i.clamp(0, 2);
-        if let Some(ui) = weak.upgrade() {
-            ui.set_text_size(i);
-            ui.set_term_zoom(TEXT_SIZES[i as usize]);
-        }
-        with(|c| {
-            c.store.prefs.text_size = i;
-            c.store.save();
-        });
+    ui.on_set_text_size(|i| {
+        with(|c| c.term_zoomed(TEXT_SIZES[i.clamp(0, 2) as usize]));
     });
     ui.on_rename_device(|name| {
         with(|c| {
@@ -2417,6 +2442,9 @@ fn wire(ui: &AppWindow) {
     ui.on_term_key(|k| {
         with(|c| c.term_key(&k));
     });
+    ui.on_term_zoomed(|zoom| {
+        with(|c| c.term_zoomed(zoom));
+    });
     ui.on_term_reply(|i| {
         with(|c| c.term_reply(i.max(0) as usize));
     });
@@ -2446,13 +2474,6 @@ fn wire(ui: &AppWindow) {
     });
     ui.on_picker_close(|| {
         with(|c| c.close_picker());
-    });
-    let weak = ui.as_weak();
-    ui.on_term_zoom_by(move |f| {
-        if let Some(ui) = weak.upgrade() {
-            let z = (ui.get_term_zoom() * f).clamp(0.6, 3.0);
-            ui.set_term_zoom(z);
-        }
     });
 }
 
@@ -2663,5 +2684,21 @@ mod tests {
             notes_toast(&[&one, &failed, &info]),
             Some(("3 nouvelles notifications sur le PC · Build terminé".into(), Tone::Danger))
         );
+    }
+
+    /// Le zoom du terminal est gardé : celui du dernier pincement, sinon celui de la taille des réglages (des
+    /// préférences d'avant le pincement n'en ont pas) ; une taille réglée entre deux n'en marque aucune.
+    #[test]
+    fn the_terminal_zoom_is_kept() {
+        let old: store::Prefs = serde_json::from_str(r#"{"theme":2,"text_size":1}"#).unwrap();
+        assert_eq!(term_zoom(&old), TEXT_SIZES[1]);
+        let pinched = store::Prefs { term_zoom: 1.52, text_size: 1, ..Default::default() };
+        assert_eq!(term_zoom(&pinched), 1.52);
+        assert_eq!(term_zoom(&store::Prefs { term_zoom: 9.0, ..Default::default() }), ZOOM_MAX);
+        let back: store::Prefs = serde_json::from_str(&serde_json::to_string(&pinched).unwrap()).unwrap();
+        assert_eq!(term_zoom(&back), 1.52, "gardé d'un lancement à l'autre");
+        assert_eq!(size_choice(1.0), 0);
+        assert_eq!(size_choice(1.7), 2);
+        assert_eq!(size_choice(1.52), -1);
     }
 }

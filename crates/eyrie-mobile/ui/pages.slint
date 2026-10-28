@@ -951,6 +951,18 @@ export component SettingsPage inherits Rectangle {
                     selected(i) => { root.set-text-size(i); }
                 }
             }
+            // Un pincement règle la taille entre deux : aucune des trois n'est alors marquée.
+            HorizontalLayout {
+                padding-left: Theme.pad + 4px;
+                padding-right: Theme.pad;
+                padding-top: 8px;
+                Text {
+                    text: root.text-size < 0 ? "Taille réglée en pinçant le terminal à deux doigts." : "Pincez le terminal à deux doigts pour régler la taille entre deux.";
+                    color: Theme.text-dim;
+                    font-size: 13px;
+                    wrap: word-wrap;
+                }
+            }
             SectionHeader {
                 title: "À PROPOS";
             }

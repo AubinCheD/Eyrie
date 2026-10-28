@@ -101,6 +101,8 @@ pub struct Prefs {
     pub theme: i32,
     /// 0 : ajusté ; 1 : plus grand ; 2 : très grand.
     pub text_size: i32,
+    /// Le zoom du terminal laissé par le dernier pincement (1 : ajusté à la largeur) ; 0 : celui de `text_size`.
+    pub term_zoom: f32,
     /// Modules de la barre du bas (trois au plus) ; vide : les premiers proposés.
     pub pinned: Vec<String>,
     pub device_name: String,

@@ -80,7 +80,8 @@ export component AppWindow inherits Window {
     in property <int> term-cols: 80;
     in property <int> term-cursor-row: -1;
     in property <int> term-cursor-col;
-    in property <float> term-zoom: 1;
+    // Le zoom du terminal : le pincement le change ici (puis `term-zoomed`), le code le pose au démarrage.
+    in-out property <float> term-zoom: 1;
     in property <bool> term-ended;
     in property <bool> term-waiting;
     in property <[string]> term-replies;
@@ -169,7 +170,7 @@ export component AppWindow inherits Window {
     callback term-send-line(string);
     callback term-key(string);
     callback term-reply(int);
-    callback term-zoom-by(float);
+    callback term-zoomed(float);
     callback open-folder(UiAct);
     callback picker-go(string);
     callback picker-pick(string);
@@ -523,7 +524,7 @@ export component AppWindow inherits Window {
                         cols: root.term-cols;
                         cursor-row: root.term-cursor-row;
                         cursor-col: root.term-cursor-col;
-                        zoom: root.term-zoom;
+                        zoom <=> root.term-zoom;
                         ended: root.term-ended;
                         waiting: root.term-waiting;
                         replies: root.term-replies;
@@ -532,7 +533,7 @@ export component AppWindow inherits Window {
                         send-line(t) => { root.term-send-line(t); }
                         key(k) => { root.term-key(k); }
                         reply(i) => { root.term-reply(i); }
-                        zoom-by(f) => { root.term-zoom-by(f); }
+                        zoomed(z) => { root.term-zoomed(z); }
                         haptic => { root.haptic(); }
                     }
                 }

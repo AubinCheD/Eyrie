@@ -1,5 +1,6 @@
 // Un terminal du PC, en direct : la grille (couleurs résolues dans le thème du téléphone), ajustée à la largeur de
-// l'écran et zoomable ; réponses rapides quand Claude attend ; barre de touches ; champ de saisie.
+// l'écran ; deux doigts la zooment (le zoom est gardé). Dessous : réponses rapides quand Claude attend ; barre de
+// touches ; champ de saisie.
 
 import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
@@ -53,7 +54,9 @@ export component TermView inherits Rectangle {
     in property <int> cols: 80;
     in property <int> cursor-row: -1;
     in property <int> cursor-col;
-    in property <float> zoom: 1.0;
+    // Le zoom de la police (1 : ajustée à la largeur). Le pincement, A− et A+ le changent ici, puis le disent
+    // (`zoomed`) pour qu'il soit gardé.
+    in-out property <float> zoom: 1.0;
     in property <bool> ended;
     in property <bool> waiting;
     in property <[string]> replies;
@@ -64,7 +67,7 @@ export component TermView inherits Rectangle {
     callback send-line(string);
     callback key(string);
     callback reply(int);
-    callback zoom-by(float);
+    callback zoomed(float);
     callback haptic();
 
     // Ajusté à la largeur : la police mono (Hack) avance de 0,602 em par caractère.
@@ -77,41 +80,73 @@ export component TermView inherits Rectangle {
         list.content-y = min(0px, list.visible-height - list.content-height);
     }
 
+    // Un autre zoom : la liste garde le bas si elle y était, sinon la ligne et la colonne du haut.
+    function set-zoom(z: float) {
+        let bottom = root.at-bottom;
+        let top = -list.content-y / root.ch;
+        let left = -list.content-x / root.cw;
+        root.zoom = max(0.6, min(3.0, z));
+        if bottom {
+            root.scroll-to-end();
+        } else {
+            list.content-y = max(min(0px, list.visible-height - root.rows.length * root.ch), -top * root.ch);
+        }
+        list.content-x = max(min(0px, list.visible-width - list.content-width), -left * root.cw);
+    }
+
     background: Theme.term-bg;
 
     VerticalLayout {
         Rectangle {
             vertical-stretch: 1;
-            list := ListView {
-                content-width: root.cols * root.cw + 12px > self.visible-width + 1px ? root.cols * root.cw + 12px : self.visible-width;
-                for row[i] in root.rows: Rectangle {
-                    height: root.ch;
-                    for seg in row.segs: Rectangle {
-                        x: 6px + seg.col * root.cw;
-                        width: seg.len * root.cw;
+            pinch := ScaleRotateGestureHandler {
+                property <float> start-zoom;
+                started => {
+                    self.start-zoom = root.zoom;
+                }
+                updated => {
+                    root.set-zoom(self.start-zoom * self.scale);
+                }
+                ended => {
+                    root.zoomed(root.zoom);
+                }
+                cancelled => {
+                    root.zoomed(root.zoom);
+                }
+
+                list := ListView {
+                    width: parent.width;
+                    height: parent.height;
+                    content-width: root.cols * root.cw + 12px > self.visible-width + 1px ? root.cols * root.cw + 12px : self.visible-width;
+                    for row[i] in root.rows: Rectangle {
                         height: root.ch;
-                        background: seg.has-bg ? seg.bg : transparent;
-                        Text {
-                            x: 0;
-                            text: seg.text;
-                            color: seg.fg;
-                            font-family: "Hack";
-                            font-size: root.fs;
-                            font-weight: seg.bold ? 700 : 400;
-                            font-italic: seg.italic;
-                            vertical-alignment: center;
+                        for seg in row.segs: Rectangle {
+                            x: 6px + seg.col * root.cw;
+                            width: seg.len * root.cw;
+                            height: root.ch;
+                            background: seg.has-bg ? seg.bg : transparent;
+                            Text {
+                                x: 0;
+                                text: seg.text;
+                                color: seg.fg;
+                                font-family: "Hack";
+                                font-size: root.fs;
+                                font-weight: seg.bold ? 700 : 400;
+                                font-italic: seg.italic;
+                                vertical-alignment: center;
+                            }
+                            if seg.underline: Rectangle {
+                                y: root.ch - 2px;
+                                height: 1px;
+                                background: seg.fg;
+                            }
                         }
-                        if seg.underline: Rectangle {
-                            y: root.ch - 2px;
-                            height: 1px;
-                            background: seg.fg;
+                        if i == root.cursor-row: Rectangle {
+                            x: 6px + root.cursor-col * root.cw;
+                            width: max(2px, root.cw);
+                            height: root.ch;
+                            background: Theme.accent.with-alpha(0.55);
                         }
-                    }
-                    if i == root.cursor-row: Rectangle {
-                        x: 6px + root.cursor-col * root.cw;
-                        width: max(2px, root.cw);
-                        height: root.ch;
-                        background: Theme.accent.with-alpha(0.55);
                     }
                 }
             }
@@ -166,11 +201,17 @@ export component TermView inherits Rectangle {
                     spacing: 6px;
                     KeyChip {
                         text: "A−";
-                        clicked => { root.zoom-by(1 / 1.15); }
+                        clicked => {
+                            root.set-zoom(root.zoom / 1.15);
+                            root.zoomed(root.zoom);
+                        }
                     }
                     KeyChip {
                         text: "A+";
-                        clicked => { root.zoom-by(1.15); }
+                        clicked => {
+                            root.set-zoom(root.zoom * 1.15);
+                            root.zoomed(root.zoom);
+                        }
                     }
                     for k in [
                         { label: "Échap", key: "escape" },

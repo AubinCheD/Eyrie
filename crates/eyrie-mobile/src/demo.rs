@@ -6,8 +6,8 @@
 //! `dossiers-depot` (un dépôt existant), `dossiers-clone` et `dossiers-clone-pris` (où cloner), `dossiers-erreur`,
 //! `dossiers-attente`, `dossiers-silence`, `dossiers-texte` (un PC qui ne liste pas) ; le PC sans Eyrie (voir
 //! `veilleur.rs`) : `fermee` (« Démarrer Eyrie »), `fermee-par-pc` (elle vient de se fermer), `fermee-sans-cle`,
-//! `demarrage`, `acces-coupe`, `refus-demarrage`, `preuve-refusee`, `injoignable`, `telephone-hors-ligne`. Suffixe
-//! `+clair` ou `+sombre` : le thème (sinon celui du système).
+//! `demarrage`, `acces-coupe`, `refus-demarrage`, `preuve-refusee`, `injoignable`, `telephone-hors-ligne` ; le terminal
+//! : `terminal-zoom`. Suffixe `+clair` ou `+sombre` : le thème (sinon celui du système).
 
 use slint::ComponentHandle;
 use suite_mobile::msg::{
@@ -610,6 +610,13 @@ fn terminal() -> TermView {
     }
 }
 
+/// Le terminal ouvert, et un zoom (gardé seulement le temps de la démonstration).
+fn terminal_scene(ui: &AppWindow, scene: &str) {
+    if scene == "terminal-zoom" {
+        ui.set_term_zoom(1.8);
+    }
+}
+
 /// Un refus du veilleur, tel qu'il le dit (`compagnon/veille.go`).
 const UNSAFE_EYRIE: &str =
     "Eyrie n'est pas à l'abri sur le PC (modifiable par un autre compte) : voir le journal du PC";
@@ -718,12 +725,13 @@ pub fn play(ui: &AppWindow, scene: &str) {
             ui.set_search_text("claude".into());
             with(|c| c.search_edited("claude"));
         }
-        "terminal" => {
+        s if s == "terminal" || s.starts_with("terminal-") => {
             with(|c| {
                 c.nav_select("fawkes");
                 c.open_path("t/3");
             });
             feed(ToPhone::Term(TermFrame::full("fawkes", "3", &terminal())));
+            terminal_scene(ui, s);
         }
         "patronus" => {
             with(|c| c.nav_select("patronus"));
