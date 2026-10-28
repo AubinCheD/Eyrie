@@ -253,9 +253,12 @@ impl Picker {
         self.spec.want == FOLDER_REPO && e.flags & ENTRY_REPO != 0 && e.flags & ENTRY_DENIED == 0 && !self.known(e)
     }
 
-    /// Ce chemin est celui d'une entrée montrée qui peut être choisie d'un toucher.
+    /// Ce chemin est celui d'une entrée montrée qui peut être choisie d'un toucher : un dossier, ou un raccourci de la
+    /// racine (un dépôt récent, un dossier de l'accès rapide).
     pub fn pickable(&self, path: &str) -> bool {
-        self.listing.iter().flat_map(|l| &l.entries).any(|e| e.path == path && self.can_pick(e))
+        let mut shown =
+            self.listing.iter().flat_map(|l| l.entries.iter().chain(l.groups.iter().flat_map(|g| &g.places)));
+        shown.any(|e| e.path == path && self.can_pick(e))
     }
 
     /// Le filtre est proposé : un grand dossier, ou un filtre déjà en cours.
@@ -667,5 +670,26 @@ mod tests {
         assert_eq!((r[1].glyph.as_str(), r[1].subtitle.as_str()), ("📥", r"C:\DEV"));
         assert_eq!(r[5].icon, "drive");
         assert!(!p.choice().1, "la racine ne se choisit pas");
+    }
+
+    /// À la racine, un dépôt d'un groupe du PC (un récent que le module n'a plus) se choisit d'un toucher, comme dans
+    /// un dossier ; un dépôt déjà connu du module, non.
+    #[test]
+    fn a_repo_at_the_root_is_picked_from_its_group() {
+        let mut p = picker(FOLDER_REPO);
+        p.browse(1, None);
+        let recent =
+            FolderEntry { name: "Ozmo2".into(), path: r"C:\DEV\Ozmo2".into(), flags: ENTRY_REPO, ..Default::default() };
+        let known = FolderEntry { flags: ENTRY_REPO | ENTRY_KNOWN, ..entry("Ozmo", 0) };
+        let l = Listing {
+            groups: vec![PlaceGroup { title: "Récents".into(), places: vec![recent, known] }],
+            ..Default::default()
+        };
+        p.answer(1, l);
+        let r = p.rows();
+        assert!(r[1].pick && !r[2].pick, "« Choisir » à côté du dépôt récent seulement");
+        assert!(p.pickable(r"C:\DEV\Ozmo2"), "le toucher le choisit");
+        assert!(!p.pickable(r"C:\DEV\Ozmo"), "déjà dans le module");
+        assert!(!p.pickable(r"C:\DEV\Autre"), "pas montré");
     }
 }
