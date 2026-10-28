@@ -624,6 +624,48 @@ fn a_connected_phone_gets_its_wake_key_and_hears_eyrie_close() {
     assert!(closing, "{reason}");
 }
 
+/// Des droits changés sur le PC : les téléphones connectés reçoivent un nouveau `Welcome`, avec ces droits ; le secret
+/// de démarrage n'y est qu'avec « Agir » (le téléphone oublie celui qu'il gardait).
+#[test]
+fn changed_rights_send_a_new_welcome_with_the_wake_key_only_for_act() {
+    let mut h = suite();
+    h.state_mut().core.mobile.new_ticket(None).unwrap();
+    let uri = h.state().core.mobile.ticket.as_ref().unwrap().uri.clone();
+    let ticket = Ticket::from_uri(&uri).unwrap();
+    let me = Keypair::generate();
+    let public = me.public;
+    let phone = std::thread::spawn(move || {
+        let mut c = client::open(&ticket.addresses(), &me, Duration::from_secs(5)).unwrap();
+        client::pair(&mut c, &ticket.secret, Some(&ticket.key), "Pixel", "Google Pixel 8").unwrap();
+        client::wait_paired(&mut c).unwrap();
+        client::hello(&mut c, &ticket.key, "Pixel", "Google Pixel 8").unwrap();
+        let mut welcomes = Vec::new();
+        loop {
+            match c.rx.recv::<ToPhone>().expect("message du PC") {
+                ToPhone::Welcome { rights, wake, .. } => welcomes.push((rights, wake)),
+                ToPhone::Bye { .. } => return welcomes,
+                _ => {}
+            }
+        }
+    });
+    spin(&mut h, |h| !h.state().core.mobile.requests.is_empty());
+    h.state_mut().core.mobile.decide(0, true);
+    spin(&mut h, |h| !h.state().core.mobile.sessions.is_empty());
+    let id = h.state().core.mobile.store.devices[0].id.clone();
+    // Sans image entre les deux : la logique de l'hôte rendrait au pont la clé (absente) du vrai réglage.
+    let mobile = &mut h.state_mut().core.mobile;
+    mobile.set_wake(Some([5; 32]));
+    let read_only = suite_mobile::msg::Rights { act: false, ..Default::default() };
+    mobile.set_rights(&id, read_only);
+    mobile.set_rights(&id, suite_mobile::msg::Rights::default());
+    mobile.exit();
+    spin(&mut h, |_| phone.is_finished());
+    let welcomes = phone.join().expect("le téléphone a tout vu");
+    let secret = suite_mobile::veille::device_secret(&[5; 32], &public).to_vec();
+    let seen: Vec<(bool, Option<Vec<u8>>)> = welcomes.into_iter().map(|(r, w)| (r.act, w.map(|w| w.secret))).collect();
+    assert_eq!(seen, [(true, Some(secret.clone())), (false, None), (true, Some(secret))]);
+}
+
 /// Démarrée par le veilleur à la demande d'un téléphone (`EYRIE_DEMARRE_PAR`) : Eyrie le dit au journal et dans une
 /// bulle.
 #[test]

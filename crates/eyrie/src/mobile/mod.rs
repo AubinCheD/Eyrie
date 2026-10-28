@@ -230,13 +230,19 @@ impl Bridge {
         let auths = self.device_auths();
         for s in &self.sessions {
             let Some(dev) = auths.iter().find(|d| d.id == s.device) else { continue };
-            s.send(ToPhone::Welcome {
-                protocol: PROTOCOL,
-                pc: pc_name(),
-                eyrie: env!("CARGO_PKG_VERSION").into(),
-                rights: s.rights,
-                wake: key.map(|k| server::wake_key(&k, dev)),
-            });
+            s.send(self.welcome(dev));
+        }
+    }
+
+    /// L'accueil de l'appareil `dev`, renvoyé pendant la connexion quand la clé du veilleur ou ses droits changent : le
+    /// téléphone y lit ses droits et garde le secret de démarrage, ou l'oublie quand il n'y est pas.
+    fn welcome(&self, dev: &server::DeviceAuth) -> ToPhone {
+        ToPhone::Welcome {
+            protocol: PROTOCOL,
+            pc: pc_name(),
+            eyrie: env!("CARGO_PKG_VERSION").into(),
+            rights: dev.rights,
+            wake: self.wake.and_then(|k| server::wake_key(&k, dev)),
         }
     }
 
@@ -301,6 +307,8 @@ impl Bridge {
         self.store.journal(&d.name, "appairage", "retiré sur le PC");
     }
 
+    /// Les droits de l'appareil `id` : ses connexions reçoivent un nouvel accueil, avec le secret de démarrage
+    /// seulement s'il peut agir.
     pub fn set_rights(&mut self, id: &str, rights: Rights) {
         let Some(d) = self.store.device_mut(id) else { return };
         if d.rights == rights {
@@ -310,8 +318,12 @@ impl Bridge {
         let name = d.name.clone();
         self.store.save();
         self.devices_changed();
+        let welcome = self.device_auths().iter().find(|d| d.id == id).map(|d| self.welcome(d));
         for s in self.sessions.iter_mut().filter(|s| s.device == id) {
             s.rights = rights;
+            if let Some(w) = &welcome {
+                s.send(w.clone());
+            }
             s.send(ToPhone::Toast { text: "Vos droits ont changé sur le PC.".into(), tone: Default::default() });
         }
         self.store.journal(

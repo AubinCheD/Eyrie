@@ -130,10 +130,11 @@ impl Shared {
         *lock(&self.standby) = key;
     }
 
-    /// Ce que reçoit l'appareil `dev` pour demander au veilleur de démarrer Eyrie (rien sans veilleur).
+    /// Ce que reçoit l'appareil `dev` pour demander au veilleur de démarrer Eyrie (rien sans veilleur, ni sans le droit
+    /// « Agir »).
     pub fn wake_key(&self, dev: &DeviceAuth) -> Option<WakeKey> {
         let key = (*lock(&self.standby))?;
-        Some(wake_key(&key, dev))
+        wake_key(&key, dev)
     }
 
     /// Un nouveau ticket (QR et code saisi ensemble : l'un utilisé, l'autre tombe).
@@ -202,9 +203,14 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 /// Le secret de démarrage de l'appareil `dev`, tiré de la clé du veilleur et de sa clé publique ; `device` est son
-/// identifiant (le veilleur le cherche dans `appareils.json`).
-pub fn wake_key(key: &[u8; 32], dev: &DeviceAuth) -> WakeKey {
-    WakeKey { port: veille::PORT, secret: veille::device_secret(key, &dev.key).to_vec(), device: dev.id.clone() }
+/// identifiant (le veilleur le cherche dans `appareils.json`). Démarrer Eyrie est une action : rien pour un appareil
+/// sans le droit « Agir » (le veilleur le refuse aussi).
+pub fn wake_key(key: &[u8; 32], dev: &DeviceAuth) -> Option<WakeKey> {
+    dev.rights.act.then(|| WakeKey {
+        port: veille::PORT,
+        secret: veille::device_secret(key, &dev.key).to_vec(),
+        device: dev.id.clone(),
+    })
 }
 
 /// L'écoute en cours.
@@ -564,6 +570,30 @@ mod tests {
             seen.push(w.secret);
         }
         assert_ne!(seen[0], seen[1], "un secret par appareil");
+    }
+
+    /// Démarrer Eyrie est une action : un appareil sans le droit « Agir » ne reçoit pas de secret de démarrage.
+    #[test]
+    fn a_device_without_the_act_right_gets_no_wake_key() {
+        let s = shared(None);
+        let server = Server::start(s.clone(), 0).unwrap();
+        let phone = Keypair::generate();
+        let auth = |act| DeviceAuth {
+            id: "a1".into(),
+            name: "Pixel".into(),
+            key: phone.public,
+            login: String::new(),
+            rights: Rights { act, ..Rights::default() },
+        };
+        s.set_standby_key(Some([5; 32]));
+        s.set_devices(vec![auth(false)]);
+        let mut c = open(&server, &phone);
+        let w = client::hello(&mut c, &s.key.public, "x", "y").unwrap();
+        assert!(!w.rights.act);
+        assert_eq!(w.wake, None, "pas de secret sans « Agir »");
+        s.set_devices(vec![auth(true)]);
+        let mut c = open(&server, &phone);
+        assert!(client::hello(&mut c, &s.key.public, "x", "y").unwrap().wake.is_some(), "avec « Agir »");
     }
 
     #[test]

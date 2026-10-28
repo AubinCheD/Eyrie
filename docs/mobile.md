@@ -105,7 +105,8 @@ Autres règles :
   le PC se prouvent mutuellement le secret (MAC BLAKE2s sur le hachage de la poignée de main), et le téléphone vérifie
   la clé du PC lue dans le QR. **Code à saisir** en secours : dix caractères (alphabet sans ambiguïté), plus le nom du
   PC sur le tailnet.
-- **Droits par appareil** : *voir*, *agir* (actions des modules), *terminaux* (saisie et création) ; tous accordés par
+- **Droits par appareil** : *voir*, *agir* (actions des modules, et démarrer Eyrie fermée : seul un appareil qui peut
+  agir en reçoit le secret, et le veilleur refuse les autres), *terminaux* (saisie et création) ; tous accordés par
   défaut, réglables appareil par appareil ; révocation immédiate.
 - **Clé du PC** : `%LOCALAPPDATA%\EyrieSuite\Eyrie\mobile\cle`, chiffrée par DPAPI ; appareils dans
   `mobile\appareils.json` (clés publiques seulement). Un Eyrie sur un autre dossier (essais) garde tout dans le sien.
