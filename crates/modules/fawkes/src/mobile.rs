@@ -22,7 +22,7 @@ use suite_sdk::mobile::term::{self, Color, Key, Line, Run, TermInput, TermView};
 use suite_sdk::mobile::ui::{Act, Band, Row, Screen, Tone};
 
 use fawkes::app::{App, NewClaude, NewTerm};
-use fawkes::model::{AppState, Group, Rgb, TermId, TermSpec};
+use fawkes::model::{AppState, Group, GroupId, Rgb, TermId, TermSpec};
 use fawkes::ui::panes::ClaudeStatus;
 
 /// Au-delà de ce nombre de terminaux, l'accueil a un champ de recherche.
@@ -235,15 +235,48 @@ fn opened(n: &Tally, selected: bool, groups: usize) -> bool {
     n.asleep < n.terms
 }
 
+/// Le nom d'un dossier : son dernier élément.
+fn dir_name(d: &str) -> String {
+    d.split(['\\', '/']).rfind(|p| !p.is_empty()).unwrap_or(d).to_string()
+}
+
+/// Le menu d'un bandeau : celui du groupe sur le PC (`sidebar::group_menu`), avec ce qui a un effet. Modifier et
+/// supprimer le groupe restent sur le PC ; redémarrer tout le groupe n'a pas d'API publique dans Fawkes.
+fn group_acts(g: &Group, n: &Tally) -> Vec<Act> {
+    let gid = g.id;
+    let mut acts = Vec::new();
+    if let Some(repo) = &g.repo {
+        let name = dir_name(repo);
+        acts.push(Act::new(format!("shell:g{gid}"), format!("Shell dans {name}")).glyph("›_"));
+        acts.push(Act::new(format!("claude:g{gid}"), format!("Claude dans {name}")).glyph("✳️"));
+    }
+    acts.push(Act::screen("Nouveau terminal dans ce groupe…", format!("nouveau/g/{gid}")).glyph("➕"));
+    if n.without_remote > 0 {
+        acts.push(Act::new(format!("remote:g{gid}"), "Remote Control sur les sessions Claude").glyph("📡"));
+    }
+    if n.live < n.terms {
+        acts.push(Act::new(format!("reveiller:g{gid}"), "Tout réveiller").glyph("☀️"));
+    }
+    if n.live > 0 {
+        acts.push(Act::new(format!("veille:g{gid}"), "Tout mettre en veille").glyph("🌙").confirm(format!(
+            "Mettre en veille les terminaux de « {} » ? Ce qui y tourne s'arrête jusqu'au réveil.",
+            g.name
+        )));
+    }
+    acts.push(Act::new(format!("montrer:g{gid}"), "Montrer sur le PC").glyph("🖥️"));
+    acts
+}
+
 /// Le bandeau d'un groupe : clé tirée de son identifiant (elle survit à un renommage), « ✻2 · 5 » (sessions Claude,
-/// terminaux) comme la barre du PC, et ce qui l'y fait remarquer : « 2 attendent », « 1 en échec », 🔔.
+/// terminaux) comme la barre du PC, ce qui l'y fait remarquer (« 2 attendent », « 1 en échec », 🔔) et son menu.
 fn group_band(g: &Group, n: &Tally, selected: bool, groups: usize) -> Band {
     let aside = if n.claude > 0 { format!("✻{} · {}", n.claude, n.terms) } else { n.terms.to_string() };
-    let band = Band::new(format!("g{}", g.id), &g.name)
+    let mut band = Band::new(format!("g{}", g.id), &g.name)
         .glyph(&g.icon)
         .color(rgb(g.color))
         .aside(aside)
         .open(opened(n, selected, groups));
+    band.acts = group_acts(g, n);
     if n.waiting > 0 {
         let text = if n.waiting == 1 { "1 attend".to_string() } else { format!("{} attendent", n.waiting) };
         band.badge(text).tone(Tone::Warn)
@@ -266,19 +299,31 @@ pub fn waiting(app: &App) -> Vec<(String, Option<String>)> {
         .collect()
 }
 
-/// Les dossiers proposés pour un nouveau terminal : les récents, puis les dépôts des groupes.
-fn known_dirs(app: &App) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let candidates = app.st.recent_dirs.iter().cloned().chain(app.st.groups.iter().filter_map(|g| g.repo.clone()));
-    for d in candidates {
-        if !out.iter().any(|o| o.eq_ignore_ascii_case(&d)) {
-            out.push(d);
+/// Les dossiers proposés pour un nouveau terminal, 12 au plus : ceux du groupe visé d'abord (son dépôt, puis ceux de
+/// ses terminaux, 6 au plus ; marqués `true`), les récents, puis les dépôts des groupes.
+fn known_dirs(st: &AppState, group: Option<&Group>) -> Vec<(String, bool)> {
+    let own = group.into_iter().flat_map(|g| {
+        let cwds = g.terminals.iter().filter_map(|id| st.term(*id)).map(|t| t.cwd.clone());
+        g.repo.clone().into_iter().chain(cwds).map(|d| (d, true))
+    });
+    let others = st.recent_dirs.iter().cloned().chain(st.groups.iter().filter_map(|g| g.repo.clone()));
+    let mut out: Vec<(String, bool)> = Vec::new();
+    for (d, mine) in own.chain(others.map(|d| (d, false))) {
+        let full = mine && out.len() >= 6;
+        if full || d.trim().is_empty() || out.iter().any(|(o, _)| o.eq_ignore_ascii_case(&d)) {
+            continue;
         }
+        out.push((d, mine));
         if out.len() == 12 {
             break;
         }
     }
     out
+}
+
+/// Le groupe d'un écran `nouveau/g/<groupe>` (menu d'un bandeau).
+fn path_group(path: &str) -> Option<GroupId> {
+    path.strip_prefix("nouveau/g/")?.parse().ok()
 }
 
 pub fn screen(app: &mut App, path: &str, _cx: &mut Cx) -> Option<Screen> {
@@ -287,7 +332,10 @@ pub fn screen(app: &mut App, path: &str, _cx: &mut Cx) -> Option<Screen> {
         return Some(home(&app.st, &seen));
     }
     if path == "nouveau" {
-        return Some(new_terminal(app));
+        return Some(new_terminal(&app.st, None));
+    }
+    if let Some(gid) = path_group(path) {
+        return Some(new_terminal(&app.st, Some(app.st.group(gid)?)));
     }
     let id: TermId = path.strip_prefix("t/")?.parse().ok()?;
     let t = app.st.term(id)?;
@@ -331,6 +379,15 @@ fn home(st: &AppState, seen: &HashMap<TermId, Seen>) -> Screen {
         let terms: Vec<&TermSpec> = g.terminals.iter().filter_map(|id| st.term(*id)).collect();
         let n = tally(&terms, seen);
         s.band(group_band(g, &n, g.id == st.selected_group, st.groups.len()));
+        if terms.is_empty() {
+            s.row(
+                Row::new("Nouveau terminal dans ce groupe")
+                    .key(format!("nouveau:g{}", g.id))
+                    .glyph("➕")
+                    .subtitle("Aucun terminal pour l'instant")
+                    .open(format!("nouveau/g/{}", g.id)),
+            );
+        }
         for t in terms {
             s.row(term_row(t, g, seen.get(&t.id).unwrap_or(&UNSEEN)));
         }
@@ -338,17 +395,24 @@ fn home(st: &AppState, seen: &HashMap<TermId, Seen>) -> Screen {
     s
 }
 
-fn new_terminal(app: &App) -> Screen {
-    let mut s = Screen::new("Nouveau terminal").subtitle("Il s'ouvre dans Fawkes, sur le PC");
-    let dirs = known_dirs(app);
-    if !dirs.is_empty() {
-        s.section("Dossiers récents", "");
-    }
-    for d in dirs {
+/// `nouveau` : un shell ou Claude dans un dossier connu ; `nouveau/g/<groupe>` (menu d'un bandeau) : la même chose
+/// dans ce groupe, ses dossiers d'abord.
+fn new_terminal(st: &AppState, group: Option<&Group>) -> Screen {
+    let subtitle = match group {
+        Some(g) => format!("Dans le groupe « {} », sur le PC", g.name),
+        None => "Il s'ouvre dans Fawkes, sur le PC".to_string(),
+    };
+    let mut s = Screen::new("Nouveau terminal").subtitle(subtitle);
+    let mut section = None;
+    for (d, mine) in known_dirs(st, group) {
+        if section != Some(mine) {
+            s.section(if mine { "Dossiers du groupe" } else { "Dossiers récents" }, "");
+            section = Some(mine);
+        }
         let key = dir_key(&d);
-        let name = d.split(['\\', '/']).rfind(|p| !p.is_empty()).unwrap_or(&d).to_string();
         s.row(
-            Row::new(name)
+            Row::new(dir_name(&d))
+                .key(key.clone())
                 .subtitle(d.clone())
                 .glyph("📁")
                 .tap(Act::new(format!("shell:{key}"), "Ouvrir un shell").glyph("›_"))
@@ -365,64 +429,196 @@ fn new_terminal(app: &App) -> Screen {
     s
 }
 
-/// Le dossier visé par `shell:<clé>` ou `claude:<clé>`, contrôlé comme une demande `ouvrir` d'un autre module.
-fn target_dir(app: &App, key: &str, input: Option<&str>) -> Result<String, String> {
+/// Le dossier et le groupe visés par `shell:<clé>` ou `claude:<clé>` : un dossier que l'écran `path` propose, le dépôt
+/// d'un groupe (`g<groupe>`, menu de son bandeau) ou un dossier saisi, contrôlé comme une demande `ouvrir` d'un autre
+/// module. Le groupe : celui de l'écran (`nouveau/g/<groupe>`) ou du bandeau, sinon celui lié au dépôt du dossier.
+fn target_dir(st: &AppState, path: &str, key: &str, input: Option<&str>) -> Result<(String, Option<GroupId>), String> {
+    let mut group = match path_group(path) {
+        Some(gid) => Some(st.group(gid).ok_or("Ce groupe n'existe plus.")?),
+        None => None,
+    };
     let dir = if key == "saisi" {
         input.map(str::trim).filter(|d| !d.is_empty()).ok_or("Indiquez un dossier.")?.to_string()
+    } else if let Some(gid) = key.strip_prefix('g').and_then(|g| g.parse::<GroupId>().ok()) {
+        // Les clés de dossier sont en hexadécimal : jamais de « g ».
+        let g = st.group(gid).ok_or("Ce groupe n'existe plus.")?;
+        group = Some(g);
+        g.repo.clone().ok_or("Ce groupe n'a plus de dépôt.")?
     } else {
-        known_dirs(app).into_iter().find(|d| dir_key(d) == key).ok_or("Ce dossier n'est plus proposé : réessayez.")?
+        known_dirs(st, group)
+            .into_iter()
+            .map(|(d, _)| d)
+            .find(|d| dir_key(d) == key)
+            .ok_or("Ce dossier n'est plus proposé : réessayez.")?
     };
     crate::suite::check_open(&dir, None)?;
-    Ok(dir)
+    let group = group.map(|g| g.id).or_else(|| st.group_for_dir(&dir));
+    Ok((dir, group))
+}
+
+/// Un geste sur un terminal ou sur tout un groupe.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Verb {
+    Restart,
+    Sleep,
+    Wake,
+    Show,
+    Close,
+    Remote,
+}
+
+/// Une action du téléphone, lue dans son identifiant.
+#[derive(Debug, PartialEq, Eq)]
+enum Cmd<'a> {
+    /// `shell:<clé>`, `claude:<clé>` : un nouveau terminal (voir [`target_dir`]).
+    New { claude: bool, key: &'a str },
+    /// `veille:12` : le terminal 12.
+    Term(Verb, TermId),
+    /// `veille:g3` : tout le groupe 3 (menu de son bandeau).
+    Group(Verb, GroupId),
+}
+
+fn parse(action: &str) -> Result<Cmd<'_>, String> {
+    let (verb, arg) = action.split_once(':').ok_or("action inconnue")?;
+    if verb == "shell" || verb == "claude" {
+        return Ok(Cmd::New { claude: verb == "claude", key: arg });
+    }
+    let verb = match verb {
+        "redemarrer" => Verb::Restart,
+        "veille" => Verb::Sleep,
+        "reveiller" => Verb::Wake,
+        "montrer" => Verb::Show,
+        "fermer" => Verb::Close,
+        "remote" => Verb::Remote,
+        _ => return Err("action inconnue".into()),
+    };
+    match arg.strip_prefix('g') {
+        // Ni redémarrer ni fermer tout un groupe depuis le téléphone.
+        Some(_) if matches!(verb, Verb::Restart | Verb::Close) => Err("action inconnue".into()),
+        Some(gid) => Ok(Cmd::Group(verb, gid.parse().map_err(|_| "groupe inconnu")?)),
+        None => Ok(Cmd::Term(verb, arg.parse().map_err(|_| "terminal inconnu")?)),
+    }
 }
 
 pub fn action(
     app: &mut App,
-    _path: &str,
+    path: &str,
     action: &str,
     input: Option<&str>,
     cx: &mut Cx,
 ) -> Result<Option<String>, String> {
-    let (verb, arg) = action.split_once(':').ok_or("action inconnue")?;
-    if verb == "shell" || verb == "claude" {
-        let dir = target_dir(app, arg, input)?;
-        let group = app.st.group_for_dir(&dir);
-        let claude = (verb == "claude").then(NewClaude::default);
-        let id = app.create_terminal(NewTerm { cwd: dir, group, claude, ..Default::default() });
-        return Ok(Some(format!("{OPEN_PREFIX}t/{id}")));
+    match parse(action)? {
+        Cmd::New { claude, key } => {
+            let (dir, group) = target_dir(&app.st, path, key, input)?;
+            let claude = claude.then(NewClaude::default);
+            let id = app.create_terminal(NewTerm { cwd: dir, group, claude, ..Default::default() });
+            Ok(Some(format!("{OPEN_PREFIX}t/{id}")))
+        }
+        Cmd::Term(verb, id) => term_action(app, verb, id, cx),
+        Cmd::Group(verb, gid) => group_action(app, verb, gid, cx),
     }
-    let id: TermId = arg.parse().map_err(|_| "terminal inconnu")?;
+}
+
+fn term_action(app: &mut App, verb: Verb, id: TermId, cx: &mut Cx) -> Result<Option<String>, String> {
     if app.st.term(id).is_none() {
         return Err("Ce terminal n'existe plus.".into());
     }
     match verb {
-        "redemarrer" => {
+        Verb::Restart => {
             app.restart(id);
             Ok(Some("Redémarré".into()))
         }
-        "veille" => {
+        Verb::Sleep => {
             app.sleep(id);
             Ok(Some("En veille".into()))
         }
-        "reveiller" => {
+        Verb::Wake => {
             app.wake(id);
             Ok(Some("Réveillé".into()))
         }
-        "montrer" => {
+        Verb::Show => {
             app.select_term(id);
             cx.host.show(crate::suite::ID);
             Ok(Some("Montré sur le PC".into()))
         }
-        "fermer" => {
+        Verb::Close => {
             app.close_terminal(id);
             // Le terminal n'existe plus : retour à la liste.
             Ok(Some(OPEN_PREFIX.to_string()))
         }
-        "remote" => {
+        Verb::Remote => {
             app.remote_control(id)?;
             Ok(Some("Remote Control activé : la session continue dans l'application Claude".into()))
         }
-        _ => Err("action inconnue".into()),
+    }
+}
+
+/// Le menu d'un bandeau, comme celui du groupe sur le PC (`Action::SleepGroup`, `WakeGroup`, `RemoteControlGroup`) :
+/// terminal par terminal, par les méthodes publiques de Fawkes.
+fn group_action(app: &mut App, verb: Verb, gid: GroupId, cx: &mut Cx) -> Result<Option<String>, String> {
+    if app.st.group(gid).is_none() {
+        return Err("Ce groupe n'existe plus.".into());
+    }
+    let ids = app.terms_of(gid);
+    match verb {
+        Verb::Sleep => {
+            let live: Vec<TermId> = ids.into_iter().filter(|id| app.live.contains_key(id)).collect();
+            for &id in &live {
+                app.sleep(id);
+            }
+            Ok(Some(count(live.len(), "terminal mis en veille", "terminaux mis en veille")))
+        }
+        Verb::Wake => {
+            let asleep: Vec<TermId> = ids.into_iter().filter(|id| !app.live.contains_key(id)).collect();
+            for &id in &asleep {
+                app.wake(id);
+            }
+            Ok(Some(count(asleep.len(), "terminal réveillé", "terminaux réveillés")))
+        }
+        Verb::Remote => {
+            let sessions: Vec<TermId> =
+                ids.into_iter().filter(|id| app.live.get(id).is_some_and(|l| l.proc.claude_pid.is_some())).collect();
+            let (mut done, mut skipped) = (0, Vec::new());
+            for id in sessions {
+                match app.remote_control(id) {
+                    Ok(()) => done += 1,
+                    Err(why) => skipped.push(format!(
+                        "« {} » : {why}",
+                        app.st.term(id).map(|t| t.display_title()).unwrap_or_default()
+                    )),
+                }
+            }
+            remote_report(done, &skipped).map(Some)
+        }
+        Verb::Show => {
+            app.select_group(gid);
+            cx.host.show(crate::suite::ID);
+            Ok(Some("Montré sur le PC".into()))
+        }
+        Verb::Restart | Verb::Close => Err("action inconnue".into()),
+    }
+}
+
+/// « 1 terminal réveillé », « 2 terminaux réveillés », « Aucun terminal réveillé ».
+fn count(n: usize, one: &str, many: &str) -> String {
+    match n {
+        0 => format!("Aucun {one}"),
+        1 => format!("1 {one}"),
+        n => format!("{n} {many}"),
+    }
+}
+
+/// Ce que Remote Control a donné sur les sessions d'un groupe, dit comme sur le PC ; un échec si aucune ne l'a.
+fn remote_report(done: usize, skipped: &[String]) -> Result<String, String> {
+    let why = skipped.join(" · ");
+    match (done, skipped.len()) {
+        (0, 0) => Err("Aucune session Claude ne tourne dans ce groupe.".into()),
+        (0, _) => Err(format!("Remote Control non activé : {why}")),
+        (d, 0) => Ok(format!("Remote Control activé sur {}", count(d, "session Claude", "sessions Claude"))),
+        (d, k) => Ok(format!(
+            "Remote Control activé sur {} ; non activé sur {k} : {why}",
+            count(d, "session Claude", "sessions Claude")
+        )),
     }
 }
 
@@ -607,7 +803,6 @@ pub fn term_input(app: &mut App, id: &str, input: &TermInput, cx: &mut Cx) -> Re
 
 #[cfg(test)]
 mod tests {
-    use fawkes::model::GroupId;
     use suite_sdk::mobile::ui::{Block, Fold};
 
     use super::*;
@@ -695,7 +890,8 @@ mod tests {
         assert_eq!(eyrie, Some((Some(0x123456), "🦉".to_string())), "couleur et icône du groupe");
         let keys: Vec<&str> = rows_under(&s, "g5").iter().map(|r| r.key.as_str()).collect();
         assert_eq!(keys, ["1", "2"]);
-        assert!(rows_under(&s, "g0").is_empty());
+        let empty: Vec<_> = rows_under(&s, "g0").iter().map(|r| r.open.clone()).collect();
+        assert_eq!(empty, [Some("nouveau/g/0".to_string())], "un groupe vide propose d'y ouvrir un terminal");
     }
 
     /// Ouvert s'il attend, est en échec ou sonne, s'il est affiché sur le PC ou s'il n'y a que deux groupes ; sinon
@@ -803,6 +999,131 @@ mod tests {
         st.groups[0].terminals.push(9);
         st.terminals.push(term(9, 0));
         assert!(!home(&st, &HashMap::new()).search.is_empty());
+    }
+
+    /// Le menu d'un bandeau reprend celui du groupe sur le PC, avec seulement ce qui a un effet. Tout passe par la liste
+    /// blanche du pont, sauf « Nouveau terminal dans ce groupe… », un écran ouvert par le téléphone. Ni redémarrer, ni
+    /// fermer, ni supprimer un groupe depuis le téléphone.
+    #[test]
+    fn band_menus_offer_what_applies_and_are_whitelisted() {
+        let (mut st, mut seen) = three_groups();
+        st.groups[1].repo = Some(r"C:\DEV\Eyrie".into());
+        let s = home(&st, &seen);
+        let menu = |s: &Screen, key: &str| -> Vec<String> {
+            let acts = s.blocks.iter().find_map(|b| match b {
+                Block::Section { key: k, acts, .. } if k == key => Some(acts.clone()),
+                _ => None,
+            });
+            acts.unwrap().into_iter().map(|a| a.open.unwrap_or(a.id)).collect()
+        };
+        assert_eq!(
+            menu(&s, "g5"),
+            ["shell:g5", "claude:g5", "nouveau/g/5", "remote:g5", "veille:g5", "montrer:g5"],
+            "dépôt, Claude sans Remote Control, tout éveillé"
+        );
+        assert_eq!(menu(&s, "g7"), ["nouveau/g/7", "reveiller:g7", "montrer:g7"], "sans dépôt, tout en veille");
+        assert_eq!(menu(&s, "g0"), ["nouveau/g/0", "montrer:g0"], "vide");
+        let ids = s.action_ids();
+        for id in ["shell:g5", "claude:g5", "remote:g5", "veille:g5", "montrer:g5", "reveiller:g7", "montrer:g0"] {
+            assert!(ids.contains(id), "{id} dans la liste blanche");
+        }
+        assert!(s.opens().contains("nouveau/g/5"));
+        assert!(!ids.iter().any(|id| id.starts_with("redemarrer:g") || id.starts_with("fermer:g")));
+        let labels: Vec<String> = s
+            .blocks
+            .iter()
+            .find_map(|b| match b {
+                Block::Section { key, acts, .. } if key == "g5" => Some(acts.iter().map(|a| a.label.clone()).collect()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(labels[..2], ["Shell dans Eyrie", "Claude dans Eyrie"]);
+        let sleep = s.all_acts().into_iter().find(|a| a.id == "veille:g5").unwrap();
+        assert!(sleep.confirm.is_some(), "tout un groupe en veille : confirmé");
+        seen.get_mut(&1).unwrap().remote = true;
+        assert!(!home(&st, &seen).action_ids().contains("remote:g5"), "déjà sous Remote Control");
+    }
+
+    /// Chaque action que proposent l'accueil et les écrans « nouveau terminal » est comprise ; redémarrer ou fermer
+    /// tout un groupe ne l'est pas.
+    #[test]
+    fn every_offered_action_is_understood() {
+        let (mut st, mut seen) = three_groups();
+        st.groups[1].repo = Some(r"C:\DEV\Eyrie".into());
+        st.recent_dirs = vec![r"C:\DEV\Ozmo".into()];
+        seen.insert(2, running(State::Failed));
+        let screens = [home(&st, &seen), new_terminal(&st, None), new_terminal(&st, st.group(5))];
+        for s in &screens {
+            for id in s.action_ids() {
+                assert!(parse(&id).is_ok(), "{id}");
+            }
+        }
+        assert_eq!(parse("veille:g5"), Ok(Cmd::Group(Verb::Sleep, 5)));
+        assert_eq!(parse("veille:12"), Ok(Cmd::Term(Verb::Sleep, 12)));
+        assert_eq!(parse("claude:g5"), Ok(Cmd::New { claude: true, key: "g5" }));
+        for refused in ["redemarrer:g5", "fermer:g5", "veille:gx", "veille:", "supprimer:g5", "veille"] {
+            assert!(parse(refused).is_err(), "{refused}");
+        }
+    }
+
+    /// `nouveau/g/<groupe>` (menu d'un bandeau) : les dossiers du groupe d'abord, et le terminal s'ouvre dans ce
+    /// groupe ; « Shell dans <dépôt> » vise le dépôt du groupe. Un groupe disparu ou sans dépôt est refusé.
+    #[test]
+    fn a_new_terminal_from_a_band_opens_in_its_group() {
+        let here = env!("CARGO_MANIFEST_DIR");
+        let src = format!(r"{here}\src");
+        let (mut st, _) = three_groups();
+        st.groups[1].repo = Some(here.into());
+        st.terminals[0].cwd = src.clone();
+        st.recent_dirs = vec![r"C:\DEV\Ozmo".into(), here.to_uppercase()];
+        let s = new_terminal(&st, st.group(5));
+        assert!(s.subtitle.contains("« Eyrie »"), "{}", s.subtitle);
+        let sections: Vec<&str> = s
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::Section { title, .. } => Some(title.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sections, ["Dossiers du groupe", "Dossiers récents", "Ailleurs"]);
+        let dirs: Vec<&str> = s
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::Row(r) if r.glyph == "📁" => Some(r.subtitle.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(dirs, [here, &src, r"C:\DEV\Eyrie", r"C:\DEV\Ozmo"], "dépôt, dossiers des terminaux, récents");
+        assert_eq!(target_dir(&st, "nouveau/g/5", &dir_key(&src), None), Ok((src.clone(), Some(5))));
+        assert_eq!(target_dir(&st, "", "g5", None), Ok((here.to_string(), Some(5))), "« Shell dans Eyrie »");
+        assert_eq!(target_dir(&st, "nouveau/g/7", "saisi", Some(here)), Ok((here.to_string(), Some(7))));
+        assert!(target_dir(&st, "", "g7", None).is_err(), "Ozmo n'a pas de dépôt");
+        assert!(target_dir(&st, "nouveau/g/9", "saisi", Some(here)).is_err(), "groupe disparu");
+        assert!(target_dir(&st, "nouveau/g/5", "nope", None).is_err(), "dossier qui n'est plus proposé");
+        assert_eq!(
+            (path_group("nouveau/g/12"), path_group("nouveau/g/x"), path_group("nouveau")),
+            (Some(12), None, None)
+        );
+        let plain = new_terminal(&st, None);
+        assert_eq!(plain.subtitle, "Il s'ouvre dans Fawkes, sur le PC");
+        assert!(
+            plain.blocks.iter().all(|b| !matches!(b, Block::Section { title, .. } if title == "Dossiers du groupe"))
+        );
+    }
+
+    #[test]
+    fn remote_control_on_a_group_says_what_it_did() {
+        assert!(remote_report(0, &[]).is_err(), "aucune session");
+        let busy = vec!["« t1 » : Claude travaille, réessayer quand il aura fini".to_string()];
+        assert_eq!(remote_report(0, &busy), Err(format!("Remote Control non activé : {}", busy[0])));
+        assert_eq!(remote_report(2, &[]).as_deref(), Ok("Remote Control activé sur 2 sessions Claude"));
+        assert_eq!(
+            remote_report(1, &busy),
+            Ok(format!("Remote Control activé sur 1 session Claude ; non activé sur 1 : {}", busy[0]))
+        );
+        assert_eq!(count(0, "terminal réveillé", "terminaux réveillés"), "Aucun terminal réveillé");
     }
 
     #[test]
