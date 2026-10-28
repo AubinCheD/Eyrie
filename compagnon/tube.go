@@ -6,7 +6,8 @@ package main
 // s'y rattache, par un tube nommé au nom du dossier du nœud, réservé au compte de l'utilisateur. Le tube parle comme
 // l'entrée et la sortie du compagnon lancé par Eyrie : consignes de relais et {"arret":true} dans un sens, lignes
 // d'état dans l'autre. Son client est vérifié (même compte Windows ; l'exécutable d'Eyrie ou du compagnon, rangé à
-// côté du veilleur) ; un seul à la fois. Le client parti (Eyrie fermée, arrêtée ou plantée), plus rien n'est
+// côté du veilleur) ; un seul à la fois. Eyrie ouvre le tube au niveau SECURITY_IDENTIFICATION, sans quoi, lancée en
+// administrateur, elle ne serait pas reconnue. Le client parti (Eyrie fermée, arrêtée ou plantée), plus rien n'est
 // relayé, et le nœud reste sur le tailnet.
 
 import (
@@ -18,6 +19,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -68,7 +70,18 @@ func pipeHandle(c net.Conn) (windows.Handle, error) {
 	return windows.Handle(f.Fd()), nil
 }
 
-// checkClient vérifie le processus au bout du tube `c` (voir checkProcess).
+// dialControl ouvre le tube `name` en se laissant identifier (SECURITY_IDENTIFICATION) : le veilleur lit alors le
+// compte du client sur le tube, même pour un processus lancé en administrateur (checkClient).
+func dialControl(name string, timeout time.Duration) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return winio.DialPipeAccessImpLevel(ctx, name, windows.GENERIC_READ|windows.GENERIC_WRITE,
+		winio.PipeImpLevelIdentification)
+}
+
+// checkClient vérifie le processus au bout du tube `c` (voir checkProcess). Son compte est lu sur le jeton que le
+// client présente au tube (pipeClientUser) ; s'il n'en présente pas (client anonyme, ou ouvert sans qualité de
+// service et encore muet), sur celui de son processus, qui n'est lisible que s'il n'est pas élevé.
 func checkClient(c net.Conn, allowed []string) error {
 	h, err := pipeHandle(c)
 	if err != nil {
@@ -78,32 +91,80 @@ func checkClient(c net.Conn, allowed []string) error {
 	if err := windows.GetNamedPipeClientProcessId(h, &pid); err != nil {
 		return fmt.Errorf("processus du client illisible : %w", err)
 	}
-	return checkProcess(pid, allowed)
+	user, _ := pipeClientUser(h)
+	return checkProcess(pid, user, allowed)
+}
+
+var impersonateNamedPipeClient = windows.NewLazySystemDLL("advapi32.dll").NewProc("ImpersonateNamedPipeClient")
+
+// pipeClientUser : le compte du client du tube `h`, lu en empruntant son identité (au niveau identification, qui
+// suffit à lire son jeton). Le jeton du processus d'une Eyrie lancée en administrateur est fermé au veilleur ; celui
+// qu'elle présente au tube ne l'est pas.
+func pipeClientUser(h windows.Handle) (*windows.SID, error) {
+	var sid *windows.SID
+	var err error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// L'identité empruntée est celle du fil : la goroutine le garde jusqu'à l'avoir rendue. Si elle ne pouvait
+		// pas la rendre, le fil, jamais déverrouillé, finirait avec elle.
+		runtime.LockOSThread()
+		if r, _, e := impersonateNamedPipeClient.Call(uintptr(h)); r == 0 {
+			err = e
+			runtime.UnlockOSThread()
+			return
+		}
+		sid, err = threadUser()
+		if windows.RevertToSelf() == nil {
+			runtime.UnlockOSThread()
+		}
+	}()
+	<-done
+	return sid, err
+}
+
+// threadUser : le compte du jeton du fil courant (celui du client dont il emprunte l'identité).
+func threadUser() (*windows.SID, error) {
+	var tok windows.Token
+	// Ouvert avec les droits du veilleur : au niveau identification, le fil ne peut rien ouvrir en tant que client.
+	if err := windows.OpenThreadToken(windows.CurrentThread(), windows.TOKEN_QUERY, true, &tok); err != nil {
+		return nil, err
+	}
+	defer tok.Close()
+	u, err := tok.GetTokenUser()
+	if err != nil {
+		return nil, err
+	}
+	return u.User.Sid, nil
 }
 
 // checkProcess : le processus `pid` tourne-t-il sous le compte de l'utilisateur, depuis l'un des exécutables
-// `allowed` ? Les fichiers sont comparés, pas les chemins (casse, noms courts).
-func checkProcess(pid uint32, allowed []string) error {
+// `allowed` ? Son compte est `user` (lu sur le tube), ou, sans lui, celui du jeton du processus. Les fichiers sont
+// comparés, pas les chemins (casse, noms courts).
+func checkProcess(pid uint32, user *windows.SID, allowed []string) error {
 	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
 	if err != nil {
 		return fmt.Errorf("processus %d : %w", pid, err)
 	}
 	defer windows.CloseHandle(h)
-	var tok windows.Token
-	if err := windows.OpenProcessToken(h, windows.TOKEN_QUERY, &tok); err != nil {
-		return fmt.Errorf("compte du processus %d illisible : %w", pid, err)
-	}
-	defer tok.Close()
-	user, err := tok.GetTokenUser()
-	if err != nil {
-		return fmt.Errorf("compte du processus %d illisible : %w", pid, err)
+	if user == nil {
+		var tok windows.Token
+		if err := windows.OpenProcessToken(h, windows.TOKEN_QUERY, &tok); err != nil {
+			return fmt.Errorf("compte du processus %d illisible : %w", pid, err)
+		}
+		defer tok.Close()
+		u, err := tok.GetTokenUser()
+		if err != nil {
+			return fmt.Errorf("compte du processus %d illisible : %w", pid, err)
+		}
+		user = u.User.Sid
 	}
 	me, err := userSID()
 	if err != nil {
 		return err
 	}
-	if !user.User.Sid.Equals(me) {
-		return fmt.Errorf("processus %d d'un autre compte (%s)", pid, user.User.Sid)
+	if !user.Equals(me) {
+		return fmt.Errorf("processus %d d'un autre compte (%s)", pid, user)
 	}
 	image, err := processImage(h)
 	if err != nil {

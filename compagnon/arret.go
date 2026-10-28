@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tailscale/go-winio"
 	"golang.org/x/sys/windows"
 )
 
@@ -78,8 +77,8 @@ var errForeign = errors.New("veilleur non reconnu")
 // errForeign si son serveur ne peut pas être reconnu (tube d'un autre compte, occupé, processus illisible). Les
 // autres erreurs viennent d'un veilleur reconnu qui ne s'arrête pas.
 func stopOne(name, self string, wait time.Duration) (bool, error) {
-	timeout := 2 * time.Second
-	c, err := winio.DialPipe(name, &timeout)
+	// Identifié : --arreter lancé en administrateur (tools\compagnon.ps1 d'une console élevée) est reconnu aussi.
+	c, err := dialControl(name, 2*time.Second)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}

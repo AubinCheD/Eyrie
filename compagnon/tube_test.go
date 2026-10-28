@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"os"
 	"strings"
@@ -40,6 +41,7 @@ type standbyFixture struct {
 	t       *testing.T
 	dir     string
 	relay   *relay
+	tube    *tube
 	stopped chan struct{}
 	cancel  context.CancelFunc
 }
@@ -60,13 +62,13 @@ func newStandby(t *testing.T, allowed ...string) *standbyFixture {
 		cancel()
 		status = saved
 	})
-	tb := &tube{
+	f.tube = &tube{
 		relay: f.relay,
 		check: func(c net.Conn) error { return checkClient(c, allowed) },
 		stop:  func() { close(f.stopped) },
 		logf:  t.Logf,
 	}
-	go tb.serve(ctx, ln)
+	go f.tube.serve(ctx, ln)
 	return f
 }
 
@@ -241,13 +243,100 @@ func TestThePipeIsTheUsersAlone(t *testing.T) {
 	}
 }
 
-// Le contrôle d'un processus compare les fichiers : même exécutable sous un autre nom de chemin, autre exécutable.
+// Le contrôle d'un processus compare les fichiers : même exécutable sous un autre nom de chemin, autre exécutable ;
+// et les comptes : celui lu sur le tube, ou à défaut celui du processus.
 func TestAProcessIsRecognisedByItsFile(t *testing.T) {
 	exe := self(t)
-	if err := checkProcess(uint32(os.Getpid()), []string{strings.ToUpper(exe)}); err != nil {
+	pid := uint32(os.Getpid())
+	if err := checkProcess(pid, nil, []string{strings.ToUpper(exe)}); err != nil {
 		t.Fatal(err)
 	}
-	if err := checkProcess(uint32(os.Getpid()), []string{`C:\Windows\System32\notepad.exe`}); err == nil {
+	if err := checkProcess(pid, nil, []string{`C:\Windows\System32\notepad.exe`}); err == nil {
 		t.Fatal("un autre exécutable est accepté")
 	}
+	me, err := userSID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := checkProcess(pid, me, []string{exe}); err != nil {
+		t.Fatal(err)
+	}
+	system, _ := windows.StringToSid("S-1-5-18")
+	if err := checkProcess(pid, system, []string{exe}); err == nil || !strings.Contains(err.Error(), "autre compte") {
+		t.Fatalf("un autre compte est accepté : %v", err)
+	}
+}
+
+// Le compte du client se lit sur le tube quand il se laisse identifier (Eyrie élevée comprise), pas s'il reste
+// anonyme.
+func TestTheClientIsIdentifiedOnThePipe(t *testing.T) {
+	dir := t.TempDir()
+	ln, err := listenControl(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	me, err := userSID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, level := range []winio.PipeImpLevel{winio.PipeImpLevelIdentification, winio.PipeImpLevelAnonymous} {
+		dialed := make(chan net.Conn, 1)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			c, err := winio.DialPipeAccessImpLevel(ctx, pipeName(dir), windows.GENERIC_READ|windows.GENERIC_WRITE, level)
+			if err != nil {
+				t.Error(err)
+			}
+			dialed <- c
+		}()
+		c, err := ln.Accept()
+		if err != nil {
+			t.Fatal(err)
+		}
+		h, _ := pipeHandle(c)
+		user, err := pipeClientUser(h)
+		switch {
+		case level == winio.PipeImpLevelIdentification && (err != nil || !user.Equals(me)):
+			t.Errorf("client identifié : %v %v", user, err)
+		case level == winio.PipeImpLevelAnonymous && err == nil:
+			t.Errorf("client anonyme identifié : %v", user)
+		}
+		c.Close()
+		if d := <-dialed; d != nil {
+			d.Close()
+		}
+	}
+}
+
+// Eyrie se rattache quelle que soit la façon dont elle ouvre le tube : identifiée (dialControl), anonyme, ou par un
+// CreateFile ordinaire (le compte est alors lu sur son processus).
+func TestEyrieAttachesHoweverItOpensThePipe(t *testing.T) {
+	f := newStandby(t, self(t))
+	emit(map[string]string{"state": "running", "name": "suite-pc", "ip": "100.1.2.3"})
+	attach := func(how string, c io.ReadWriteCloser) {
+		t.Helper()
+		defer c.Close()
+		line, err := bufio.NewReader(c).ReadBytes('\n')
+		if err != nil || !strings.Contains(string(line), `"running"`) {
+			t.Fatalf("%s : %q %v", how, line, err)
+		}
+	}
+	c, err := dialControl(pipeName(f.dir), 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attach("identifiée", c)
+	free := func() bool { return !f.tube.busy.Load() }
+	eventually(t, "le veilleur garde le client précédent", free)
+	attach("anonyme", f.dial().Conn)
+	eventually(t, "le veilleur garde le client précédent", free)
+	name, _ := windows.UTF16PtrFromString(pipeName(f.dir))
+	var h windows.Handle
+	eventually(t, "tube injoignable par CreateFile", func() bool {
+		h, err = windows.CreateFile(name, windows.GENERIC_READ|windows.GENERIC_WRITE, 0, nil, windows.OPEN_EXISTING, 0, 0)
+		return err == nil
+	})
+	attach("CreateFile", os.NewFile(uintptr(h), "tube"))
 }
