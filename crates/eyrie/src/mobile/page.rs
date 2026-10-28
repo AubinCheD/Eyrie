@@ -111,7 +111,7 @@ pub fn page(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui) {
         None => {
             ui.add(
                 egui::Label::new(
-                    RichText::new(tr("Installez l'application Eyrie et Tailscale sur le téléphone, connectez-le à votre tailnet, puis scannez le code."))
+                    RichText::new(tr("Installez l'application Eyrie sur le téléphone et connectez-la à Tailscale avec le même compte que ce PC (elle le fait elle-même), puis scannez le code."))
                         .color(p.text_dim),
                 )
                 .wrap(),
@@ -248,7 +248,7 @@ pub fn page(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui) {
         ui.label(RichText::new(tr("Connectés maintenant")).strong().size(14.5));
         for s in &suite.core.mobile.sessions {
             let what = match s.watching() {
-                Some((m, path)) if path.is_empty() => m.to_string(),
+                Some((m, "")) => m.to_string(),
                 Some((m, path)) => format!("{m} › {path}"),
                 None => "—".into(),
             };

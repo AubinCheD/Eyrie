@@ -2,6 +2,7 @@
 //!
 //! - [`app`] : le contrôleur (état, navigation, gestes, messages du PC) ;
 //! - [`net`] : la liaison avec le PC (reconnexion) et l'appairage ;
+//! - [`tailnet`] : le nœud Tailscale de l'application, par où passent les connexions (Android) ;
 //! - [`termbuf`], [`view`] : ce que le PC envoie, prêt à dessiner ;
 //! - [`store`] : identité, PC appairés, préférences ;
 //! - [`platform`] : ce qui dépend du système (Android, ou le bureau pour le développement) ;
@@ -16,6 +17,7 @@ mod demo;
 pub mod net;
 pub mod platform;
 pub mod store;
+pub mod tailnet;
 pub mod termbuf;
 pub mod view;
 
@@ -83,6 +85,11 @@ pub fn run() -> Result<(), slint::PlatformError> {
         Some(_) => store::Store::open(&std::env::temp_dir().join("eyrie-mobile-demo")),
         None => store::Store::open(&dir),
     };
+    if demo.is_none() {
+        // Le nœud Tailscale (Android) démarre tout de suite : il se connecte pendant que l'interface s'affiche.
+        let name = if store.prefs.device_name.is_empty() { platform::device_name() } else { store.prefs.device_name.clone() };
+        tailnet::start(dir.join("tailnet"), tailnet::hostname(&name));
+    }
     app::Controller::install(&ui, store, demo.is_some());
     if let Some(scene) = demo {
         demo::play(&ui, &scene);

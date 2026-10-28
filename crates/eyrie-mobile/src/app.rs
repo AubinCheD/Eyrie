@@ -15,6 +15,7 @@ use suite_mobile::ui::Screen;
 
 use crate::net::{Link, NetEvent, PairEvent};
 use crate::store::{self, Pc, Store};
+use crate::tailnet::{self, Tailnet};
 use crate::termbuf::{self, TermBuf};
 use crate::{
     AppWindow, CommandItem, ModuleItem, NavItem, NoteItem, PcItem, TermRow, TermSeg, Theme, UiAct, WaitItem, platform,
@@ -91,6 +92,9 @@ pub struct Controller {
     /// Démonstration (captures) : rien n'est envoyé.
     demo: bool,
     goto: Option<String>,
+    /// Le nœud Tailscale de l'application, au dernier relevé ; relevé chaque seconde (sauf sur le bureau, sans nœud).
+    tailnet: Tailnet,
+    tailnet_timer: slint::Timer,
 }
 
 thread_local! {
@@ -123,6 +127,10 @@ impl Controller {
         let name =
             if store.prefs.device_name.is_empty() { platform::device_name() } else { store.prefs.device_name.clone() };
         ui.set_device_name(name.into());
+        let tn = tailnet::state();
+        let (state, text) = tn.display();
+        ui.set_tailnet_state(state);
+        ui.set_tailnet_text(text.into());
         let c = Controller {
             ui: ui.as_weak(),
             store,
@@ -150,10 +158,19 @@ impl Controller {
             signalled: Signalled::default(),
             demo,
             goto: None,
+            tailnet: tn,
+            tailnet_timer: slint::Timer::default(),
         };
         CTRL.with(|cell| *cell.borrow_mut() = Some(c));
         wire(ui);
-        with(|c| c.start());
+        with(|c| {
+            if c.tailnet != Tailnet::Absent {
+                c.tailnet_timer.start(slint::TimerMode::Repeated, Duration::from_secs(1), || {
+                    with(|c| c.refresh_tailnet());
+                });
+            }
+            c.start();
+        });
     }
 
     fn ui(&self) -> Option<AppWindow> {
@@ -219,6 +236,48 @@ impl Controller {
     }
 
     // --- Le réseau ---
+
+    /// Le nœud Tailscale de l'application : son état à l'écran ; une fois connecté, la liaison réessaie tout de suite.
+    fn refresh_tailnet(&mut self) {
+        let now = tailnet::state();
+        if now == self.tailnet {
+            return;
+        }
+        let ready = now.ready() && !self.tailnet.ready();
+        let (state, text) = now.display();
+        if let Some(ui) = self.ui() {
+            ui.set_tailnet_state(state);
+            ui.set_tailnet_text(text.into());
+            // Déconnecté du compte en cours d'usage : le dire, la connexion se refait dans les réglages.
+            if matches!(&now, Tailnet::NeedsLogin(u) if !u.is_empty()) && ui.get_page() == 4 {
+                self.toast("Ce téléphone n'est plus connecté à Tailscale : Réglages › Tailscale.", 3);
+            }
+        }
+        self.tailnet = now;
+        if ready
+            && !self.online
+            && let Some(l) = &self.link
+        {
+            l.kick();
+        }
+    }
+
+    /// Le bouton du nœud : la connexion au compte dans le navigateur, ou un nouvel essai après une erreur.
+    fn tailnet_login(&self) {
+        match &self.tailnet {
+            Tailnet::NeedsLogin(url) if !url.is_empty() => platform::open_url(url),
+            Tailnet::Failed(_) => tailnet::start(platform::data_dir().join("tailnet"), tailnet::hostname(&self.device().0)),
+            _ => {}
+        }
+    }
+
+    fn tailnet_logout(&self) {
+        let _ = std::thread::Builder::new().name("eyrie-tailnet".into()).spawn(|| {
+            if let Err(e) = tailnet::logout() {
+                post(move |c| c.toast(&format!("Tailscale : {e}"), 4));
+            }
+        });
+    }
 
     fn on_net(&mut self, ev: NetEvent) {
         match ev {
@@ -1192,6 +1251,12 @@ fn wire(ui: &AppWindow) {
                 l.kick();
             }
         });
+    });
+    ui.on_tailnet_login(|| {
+        with(|c| c.tailnet_login());
+    });
+    ui.on_tailnet_logout(|| {
+        with(|c| c.tailnet_logout());
     });
     ui.on_start_scan(|| {
         with(|c| c.start_scan());

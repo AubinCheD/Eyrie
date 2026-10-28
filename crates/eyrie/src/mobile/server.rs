@@ -571,7 +571,7 @@ mod tests {
             writeln!(stream, r#"{{"jeton":"jeton","login":"{login}","noeud":"pixel","adresse":"100.1.2.3:5"}}"#)
                 .unwrap();
             let (t, peer) = channel::connect(&mut stream, &phone).unwrap();
-            let (rx, tx) = t.split(stream.try_clone().unwrap(), stream);
+            let (rx, tx) = t.split(client::Stream::Tcp(stream.try_clone().unwrap()), client::Stream::Tcp(stream));
             client::Connection { rx, tx, peer }
         };
         let mut c = with_header("aubin@exemple.org");

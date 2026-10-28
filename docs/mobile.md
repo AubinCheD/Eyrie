@@ -32,11 +32,12 @@ sautées à la demande de l'utilisateur : les choix ci-dessous sont les miens, m
 | Pont mobile | `crates/eyrie/src/mobile/` | Dans Eyrie : écoute, appareils, appairage, journal, interrupteur, synchro, aiguillage des actions vers les modules. |
 | Interface mobile des modules | `Module::mobile_*` (`suite-sdk`) et chaque adaptateur `crates/modules/*` | Chaque module décrit ses écrans et ses actions pour le téléphone. |
 | Compagnon Tailscale d'Eyrie | `compagnon/` (Go, tsnet) → `eyrie-tailnet.exe` | Le nœud de la suite sur le tailnet, et le relais des connexions du téléphone vers Eyrie. |
+| Nœud Tailscale du téléphone | `compagnon/telephone` (Go, tsnet) → `libeyrie_tailnet.so` dans l'APK | Le téléphone sur le tailnet par l'application elle-même ; ses connexions vers le PC passent par lui (§3). |
 | Application mobile | `crates/eyrie-mobile` | Slint, Rust. Tourne sur Android et, pour le développement, sur le bureau dans une fenêtre de téléphone. |
 
 **Android d'abord (choix)** : iOS ne se compile et ne se signe que sur un Mac. Le code de l'application ne dépend
-d'Android que dans `platform/android.rs` (caméra, liens, vibration) : iOS viendra quand Slint l'aura stabilisé et
-qu'un Mac sera disponible.
+d'Android que dans `android.rs` (caméra, liens, vibration) et `tailnet.rs` (le nœud Tailscale) : iOS viendra quand
+Slint l'aura stabilisé et qu'un Mac sera disponible.
 
 **Slint (choix)** plutôt qu'egui pour le téléphone : clavier virtuel et méthodes de saisie gérés par le système
 (egui/winit ne les gèrent pas sur Android), défilement inertiel, animations, rendu GPU, interface déclarative. Licence
@@ -50,10 +51,28 @@ qu'un Mac sera disponible.
   `{"jeton":…,"login":…,"noeud":…,"adresse":…}` puis relaie les octets dans les deux sens.
 - Eyrie lui donne l'adresse locale et un **jeton aléatoire** par son entrée standard (jamais en argument : la ligne de
   commande se lit depuis les autres processus). Une connexion locale sans le bon jeton est fermée.
-- Le téléphone rejoint le tailnet par **l'application Tailscale** (choix pour cette première version) : `tailscale-rs`
-  ne gère pas Android (préversion d'avril 2026, relais DERP seulement, « ne pas utiliser en production ») et tsnet sur
-  Android demande Go, gomobile et un contournement de l'énumération des interfaces. Le **nœud intégré à l'application**
-  (décision du 21/10) reste l'étape suivante ; le transport est derrière une interface pour l'accueillir.
+- Le téléphone rejoint le tailnet **par Eyrie elle-même** (demande du 28/10 : « je dois être connecté à Tailscale via
+  Eyrie, pas via l'appli Tailscale ») : l'application porte son propre nœud, tsnet en espace utilisateur, sans VPN
+  Android ni application Tailscale. C'est `compagnon/telephone` (Go), compilé en bibliothèque partagée
+  `libeyrie_tailnet.so` par `tools\android.ps1` et appelé par `crates/eyrie-mobile/src/tailnet.rs`. Il partage avec le
+  compagnon du PC le paquet `compagnon/noeud` : le suivi de l'état et le relais des deux sens. `tailscale-rs`, lui, ne
+  gère toujours pas Android (préversion d'avril 2026, relais DERP seulement).
+  - **Connexion au compte** : au premier lancement, le nœud demande un lien de connexion à Tailscale ; « Se connecter à
+    Tailscale » l'ouvre dans le navigateur, avec le même compte que le PC. L'appareil apparaît dans le tailnet sous
+    `eyrie-<nom du téléphone>`. Déconnexion : Réglages › Tailscale.
+  - **Connexions vers le PC** : l'application crée une paire de sockets Unix et en donne un bout au nœud, qui le relie
+    au PC par le tailnet (`EyrieTailnetDial`) ; rien n'écoute sur la boucle locale du téléphone. Le canal Noise passe
+    dedans, inchangé.
+  - **Android** : la liste des interfaces réseau est refusée aux applications. Comme la fonctionnalité « androidbin »
+    de Tailscale, le nœud déclare une interface unique avec les adresses de sortie choisies par le système (connexion
+    UDP sans envoi). Le DNS passe par le résolveur du système (cgo), les changements de réseau par le sondage de
+    Tailscale.
+  - **Journaux** : dans le dossier du nœud (`journal.txt`, 4 Mo au plus), rien n'est envoyé à Tailscale
+    (`logtail.Disable`).
+  - **État du nœud** : sa clé reste dans le stockage privé de l'application, non sauvegardé (`allowBackup=false`). Elle
+    n'est pas chiffrée en plus par le Keystore d'Android, contrairement à celle du PC chiffrée par DPAPI : piste notée
+    au §8.
+  - **Bureau** (développement) : pas de nœud, connexion directe par le réseau du poste.
 - Le compagnon de Fawkes reste utilisable en secours pour le nœud seul (sans relais : le téléphone ne peut pas se
   connecter, la page Téléphones le dit).
 
@@ -136,8 +155,9 @@ Fawkes, Owlery, Menagerie, Patronus et DragonTree) : `close_terminal`, `remote_c
 
 ## 7. L'application
 
-- **Premier lancement** : « Scanner le QR code » (caméra) ou « Saisir le code » ; puis le code à six chiffres à
-  comparer avec celui du PC, qui confirme.
+- **Premier lancement** : connexion du téléphone à Tailscale (« Se connecter à Tailscale », une fois, dans le
+  navigateur), puis « Scanner le QR code » (caméra) ou « Saisir le code » ; enfin le code à six chiffres à comparer
+  avec celui du PC, qui confirme.
 - **Navigation** : barre du bas (Ensemble, les trois premiers modules du PC, Plus), pastilles ; *Plus* ouvre la liste
   de tous les modules, les notifications, la palette (recherche), les réglages.
 - **Terminal** : plein écran, police à chasse fixe, zoom (A− / A+), défilement de l'historique, barre de touches
@@ -148,11 +168,12 @@ Fawkes, Owlery, Menagerie, Patronus et DragonTree) : `close_terminal`, `remote_c
   notification du système pour ce qui se met à attendre (session Claude…) et pour les alertes, tant que
   l'application tourne (pas de service au premier plan : Android peut couper le réseau au bout d'un moment).
 - **Thème** : celui du système (clair ou sombre), couleurs de la suite.
-- **Réglages** : PC appairés (changer, oublier), nom de l'appareil, taille du terminal, à propos.
+- **Réglages** : PC appairés (changer, oublier), nom de l'appareil, Tailscale (état, connexion, déconnexion), taille
+  du terminal, à propos.
 
 ## 8. Plus tard
 
-- Nœud Tailscale intégré à l'application (tsnet par Go c-shared, ou tailscale-rs quand il gérera Android).
+- Chiffrer l'état du nœud Tailscale du téléphone par le Keystore d'Android, comme celui du PC par DPAPI.
 - Notifications Android quand l'application est en arrière-plan (service au premier plan).
 - iOS.
 - Les actions marquées « changement du module nécessaire » ci-dessus, module par module et avec accord.
@@ -178,8 +199,9 @@ Reste :
   d'une autre clé ne s'installe pas par-dessus). `-Install` l'installe par le débogage USB. Le code Android
   (`android.rs` : caméra du NDK, permission, liens, vibration) compile, mais n'a pas encore été essayé sur un
   téléphone.
-- **Essai par Tailscale** : recompiler `eyrie.exe` (release) et `tools\compagnon.ps1 -Release`, activer
-  Réglages › Tailscale puis Téléphones ; Tailscale sur le téléphone, même compte.
+- **Essai par Tailscale** : `eyrie.exe` (release) et `tools\compagnon.ps1 -Release`, activer Réglages › Tailscale
+  puis Téléphones ; sur le téléphone, connecter Eyrie à Tailscale (même compte), puis scanner le QR code. Le nœud
+  intégré (28/10) compile et se lie, mais n'a pas encore tourné sur un téléphone.
 - Les branches `suite/mobile` de Fawkes, Owlery, Menagerie, Patronus et DragonTree (API pour le téléphone) sont à
   fusionner avec celle d'Eyrie : Eyrie les compile par chemin, il lui faut donc ces branches extraites.
 - Plus tard : §8.

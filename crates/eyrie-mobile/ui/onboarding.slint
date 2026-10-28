@@ -29,13 +29,58 @@ component Step inherits HorizontalLayout {
     }
 }
 
+// L'état du nœud Tailscale de l'application (voir `tailnet-state` dans app.slint), et la connexion au compte.
+export component TailnetStatus inherits Rectangle {
+    in property <int> state;
+    in property <string> text;
+    callback login();
+    border-radius: Theme.radius;
+    background: Theme.surface;
+    height: tn-col.preferred-height;
+    tn-col := VerticalLayout {
+        padding: 16px;
+        spacing: 12px;
+        HorizontalLayout {
+            spacing: 12px;
+            if root.state == 1: Spinner {
+                indeterminate: true;
+                width: 22px;
+                height: 22px;
+            }
+            if root.state == 3: Icon {
+                kind: "check";
+                tint: Theme.ok;
+                size: 22px;
+            }
+            Text {
+                text: root.text;
+                color: root.state == 4 ? Theme.danger : Theme.text;
+                font-size: 14px;
+                wrap: word-wrap;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+        }
+        if root.state == 2 || root.state == 4: ActButton {
+            text: root.state == 2 ? "Se connecter à Tailscale" : "Réessayer";
+            style: root.state == 2 ? 1 : 0;
+            clicked => { root.login(); }
+        }
+    }
+}
+
 export component Onboarding inherits Rectangle {
     in property <image> logo;
     in property <bool> can-scan;
     in property <bool> back-possible;
+    in property <int> tailnet-state;
+    in property <string> tailnet-text;
+    // Le PC n'est joignable qu'une fois ce téléphone sur le tailnet (ou sans nœud intégré, sur le bureau).
+    property <bool> ready: root.tailnet-state == 0 || root.tailnet-state == 3;
     callback scan();
     callback enter-code();
     callback back();
+    callback tailnet-login();
     Flickable {
         content-height: max(self.height, col.preferred-height);
         col := VerticalLayout {
@@ -71,7 +116,9 @@ export component Onboarding inherits Rectangle {
                     spacing: 12px;
                     Step {
                         n: "1";
-                        text: "Ouvrez Tailscale sur ce téléphone, avec le même compte que le PC.";
+                        text: root.tailnet-state == 0
+                            ? "Ce poste doit être sur le même tailnet que le PC."
+                            : "Connectez ce téléphone à Tailscale, avec le même compte que le PC. Eyrie s'en charge : l'application Tailscale n'est pas nécessaire.";
                     }
                     Step {
                         n: "2";
@@ -83,14 +130,21 @@ export component Onboarding inherits Rectangle {
                     }
                 }
             }
+            if root.tailnet-state != 0: TailnetStatus {
+                state: root.tailnet-state;
+                text: root.tailnet-text;
+                login => { root.tailnet-login(); }
+            }
             if root.can-scan: ActButton {
                 text: "Scanner le QR code";
                 style: 1;
+                enabled: root.ready;
                 clicked => { root.scan(); }
             }
             ActButton {
                 text: root.can-scan ? "Saisir le code" : "Saisir le code ou coller le lien";
                 style: root.can-scan ? 0 : 1;
+                enabled: root.ready;
                 clicked => { root.enter-code(); }
             }
             if root.back-possible: ActButton {

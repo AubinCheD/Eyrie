@@ -3,6 +3,7 @@
 
 import { ListView, LineEdit } from "std-widgets.slint";
 import { Theme } from "theme.slint";
+import { TailnetStatus } from "onboarding.slint";
 import {
     UiAct, UiRow, ModuleItem, WaitItem, NoteItem, CommandItem, PcItem, Icon, IconButton, ModuleAvatar, Pill,
     SectionHeader, RowView, NoteView, MeterView, TextBlock, ActButton, EmptyView, DiffLineView
@@ -553,12 +554,16 @@ export component SettingsPage inherits Rectangle {
     in-out property <string> device-name;
     in property <int> theme-choice;
     in property <int> text-size;
+    in property <int> tailnet-state;
+    in property <string> tailnet-text;
     callback set-theme(int);
     callback set-text-size(int);
     callback rename-device(string);
     callback switch-pc(string);
     callback pair-another();
     callback forget-pc();
+    callback tailnet-login();
+    callback tailnet-logout();
     Flickable {
         content-height: col.preferred-height;
         col := VerticalLayout {
@@ -664,6 +669,27 @@ export component SettingsPage inherits Rectangle {
                 font-size: 12px;
                 height: 28px;
                 vertical-alignment: center;
+            }
+            // Le nœud Tailscale de l'application (Android) : le téléphone est lui-même sur le tailnet.
+            if root.tailnet-state != 0: SectionHeader {
+                title: "TAILSCALE";
+            }
+            if root.tailnet-state != 0: HorizontalLayout {
+                padding-left: Theme.pad;
+                padding-right: Theme.pad;
+                TailnetStatus {
+                    state: root.tailnet-state;
+                    text: root.tailnet-text;
+                    login => { root.tailnet-login(); }
+                }
+            }
+            if root.tailnet-state == 3: HorizontalLayout {
+                padding: Theme.pad;
+                ActButton {
+                    text: "Se déconnecter de Tailscale";
+                    style: 2;
+                    clicked => { root.tailnet-logout(); }
+                }
             }
             SectionHeader {
                 title: "APPARENCE";

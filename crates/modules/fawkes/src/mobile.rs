@@ -175,7 +175,7 @@ fn new_terminal(app: &App) -> Screen {
     }
     for d in dirs {
         let key = dir_key(&d);
-        let name = d.split(['\\', '/']).filter(|p| !p.is_empty()).next_back().unwrap_or(&d).to_string();
+        let name = d.split(['\\', '/']).rfind(|p| !p.is_empty()).unwrap_or(&d).to_string();
         s.row(
             Row::new(name)
                 .subtitle(d.clone())

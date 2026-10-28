@@ -79,6 +79,9 @@ export component AppWindow inherits Window {
     in property <string> pairing-error;
     in property <image> scanner-frame;
     in property <string> scanner-hint: "Visez le QR code affiché par Eyrie, sur le PC.";
+    // Le nœud Tailscale de l'application : 0 absent (bureau), 1 démarrage, 2 connexion à faire, 3 connecté, 4 erreur.
+    in property <int> tailnet-state;
+    in property <string> tailnet-text;
 
     // --- Réglages ---
     in property <string> pc-host;
@@ -115,6 +118,8 @@ export component AppWindow inherits Window {
     callback pair-another();
     callback forget-pc();
     callback retry-link();
+    callback tailnet-login();
+    callback tailnet-logout();
     callback start-scan();
     callback enter-code();
     callback submit-code();
@@ -138,6 +143,7 @@ export component AppWindow inherits Window {
     property <UiAct> pending;
     property <bool> confirm-visible;
     property <bool> forget-visible;
+    property <bool> logout-visible;
     property <bool> input-visible;
     property <string> input-text;
 
@@ -174,11 +180,12 @@ export component AppWindow inherits Window {
     focus := FocusScope {
         key-pressed(e) => {
             if e.text == Key.Back || e.text == Key.Escape {
-                if root.sheet-visible || root.confirm-visible || root.input-visible || root.forget-visible {
+                if root.sheet-visible || root.confirm-visible || root.input-visible || root.forget-visible || root.logout-visible {
                     root.sheet-visible = false;
                     root.confirm-visible = false;
                     root.input-visible = false;
                     root.forget-visible = false;
+                    root.logout-visible = false;
                     return accept;
                 }
                 if root.back-requested() {
@@ -198,6 +205,9 @@ export component AppWindow inherits Window {
                 logo: root.logo;
                 can-scan: root.can-scan;
                 back-possible: root.has-pc;
+                tailnet-state: root.tailnet-state;
+                tailnet-text: root.tailnet-text;
+                tailnet-login => { root.tailnet-login(); }
                 scan => { root.start-scan(); }
                 enter-code => { root.enter-code(); }
                 back => { root.onboarding-back(); }
@@ -324,6 +334,10 @@ export component AppWindow inherits Window {
                         switch-pc(id) => { root.switch-pc(id); }
                         pair-another => { root.pair-another(); }
                         forget-pc => { root.forget-visible = true; }
+                        tailnet-state: root.tailnet-state;
+                        tailnet-text: root.tailnet-text;
+                        tailnet-login => { root.tailnet-login(); }
+                        tailnet-logout => { root.logout-visible = true; }
                     }
                     if !root.terminal-mode && root.tab != "ensemble" && root.tab != "plus" && root.tab != "notes" && root.tab != "commandes" && root.tab != "reglages": ScreenPage {
                         rows: root.rows;
@@ -404,6 +418,17 @@ export component AppWindow inherits Window {
             root.forget-visible = false;
             if yes {
                 root.forget-pc();
+            }
+        }
+    }
+    if root.logout-visible: ConfirmDialog {
+        text: "Déconnecter ce téléphone de Tailscale ? Il ne joindra plus le PC avant de se reconnecter à votre compte.";
+        ok-text: "Déconnecter";
+        danger: true;
+        answered(yes) => {
+            root.logout-visible = false;
+            if yes {
+                root.tailnet-logout();
             }
         }
     }

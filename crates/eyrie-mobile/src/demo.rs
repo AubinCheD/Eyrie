@@ -1,6 +1,6 @@
 //! Démonstration sans PC (`EYRIE_MOBILE_DEMO=<scène>`), pour les captures et la mise au point de l'interface :
-//! `ensemble`, `fawkes`, `terminal`, `patronus`, `plus`, `notes`, `reglages`, `accueil`, `code`, `appairage`,
-//! `hors-ligne`.
+//! `ensemble`, `fawkes`, `terminal`, `patronus`, `plus`, `notes`, `reglages`, `accueil`, `accueil-tailscale`, `code`,
+//! `appairage`, `hors-ligne`.
 
 use suite_mobile::msg::{Badge, CommandCard, ModuleCard, Note, ToPhone, Waiting};
 use suite_mobile::term::{self, Color, Line, Run, TermFrame, TermView};
@@ -8,6 +8,14 @@ use suite_mobile::ui::{Act, Row, Screen, Tone};
 
 use crate::AppWindow;
 use crate::app::with;
+use crate::tailnet::Tailnet;
+
+/// L'état d'un nœud Tailscale, à l'écran (le bureau n'en a pas).
+fn show_tailnet(ui: &AppWindow, t: Tailnet) {
+    let (state, text) = t.display();
+    ui.set_tailnet_state(state);
+    ui.set_tailnet_text(text.into());
+}
 
 fn card(id: &str, name: &str, glyph: &str, color: u32, badge: Option<(u32, Tone)>, status: &str) -> ModuleCard {
     ModuleCard {
@@ -243,10 +251,20 @@ pub fn play(ui: &AppWindow, scene: &str) {
         "patronus" => {
             with(|c| c.nav_select("patronus"));
         }
-        "plus" | "notes" | "reglages" => {
+        "plus" | "notes" => {
+            with(|c| c.nav_select(scene));
+        }
+        // Comme sur Android : le nœud Tailscale de l'application, connecté.
+        "reglages" => {
+            show_tailnet(ui, Tailnet::Running { name: "eyrie-pixel-8.tail1234.ts.net".into(), ip: "100.64.0.7".into() });
             with(|c| c.nav_select(scene));
         }
         "accueil" => ui.set_page(0),
+        // L'accueil sur Android, avant la connexion du téléphone à Tailscale.
+        "accueil-tailscale" => {
+            show_tailnet(ui, Tailnet::NeedsLogin("https://login.tailscale.com/a/demo".into()));
+            ui.set_page(0);
+        }
         "code" => {
             ui.set_page(1);
             ui.set_code_host("suite-portable-aubin".into());

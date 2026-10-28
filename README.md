@@ -74,12 +74,12 @@ egui 0.37 pour tous).
 
 ```powershell
 tools\compagnon.ps1 -Release           # eyrie-tailnet.exe (Go, tsnet) : le nœud et le relais du téléphone
-tools\android.ps1 -Release -Install    # l'APK (NDK, aapt2, signature de débogage), installé par adb
+tools\android.ps1 -Release -Install    # l'APK (NDK, Go pour son nœud Tailscale, aapt2, signature de débogage), installé par adb
 cargo run -p eyrie-mobile               # la même application sur le bureau, fenêtre de téléphone
 ```
 
 Essais : `EYRIE_MOBILE_DEMO=<scène>` (`ensemble`, `fawkes`, `terminal`, `patronus`, `plus`, `reglages`, `accueil`,
-`code`, `appairage`, `hors-ligne`) et `EYRIE_MOBILE_CAPTURE=<png>` ; contre un vrai Eyrie sans Tailscale :
+`accueil-tailscale`, `code`, `appairage`, `hors-ligne`) et `EYRIE_MOBILE_CAPTURE=<png>` ; contre un vrai Eyrie sans Tailscale :
 `EYRIE_MOBILE_LOCAL=4747` côté Eyrie (écoute directe, essais seulement), puis le code affiché et le PC `localhost`
 dans l'application. `EYRIE_CAPTURE_SCENE=appairer` ouvre la page Téléphones avec un ticket.
 

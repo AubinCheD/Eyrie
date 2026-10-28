@@ -4,15 +4,16 @@
 
 .DESCRIPTION
     Sans Gradle ni Android Studio :
-    1. la bibliothèque native (crate eyrie-mobile, Slint) est compilée pour Android avec le NDK ;
+    1. le nœud Tailscale de l'application (compagnon\telephone, Go) est compilé en bibliothèque partagée avec le
+       NDK, puis la bibliothèque native (crate eyrie-mobile, Slint), qui le lie ;
     2. les ressources (manifeste, icône adaptative tirée du nid d'Eyrie) sont liées par aapt2 ;
-    3. la bibliothèque est ajoutée à l'APK, aligné (zipalign) puis signé (apksigner).
+    3. les deux bibliothèques sont ajoutées à l'APK, aligné (zipalign) puis signé (apksigner).
 
     Prérequis (sans droits d'administrateur) : le SDK Android dans %LOCALAPPDATA%\Android\Sdk (ANDROID_HOME) avec
     platforms;android-36, build-tools;36.1.0, platform-tools et un NDK (ndk;28.x), un JDK 17
-    (%LOCALAPPDATA%\Android\jdk-17 ou JAVA_HOME), et la cible Rust aarch64-linux-android
-    (rustup target add aarch64-linux-android). Les licences du SDK s'acceptent une fois :
-    sdkmanager --licenses.
+    (%LOCALAPPDATA%\Android\jdk-17 ou JAVA_HOME), la cible Rust aarch64-linux-android
+    (rustup target add aarch64-linux-android), et Go (dans le PATH ou %LOCALAPPDATA%\Programs\go, comme pour
+    tools\compagnon.ps1). Les licences du SDK s'acceptent une fois : sdkmanager --licenses.
 
     La clé de signature est celle de débogage d'Android (%USERPROFILE%\.android\debug.keystore), créée au besoin :
     les versions suivantes s'installent par-dessus sans perdre l'appairage.
@@ -63,6 +64,31 @@ Set-Item "env:CARGO_TARGET_${envTarget}_LINKER" $clang
 Set-Item "env:CC_$($target.Replace('-', '_'))" $clang
 Set-Item "env:AR_$($target.Replace('-', '_'))" (Join-Path $llvm 'llvm-ar.exe')
 $kind = if ($Release) { 'release' } else { 'debug' }
+
+# Le nœud Tailscale (Go, cgo) : bibliothèque partagée, nommée (soname) pour être retrouvée dans l'APK.
+$go = (Get-Command go -ErrorAction SilentlyContinue).Source
+if (-not $go) {
+    $local = Join-Path $env:LOCALAPPDATA 'Programs\go\bin\go.exe'
+    if (Test-Path -LiteralPath $local) { $go = $local }
+}
+if (-not $go) { throw "Go introuvable : voir tools\compagnon.ps1." }
+$tailnet = Join-Path $repo "target\android\tailnet\$Abi"
+New-Item -ItemType Directory -Force $tailnet | Out-Null
+$goEnv = @{ GOOS = 'android'; GOARCH = $(if ($Abi -eq 'arm64-v8a') { 'arm64' } else { 'amd64' }); CGO_ENABLED = '1'
+    CC = "$(Join-Path $llvm 'clang.exe') --target=$target$api"; GOTOOLCHAIN = 'local' }
+$saved = @{}
+foreach ($k in $goEnv.Keys) { $saved[$k] = [Environment]::GetEnvironmentVariable($k); Set-Item "env:$k" $goEnv[$k] }
+Push-Location (Join-Path $repo 'compagnon')
+try {
+    & $go build -buildmode=c-shared -trimpath -ldflags '-s -w -extldflags=-Wl,-soname,libeyrie_tailnet.so' `
+        -o (Join-Path $tailnet 'libeyrie_tailnet.so') ./telephone
+    if ($LASTEXITCODE -ne 0) { throw "go build (nœud Tailscale) a échoué (code $LASTEXITCODE)." }
+} finally {
+    Pop-Location
+    foreach ($k in $saved.Keys) { if ($null -eq $saved[$k]) { Remove-Item "env:$k" -ErrorAction SilentlyContinue } else { Set-Item "env:$k" $saved[$k] } }
+}
+$env:EYRIE_TAILNET_DIR = $tailnet
+
 # Avec --target, Cargo ne passe pas les rustflags du poste (.cargo\config.toml) aux scripts de build ni aux macros,
 # compilés pour Windows : le dlltool de tools\setup.ps1 doit alors se trouver par le PATH (toolchain gnu).
 if (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'dlltool.exe')) { $env:PATH = "$PSScriptRoot;$env:PATH" }
@@ -98,12 +124,15 @@ $unsigned = "$work\eyrie-unsigned.apk"
     --min-sdk-version $api --target-sdk-version 35 "$work\flat\res.zip"
 if ($LASTEXITCODE -ne 0) { throw 'aapt2 link a échoué.' }
 
-# --- 3. La bibliothèque dans l'APK, alignement, signature ---
+# --- 3. Les bibliothèques dans l'APK, alignement, signature ---
 Copy-Item $so "$work\lib\$Abi\libeyrie_mobile.so"
+Copy-Item (Join-Path $tailnet 'libeyrie_tailnet.so') "$work\lib\$Abi\libeyrie_tailnet.so"
 Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
 $zip = [System.IO.Compression.ZipFile]::Open($unsigned, 'Update')
 try {
-    [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, "$work\lib\$Abi\libeyrie_mobile.so", "lib/$Abi/libeyrie_mobile.so")
+    foreach ($lib in 'libeyrie_mobile.so', 'libeyrie_tailnet.so') {
+        [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, "$work\lib\$Abi\$lib", "lib/$Abi/$lib")
+    }
 } finally {
     $zip.Dispose()
 }

@@ -267,7 +267,7 @@
   "Empreinte :": "Fingerprint:",
   "Garder": "Keep",
   "Hors ligne": "Offline",
-  "Installez l'application Eyrie et Tailscale sur le téléphone, connectez-le à votre tailnet, puis scannez le code.": "Install the Eyrie app and Tailscale on the phone, connect it to your tailnet, then scan the code.",
+  "Installez l'application Eyrie sur le téléphone et connectez-la à Tailscale avec le même compte que ce PC (elle le fait elle-même), puis scannez le code.": "Install the Eyrie app on the phone and connect it to Tailscale with the same account as this PC (it does so by itself), then scan the code.",
   "Joignable sur le tailnet :": "Reachable on the tailnet:",
   "Le compagnon en marche est celui de Fawkes : il ne relaie pas le téléphone. Compilez eyrie-tailnet.exe (tools\\compagnon.ps1).": "The running companion is Fawkes's: it does not relay the phone. Build eyrie-tailnet.exe (tools\\compagnon.ps1).",
   "Le relais du téléphone démarre…": "The phone relay is starting…",

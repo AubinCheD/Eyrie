@@ -3,6 +3,8 @@
 //! (`kick`). Un refus du PC (appareil retiré, autre compte Tailscale) n'est pas réessayé en boucle.
 //!
 //! Et l'appairage, en une fois : connexion, preuve, code de vérification, attente du clic sur le PC.
+//!
+//! Sur Android, les connexions passent par le nœud Tailscale de l'application (`tailnet`).
 
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;
@@ -73,6 +75,11 @@ impl Drop for Link {
     }
 }
 
+/// Une connexion au PC par le nœud Tailscale de l'application (sur le bureau : directe).
+fn open(addrs: &[String], me: &Keypair) -> Result<client::Connection, String> {
+    client::open_with(addrs, me, CONNECT, &crate::tailnet::dial)
+}
+
 /// Attend `delay` ou un réveil ; `false` : il faut s'arrêter.
 fn wait(rx: &mpsc::Receiver<Cmd>, delay: Duration) -> bool {
     match rx.recv_timeout(delay) {
@@ -96,7 +103,7 @@ fn run(
     let mut backoff = Duration::from_secs(1);
     loop {
         on(NetEvent::Connecting);
-        let attempt = client::open(&addrs, &me, CONNECT).map_err(Failure::Broken).and_then(|mut c| {
+        let attempt = open(&addrs, &me).map_err(Failure::Broken).and_then(|mut c| {
             let w = client::hello(&mut c, &pc_key, &device, &model)?;
             Ok((c, w))
         });
@@ -223,11 +230,12 @@ pub fn pair(
     on: impl Fn(PairEvent) + Send + 'static,
 ) {
     let _ = std::thread::Builder::new().name("eyrie-appairage".into()).spawn(move || {
-        let mut conn = match client::open(&addrs, &me, CONNECT) {
+        let mut conn = match open(&addrs, &me) {
             Ok(c) => c,
             Err(e) => {
                 on(PairEvent::Failed(format!(
-                    "PC injoignable ({e}). Vérifiez que Tailscale est connecté sur ce téléphone et qu'Eyrie affiche le code."
+                    "PC injoignable ({e}). Vérifiez que ce téléphone est connecté à Tailscale (accueil d'Eyrie) et que \
+                     le PC affiche le code."
                 )));
                 return;
             }
