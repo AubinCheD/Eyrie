@@ -572,3 +572,45 @@ fn the_generic_screen_restarts_a_stopped_module_and_says_a_command_left() {
     assert!(actions.iter().any(|t| t.starts_with("Fragile › Relancer le module : échec")), "{actions:?}");
     assert!(actions.contains(&"Fragile › Réessayer"), "{actions:?}");
 }
+
+/// La clé du veilleur arrive pendant qu'un téléphone est connecté : il reçoit un nouveau `Welcome` avec son secret et
+/// son identifiant ; Eyrie qui se ferme lui dit `Bye { closing: true }` (« Eyrie est fermée », pas « hors ligne »).
+#[test]
+fn a_connected_phone_gets_its_wake_key_and_hears_eyrie_close() {
+    let mut h = suite();
+    h.state_mut().core.mobile.new_ticket(None).unwrap();
+    let uri = h.state().core.mobile.ticket.as_ref().unwrap().uri.clone();
+    let ticket = Ticket::from_uri(&uri).unwrap();
+    let me = Keypair::generate();
+    let public = me.public;
+    let phone = std::thread::spawn(move || {
+        let mut c = client::open(&ticket.addresses(), &me, Duration::from_secs(5)).unwrap();
+        client::pair(&mut c, &ticket.secret, Some(&ticket.key), "Pixel", "Google Pixel 8").unwrap();
+        client::wait_paired(&mut c).unwrap();
+        let first = client::hello(&mut c, &ticket.key, "Pixel", "Google Pixel 8").unwrap();
+        let wake = until(&mut c, |m| match m {
+            ToPhone::Welcome { wake, .. } => Some(wake),
+            _ => None,
+        });
+        let bye = until(&mut c, |m| match m {
+            ToPhone::Bye { reason, closing } => Some((reason, closing)),
+            _ => None,
+        });
+        (first.wake, wake, bye)
+    });
+    spin(&mut h, |h| !h.state().core.mobile.requests.is_empty());
+    h.state_mut().core.mobile.decide(0, true);
+    spin(&mut h, |h| !h.state().core.mobile.sessions.is_empty());
+    // Sans image entre les deux : la logique de l'hôte rendrait au pont la clé (absente) du vrai réglage.
+    h.state_mut().core.mobile.set_wake(Some([5; 32]));
+    h.state_mut().core.mobile.exit();
+    spin(&mut h, |_| phone.is_finished());
+    let (first, wake, (reason, closing)) = phone.join().expect("le téléphone a tout vu");
+    assert_eq!(first, None, "pas de veilleur à la connexion");
+    let wake = wake.expect("le secret de démarrage");
+    let id = h.state().core.mobile.store.devices[0].id.clone();
+    assert_eq!(wake.device, id);
+    assert_eq!(wake.port, suite_mobile::veille::PORT);
+    assert_eq!(wake.secret, suite_mobile::veille::device_secret(&[5; 32], &public).to_vec());
+    assert!(closing, "{reason}");
+}

@@ -1246,7 +1246,7 @@ impl eframe::App for Suite {
                 let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| m.on_exit()));
             }
         }
-        self.core.mobile.stop("Eyrie se ferme.");
+        self.core.mobile.exit();
         self.core.tailnet.stop();
         self.save();
         if self.core.quit.restart {

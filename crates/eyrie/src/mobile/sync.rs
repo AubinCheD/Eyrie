@@ -93,7 +93,12 @@ impl Session {
     }
 
     pub fn close(&self, reason: &str) {
-        let _ = self.sender.send(ToPhone::Bye { reason: reason.to_string(), closing: false });
+        self.close_with(reason, false);
+    }
+
+    /// `closing` : Eyrie se ferme (le téléphone dira « Eyrie est fermée »).
+    pub fn close_with(&self, reason: &str, closing: bool) {
+        let _ = self.sender.send(ToPhone::Bye { reason: reason.to_string(), closing });
         // Laisse le fil d'envoi écrire l'adieu, puis coupe : le fil de lecture s'arrête.
         let stream = self.stream.try_clone();
         std::thread::spawn(move || {

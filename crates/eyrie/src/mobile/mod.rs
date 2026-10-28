@@ -164,8 +164,22 @@ impl Bridge {
 
     /// Coupe tout : écoute, connexions, ticket, demandes en attente.
     pub fn stop(&mut self, reason: &str) {
+        self.shut(reason, false);
+    }
+
+    /// Eyrie se ferme : les téléphones l'apprennent (`Bye { closing: true }` : « Eyrie est fermée », plutôt que
+    /// « hors ligne »), le temps que l'adieu parte.
+    pub fn exit(&mut self) {
+        let connected = !self.sessions.is_empty();
+        self.shut("Eyrie se ferme.", true);
+        if connected {
+            std::thread::sleep(Duration::from_millis(150));
+        }
+    }
+
+    fn shut(&mut self, reason: &str, closing: bool) {
         for s in self.sessions.drain(..) {
-            s.close(reason);
+            s.close_with(reason, closing);
         }
         for r in self.requests.drain(..) {
             r.answer(false);
@@ -324,6 +338,6 @@ fn yes_no(b: bool) -> &'static str {
 
 impl Drop for Bridge {
     fn drop(&mut self) {
-        self.stop("Eyrie se ferme.");
+        self.shut("Eyrie se ferme.", true);
     }
 }
