@@ -22,7 +22,9 @@
 //!
 //! DragonTree vit même masqué dans Eyrie (`background_tick`, appelé par `lib.rs`) : le dépôt que regarde le téléphone
 //! est son « foyer distant » (`set_remote_focus`), relu comme l'onglet affiché quand il change sur le disque. Une
-//! lecture ratée de DragonTree (état, branches) se dit sur le téléphone.
+//! lecture ratée de DragonTree (état, branches) se dit sur le téléphone. Un onglet que le téléphone a ouvert lui-même
+//! (un dépôt regardé, ou ajouté d'ici : `add_repo`, en fond) est refermé par DragonTree après 15 min sans regard ni
+//! opération (`close_repo_tab`) ; jamais un onglet que l'utilisateur a ouvert, ou affiché, sur le PC.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -69,6 +71,10 @@ const PLACES_OF_REPOS: usize = 6;
 const SLOW_AFTER: Duration = Duration::from_secs(15);
 /// Une erreur de git montrée est coupée au-delà (caractères).
 const ERROR_MAX: usize = 400;
+/// Un onglet que le téléphone a ouvert lui-même est refermé après 15 min sans regard ni opération ; c'est vérifié au
+/// plus toutes les 10 s.
+const CLOSE_IDLE_AFTER: Duration = Duration::from_secs(15 * 60);
+const CLOSE_CHECK_EVERY: Duration = Duration::from_secs(10);
 
 /// Annuler l'opération en cours, comme le bouton Annuler de sa barre de progression (une fenêtre d'identification
 /// restée ouverte sur le PC, un fetch qui ne répond pas…).
@@ -538,9 +544,11 @@ pub struct Phone {
     /// DragonTree) est relu la fois suivante, les réglages gardant ce qu'ils avaient.
     settings_stamp: Option<SystemTime>,
     settings: Settings,
-    /// Dépôts que le téléphone a ouverts lui-même dans un onglet de DragonTree, pour les lire : ils restent rangés où
-    /// ils étaient dans la liste.
-    opened: HashSet<String>,
+    /// Dépôts que le téléphone a ouverts lui-même dans un onglet de DragonTree, pour les lire (leur chemin, et quand) :
+    /// ils restent rangés où ils étaient dans la liste, et sont refermés après 15 min sans regard ni opération.
+    opened: HashMap<String, (PathBuf, Instant)>,
+    /// Quand les onglets ouverts par le téléphone ont été passés en revue pour la dernière fois ([`Phone::close_idle`]).
+    idle_checked: Option<Instant>,
     /// Les dossiers où le téléphone ne fait pas ouvrir de dépôt ([`forbidden_zones`]).
     forbidden: Vec<PathBuf>,
     sweep: Arc<Mutex<Sweep>>,
@@ -571,7 +579,8 @@ impl Phone {
             checked: None,
             settings_stamp: None,
             settings: Settings::default(),
-            opened: HashSet::new(),
+            opened: HashMap::new(),
+            idle_checked: None,
             sweep: Arc::default(),
             git: GitCell::default(),
             reads: SharedReads::default(),
@@ -613,7 +622,7 @@ impl Phone {
     fn repos_in(&mut self, app: &DragonTreeApp, dir: &RepoDirectory) -> Vec<Listed> {
         self.update();
         let opened = &self.opened;
-        let open = |p: &Path| app.repo_tab(p).is_some() && !opened.contains(&repo_key(p));
+        let open = |p: &Path| app.repo_tab(p).is_some() && !opened.contains_key(&repo_key(p));
         let list = liste::list(dir, open);
         // Un onglet que le téléphone avait ouvert, refermé depuis sur le PC : rouvert, il sera à l'utilisateur.
         for l in list.iter().filter(|l| app.repo_tab(&l.path).is_none()) {
@@ -759,8 +768,8 @@ impl Phone {
     /// Ajoute à DragonTree le dépôt du dossier `input` (choisi sur le PC dans le sélecteur du téléphone, contrôlé par
     /// [`check_repo_dir`]) et l'ouvre sur le téléphone. DragonTree vérifie que git l'ouvre, l'ouvre dans un onglet de
     /// fond (l'onglet affiché sur le PC ne change pas) et le retient parmi ses récents (`add_repo` : dans la liste
-    /// aussitôt, en mémoire) ; cet onglet est celui du téléphone. Déjà dans la liste (sous une autre forme du même
-    /// chemin, peut-être) : le téléphone l'ouvre.
+    /// aussitôt, en mémoire) ; cet onglet est celui du téléphone, refermé comme les autres. Déjà dans la liste (sous
+    /// une autre forme du même chemin, peut-être) : le téléphone l'ouvre.
     fn add(&mut self, app: &mut DragonTreeApp, input: Option<&str>) -> Result<(String, bool), String> {
         let raw = input.map(str::trim).filter(|t| !t.is_empty()).ok_or("Aucun dossier choisi.")?;
         let dir = check_repo_dir(Path::new(raw), &self.forbidden)?;
@@ -772,8 +781,14 @@ impl Phone {
             .add_repo(&dir)
             .map_err(|e| format!("DragonTree n'ouvre pas {} : {}", dir.display(), short_error(&e)))?;
         let key = repo_key(&path);
-        self.opened.insert(key.clone());
+        self.opened.insert(key.clone(), (path, Instant::now()));
         Ok((format!("{OPEN_PREFIX}depot/{key}"), false))
+    }
+
+    /// Ouvre le dépôt `repo` (clé `key`) dans un onglet de fond de DragonTree, pour le téléphone.
+    fn open_tab(&mut self, app: &mut DragonTreeApp, key: &str, repo: &Path) {
+        app.open_repo_tab(repo);
+        self.opened.insert(key.to_string(), (repo.to_path_buf(), Instant::now()));
     }
 
     /// Le dépôt regardé est ouvert dans un onglet de DragonTree (en fond) et devient son foyer distant : relu comme
@@ -785,8 +800,7 @@ impl Phone {
         let again = self.watched.insert(key.clone(), Instant::now()).is_none_or(|t| t.elapsed() >= LOOK_AGAIN);
         if app.repo_tab(repo).is_none() {
             // L'ouverture lit tout.
-            app.open_repo_tab(repo);
-            self.opened.insert(key.clone());
+            self.open_tab(app, &key, repo);
             self.since.insert(key, Instant::now());
             return;
         }
@@ -1121,8 +1135,7 @@ impl Phone {
         }
         if verb == "actualiser" {
             if app.repo_tab(&repo).is_none() {
-                app.open_repo_tab(&repo);
-                self.opened.insert(key.clone());
+                self.open_tab(app, &key, &repo);
             } else {
                 app.refresh_repo(&repo, Refresh::ALL.with_extras());
             }
@@ -1142,8 +1155,7 @@ impl Phone {
         let (op, label) = depot::parse(&view, &verb, input)?;
         self.failed.remove(&key);
         if app.repo_tab(&repo).is_none() {
-            app.open_repo_tab(&repo);
-            self.opened.insert(key.clone());
+            self.open_tab(app, &key, &repo);
         }
         let opening = app.repo_tab(&repo).is_some_and(|t| t.repo.is_none() && t.open_error.is_none());
         if opening {
@@ -1166,13 +1178,15 @@ impl Phone {
     }
 
     /// À chaque image : le dépôt que le téléphone ne regarde plus (aucun de ses écrans demandé depuis 3 s) cesse d'être
-    /// le foyer distant de DragonTree ; les opérations qui attendaient l'ouverture de leur dépôt partent quand
-    /// DragonTree l'a ouvert (ou sont abandonnées s'il n'y arrive pas).
+    /// le foyer distant de DragonTree ; les onglets que le téléphone a ouverts et laissés 15 min sont refermés ; les
+    /// opérations qui attendaient l'ouverture de leur dépôt partent quand DragonTree l'a ouvert (ou sont abandonnées
+    /// s'il n'y arrive pas).
     pub fn after_logic(&mut self, app: &mut DragonTreeApp) {
         if self.focus.is_some_and(|t| t.elapsed() >= FOCUS_FOR) {
             app.set_remote_focus(None);
             self.focus = None;
         }
+        self.close_idle(app);
         if self.waiting.is_empty() {
             return;
         }
@@ -1196,6 +1210,48 @@ impl Phone {
                 self.failed.insert(key, done(text, Tone::Danger, Instant::now()));
             }
         }
+    }
+
+    /// Les onglets que le téléphone a ouverts lui-même, ni regardés d'ici ni menant une opération (d'ici ou du PC)
+    /// depuis 15 min : refermés par DragonTree, qui refuse l'onglet affiché et un onglet occupé (`close_repo_tab`). Un
+    /// onglet affiché sur le PC est désormais celui de l'utilisateur : il n'est jamais refermé d'ici.
+    fn close_idle(&mut self, app: &mut DragonTreeApp) {
+        if self.opened.is_empty() {
+            return;
+        }
+        if let Some(shown) = app.active_repo_dir() {
+            self.opened.remove(&repo_key(shown));
+        }
+        if self.idle_checked.is_some_and(|t| t.elapsed() < CLOSE_CHECK_EVERY) {
+            return;
+        }
+        self.idle_checked = Some(Instant::now());
+        let idle: Vec<(String, PathBuf)> = self
+            .opened
+            .iter()
+            .filter(|(key, (path, opened))| {
+                let looked = self.watched.get(*key).copied();
+                let worked = app.repo_tab(path).and_then(|t| t.outcomes().last().map(|o| o.at));
+                [Some(*opened), looked, worked].into_iter().flatten().all(|t| t.elapsed() >= CLOSE_IDLE_AFTER)
+            })
+            .map(|(key, (path, _))| (key.clone(), path.clone()))
+            .collect();
+        for (key, path) in idle {
+            if !self.waiting.contains_key(&key) && app.close_repo_tab(&path) {
+                self.forget(&key);
+            }
+        }
+    }
+
+    /// Oublie ce que le téléphone gardait du dépôt `key`, dont l'onglet est refermé : ce qui en a été lu à part, son
+    /// graphe découpé, ses regards ; regardé de nouveau, il est rouvert et relu.
+    fn forget(&mut self, key: &str) {
+        self.opened.remove(key);
+        self.watched.remove(key);
+        self.since.remove(key);
+        lock(&self.reads).remove(key);
+        let screens = format!("depot/{key}");
+        self.cells.retain(|path, _| path != &screens && !path.starts_with(&format!("{screens}/")));
     }
 }
 
@@ -1316,7 +1372,7 @@ mod tests {
         assert!(h.state().active_repo_dir().is_none(), "en fond : l'onglet du PC ne change pas");
         let recent = h.state().repo_directory().recent.first().map(|p| long_path_key(p));
         assert_eq!(recent, Some(long_path_key(&repo)), "retenu parmi ses récents");
-        assert!(phone.opened.contains(&key), "un onglet du téléphone");
+        assert!(phone.opened.contains_key(&key), "un onglet du téléphone, refermé comme les autres");
         if linked {
             // Par la jonction : le même dépôt, déjà dans la liste.
             let (again, _) = phone.action(h.state_mut(), "", "ajouter", Some(&link.display().to_string())).unwrap();
@@ -2111,6 +2167,69 @@ mod tests {
         assert!(show);
         assert_eq!(h.state().active_repo_dir().map(path_key), Some(path_key(&repo)));
         assert_eq!(band_of(&phone.screen(h.state_mut(), "").unwrap(), &key), Some("Ouverts sur le PC".into()));
+        drop(h);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Les onglets que le téléphone a ouverts lui-même sont refermés par DragonTree après 15 min sans regard ni
+    /// opération ; jamais un onglet que l'utilisateur a ouvert sur le PC, ni un onglet du téléphone qu'il y a affiché.
+    /// Refermé, le dépôt reste à sa place dans la liste ; regardé de nouveau, il est rouvert en fond.
+    #[test]
+    fn the_tabs_the_phone_opened_are_closed_after_a_quarter_of_an_hour_idle() {
+        let Ok(git) = Git::discover() else { return };
+        let dir = std::env::temp_dir().join(format!("suite-dragontree-fermeture-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let [phones, worked, users, seen, shown] =
+            ["telephone", "travail", "utilisateur", "vu-sur-le-pc", "affiche"].map(|n| dir.join(n));
+        for r in [&phones, &worked, &users, &seen, &shown] {
+            new_repo(&git, r);
+        }
+        let profile = dir.join("profil");
+        std::fs::create_dir_all(&profile).unwrap();
+        let recent = vec![phones.clone(), worked.clone(), users.clone(), seen.clone(), shown.clone()];
+        let settings = Settings { recent_repos: recent, ..Default::default() };
+        std::fs::write(profile.join("settings.json"), serde_json::to_vec(&settings).unwrap()).unwrap();
+        let mut phone = Phone::new(profile.join("settings.json"));
+        let mut h = dragontree(&profile);
+        let base = |r: &Path| format!("depot/{}", repo_key(r));
+
+        // Le téléphone regarde trois dépôts (ouverts en fond pour lui) et indexe un fichier dans l'un ; l'utilisateur
+        // ouvre un dépôt sur le PC, y affiche un dépôt du téléphone, puis un autre.
+        for r in [&phones, &worked, &seen] {
+            wait_screen(&mut h, &mut phone, &base(r), "lisez-moi.txt");
+        }
+        let f = file_key("lisez-moi.txt");
+        phone.action(h.state_mut(), &format!("{}/modifs", base(&worked)), &format!("indexer:{f}"), None).unwrap();
+        wait_screen(&mut h, &mut phone, &format!("{}/modifs", base(&worked)), "\"Indexé\"");
+        h.state_mut().show_repo(&users);
+        h.state_mut().show_repo(&seen);
+        phone.after_logic(h.state_mut());
+        h.state_mut().show_repo(&shown);
+        h.step();
+        let tabs = |h: &H| [&phones, &worked, &users, &seen, &shown].map(|r| h.state().repo_tab(r).is_some());
+
+        phone.idle_checked = None;
+        phone.after_logic(h.state_mut());
+        assert_eq!(tabs(&h), [true; 5], "regardés il y a peu");
+        // Un quart d'heure sans regard : seul l'onglet du téléphone sans opération récente est refermé.
+        let long_ago = Instant::now().checked_sub(CLOSE_IDLE_AFTER + Duration::from_secs(60)).expect("un PC allumé");
+        for (_, at) in phone.opened.values_mut() {
+            *at = long_ago;
+        }
+        for at in phone.watched.values_mut() {
+            *at = long_ago;
+        }
+        phone.idle_checked = None;
+        phone.after_logic(h.state_mut());
+        assert_eq!(tabs(&h), [false, true, true, true, true]);
+        let key = repo_key(&phones);
+        assert!(!phone.opened.contains_key(&key) && !lock(&phone.reads).contains_key(&key), "oublié");
+        assert_eq!(h.state().active_repo_dir().map(path_key), Some(path_key(&shown)), "l'onglet du PC ne change pas");
+
+        let home = phone.screen(h.state_mut(), "").unwrap();
+        assert_eq!(band_of(&home, &key), Some("Récents".into()), "toujours dans la liste : {home:?}");
+        wait_screen(&mut h, &mut phone, &base(&phones), "lisez-moi.txt");
+        assert!(h.state().repo_tab(&phones).is_some() && phone.opened.contains_key(&key), "rouvert en fond");
         drop(h);
         let _ = std::fs::remove_dir_all(&dir);
     }
