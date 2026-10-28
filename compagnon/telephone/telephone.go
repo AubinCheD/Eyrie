@@ -147,6 +147,31 @@ func EyrieTailnetDial(caddr *C.char, fd C.int, timeoutMs C.int) *C.char {
 	return nil
 }
 
+// EyrieTailnetPeer dit ce que le nœud sait de l'appareil d'adresse `addr` (celle que l'application compose,
+// « hôte:port ») : quand le PC ne répond pas, est-il sur le tailnet (Eyrie fermée) ou non (éteint, en veille, hors
+// réseau) ? Rend {"connu":bool,"enligne":bool,"vu":<secondes Unix>} (connu : un appareil du tailnet a cette adresse ;
+// vu : sa dernière connexion à Tailscale, maintenant s'il est en ligne, 0 si on l'ignore), ou NULL si le nœud est
+// arrêté ou son état illisible.
+//
+//export EyrieTailnetPeer
+func EyrieTailnetPeer(caddr *C.char) *C.char {
+	addr := C.GoString(caddr)
+	mu.Lock()
+	c := lc
+	mu.Unlock()
+	if c == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	st, err := c.Status(ctx)
+	if err != nil {
+		return nil
+	}
+	b, _ := json.Marshal(noeud.ChercherPair(st, addr, time.Now()))
+	return C.CString(string(b))
+}
+
 // EyrieTailnetLogout déconnecte le téléphone du compte Tailscale ; un nouveau lien de connexion suit.
 //
 //export EyrieTailnetLogout
