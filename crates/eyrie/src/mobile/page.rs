@@ -211,6 +211,11 @@ pub fn page(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui) {
                 ui.checkbox(&mut r.act, tr("Agir")).on_hover_text(tr("Actions des modules et commandes"));
                 ui.checkbox(&mut r.terminals, tr("Terminaux"))
                     .on_hover_text(tr("Écrire dans les terminaux, en ouvrir"));
+                // Parcourir les dossiers ne sert qu'à une action : sans « Agir », la case est grisée.
+                let files = tr("Parcourir les dossiers du PC pour une action qui en demande un (cloner, ajouter un dépôt, ouvrir un terminal) ; avec « Agir »");
+                ui.add_enabled(r.act, egui::Checkbox::new(&mut r.files, tr("Dossiers du PC")))
+                    .on_hover_text(files)
+                    .on_disabled_hover_text(files);
             });
             if r != d.rights {
                 rights_change.push((d.id.clone(), r));
