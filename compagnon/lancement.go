@@ -40,7 +40,8 @@ func (p *process) release() {
 // launchEyrie démarre `exe` avec `args`, dans la session de l'utilisateur, détaché du veilleur : l'environnement de
 // l'utilisateur relu (pas celui, figé, de l'ouverture de session), avec `env` en plus ; le dossier de
 // l'exécutable comme dossier de travail ; aucun handle hérité ; son propre groupe de processus, hors du job du
-// veilleur quand ce job le permet.
+// veilleur quand ce job le permet ; sans console (une Eyrie de débogage, programme console, en ouvrirait une, que
+// le veilleur n'a pas à lui prêter).
 func launchEyrie(exe string, args, env []string) (child, error) {
 	tok, err := windows.OpenCurrentProcessToken()
 	if err != nil {
@@ -70,7 +71,7 @@ func launchEyrie(exe string, args, env []string) (child, error) {
 	si := &windows.StartupInfo{}
 	si.Cb = uint32(unsafe.Sizeof(*si))
 	var pi windows.ProcessInformation
-	flags := uint32(windows.CREATE_NEW_PROCESS_GROUP | windows.CREATE_UNICODE_ENVIRONMENT)
+	flags := uint32(windows.CREATE_NEW_PROCESS_GROUP | windows.CREATE_UNICODE_ENVIRONMENT | windows.CREATE_NO_WINDOW)
 	err = windows.CreateProcess(app, cmdline, nil, nil, false, flags|windows.CREATE_BREAKAWAY_FROM_JOB, &block[0], dir, si, &pi)
 	if errors.Is(err, windows.ERROR_ACCESS_DENIED) {
 		// Le job du veilleur ne laisse pas partir ses processus : Eyrie y reste.

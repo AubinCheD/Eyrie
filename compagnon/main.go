@@ -11,6 +11,10 @@
 // Eyrie s'y rattache par un tube nommé au lieu de lancer un compagnon (`tube.go`). Il démarre Eyrie à la demande
 // d'un téléphone appairé (port 4748 du tailnet, `veille.go`).
 //
+// Compilé en programme fenêtré (tools\compagnon.ps1, -H windowsgui) : le veilleur, lancé par la clé Run de la
+// session, n'ouvre pas de console, qu'il suffirait de fermer pour l'arrêter. Ses entrée et sortie standard sont
+// celles que lui donne qui le lance (Eyrie : des tubes) ; sans elles, ce qu'il y écrit se perd.
+//
 // Un seul compagnon par nœud (`verrou.go`). Codes de sortie : 0 arrêt demandé, 1 échec, 2 arguments
 // manquants, 3 nœud déjà tenu par un autre compagnon. Avec --arreter, il arrête les veilleurs lancés depuis son
 // exécutable (`arret.go`) : 0 s'ils sont tous arrêtés (ou s'il n'y en a pas), 1 sinon.

@@ -7,9 +7,11 @@
     personnel, sans toucher au client Tailscale du PC, et relaie le téléphone vers le pont mobile d'Eyrie.
     Go est cherché dans -Go, dans le PATH, puis dans %LOCALAPPDATA%\Programs\go (archive officielle
     décompressée, sans droits d'administrateur). -Release le place dans target\release, sinon dans
-    target\debug. -Test lance d'abord ses essais. Un veilleur (eyrie-tailnet.exe --veille) qui tourne depuis
-    ce dossier verrouille l'exécutable : il est d'abord arrêté par son tube (--arreter), comme Eyrie le
-    ferait ; Eyrie le relancera.
+    target\debug. -Test lance d'abord ses essais. Le compagnon est un programme fenêtré (-H windowsgui) :
+    lancé à l'ouverture de session (veilleur), il n'ouvre aucune console, qu'il suffirait de fermer pour
+    l'arrêter ; Eyrie lui donne ses entrée et sortie standard. Un veilleur (eyrie-tailnet.exe --veille) qui
+    tourne depuis ce dossier verrouille l'exécutable : il est d'abord arrêté par son tube (--arreter), comme
+    Eyrie le ferait ; Eyrie le relancera.
 
 .EXAMPLE
     tools\compagnon.ps1 -Release
@@ -47,14 +49,30 @@ try {
         & $Go test ./...
         if ($LASTEXITCODE -ne 0) { throw "go test a échoué (code $LASTEXITCODE)." }
     }
-    # Le veilleur lancé depuis ce dossier tient l'exécutable : arrêté avant de le remplacer.
+    # Le veilleur lancé depuis ce dossier tient l'exécutable : arrêté avant de le remplacer. Programme fenêtré,
+    # le compagnon n'est pas attendu par « & » : il est lancé comme Eyrie le lance, sorties redirigées.
     $veilleurs = @(Get-CimInstance Win32_Process -Filter "Name = 'eyrie-tailnet.exe'" -ErrorAction SilentlyContinue |
         Where-Object { $_.ExecutablePath -eq $out -and $_.CommandLine -like '*--veille*' })
     if ($veilleurs.Count -gt 0) {
-        & $out --arreter
-        if ($LASTEXITCODE -ne 0) { throw "Le veilleur ($out) ne s'est pas arrêté (code $LASTEXITCODE)." }
+        $psi = [System.Diagnostics.ProcessStartInfo]::new($out, '--arreter')
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+        $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+        $arret = [System.Diagnostics.Process]::Start($psi)
+        $dit = $arret.StandardOutput.ReadToEndAsync()
+        $erreurs = $arret.StandardError.ReadToEnd().Trim()
+        $arret.WaitForExit()
+        if ($dit.Result.Trim()) { Write-Host $dit.Result.Trim() }
+        if ($arret.ExitCode -ne 0) {
+            throw "Le veilleur ($out) ne s'est pas arrêté (code $($arret.ExitCode)) : $erreurs"
+        }
+        # Tubes d'autres comptes ou d'autres programmes, ignorés.
+        if ($erreurs) { Write-Warning $erreurs }
     }
-    & $Go build -trimpath -ldflags '-s -w' -o $out .
+    & $Go build -trimpath -ldflags '-s -w -H windowsgui' -o $out .
     if ($LASTEXITCODE -ne 0) { throw "go build a échoué (code $LASTEXITCODE)." }
 } finally {
     Pop-Location
