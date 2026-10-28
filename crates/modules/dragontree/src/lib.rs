@@ -13,7 +13,9 @@
 //!   et Thème et Langue disparaissent de ses réglages et de ses menus (`set_hosted`) ;
 //! - le titre « <dépôt> — DragonTree » devient le titre du module ;
 //! - **téléphone** (`mobile`) : ses dépôts et un client git presque complet, menés par DragonTree lui-même (ses
-//!   onglets, sa file d'opérations, ses comptes, ses notifications et son bandeau de conflits sur le PC).
+//!   onglets, sa file d'opérations, ses comptes, ses notifications et son bandeau de conflits sur le PC) ;
+//! - **masqué, il vit** (`background_tick`) : surveillance du disque, fetch automatique et enregistrement de ses
+//!   réglages, que son `ui` faisait seul.
 
 pub mod branches;
 pub mod depot;
@@ -123,16 +125,11 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
         accounts_dir: bcx.host.accounts_dir(),
         ..Default::default()
     };
-    // La liste de son dernier scan est dans le profil d'essai, sinon dans son dossier de cache.
-    let scan = match &profile_dir {
-        Some(dir) => dir.join("repos-cache.json"),
-        None => dragontree_app::settings::cache_dir().join("repos-cache.json"),
-    };
     let profile = profile_dir.unwrap_or_else(dragontree_app::settings::config_dir);
     let key = single_instance::profile_key(&profile);
-    // Le téléphone lit la liste des dépôts dans les mêmes fichiers que DragonTree (réglages et liste du scan, dans
-    // `StartOptions::profile_dir`, sinon le profil par défaut) ; le reste, il le demande à DragonTree.
-    let phone = Rc::new(RefCell::new(mobile::Phone::new(profile.join("settings.json"), scan)));
+    // Le téléphone demande ses dépôts à DragonTree (en mémoire) ; ses réglages d'affichage, il les lit dans le même
+    // fichier que lui (dans `StartOptions::profile_dir`, sinon le profil par défaut).
+    let phone = Rc::new(RefCell::new(mobile::Phone::new(profile.join("settings.json"))));
     let (phone_actions, phone_logic) = (phone.clone(), phone.clone());
     let instance = match single_instance::start(&key, &Forwarded { open: Vec::new() }, Duration::from_secs(3)) {
         Startup::Primary(i) => Some(i),
@@ -167,6 +164,11 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
         })
         .after_logic(move |app, cx| {
             phone_logic.borrow_mut().after_logic(app);
+            // Masqué, il vit quand même (son `ui` n'est pas appelé) : surveillance du disque, fetch automatique,
+            // réglages enregistrés ; le dépôt regardé depuis le téléphone est relu comme l'onglet affiché.
+            if !cx.visible {
+                app.background_tick();
+            }
             let now = app.active_repo_dir().map(|p| p.to_path_buf());
             if now != published {
                 if let Some(dir) = &now {

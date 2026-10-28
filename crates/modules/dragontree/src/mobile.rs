@@ -14,10 +14,15 @@
 //!
 //! Lu à part, dans un fil, avec le dépôt ouvert par DragonTree : ce qu'il ne garde pas (le diff d'un fichier, le
 //! détail d'un commit, le dernier message pour corriger le commit) ; et l'état rapide des dépôts de la liste qui ne
-//! sont pas ouverts dans un onglet (lecture seule, comme le relevé de sa barre latérale). La liste vient de ses
-//! réglages et de celle de son dernier scan, relues quand elles changent, jamais écrites. Un dépôt est désigné par une
-//! empreinte de son chemin (`depot/<clé>`) : pas de chemin Windows dans un chemin d'écran, et la même clé quand la
-//! liste change d'ordre.
+//! sont pas ouverts dans un onglet (lecture seule, comme le relevé de sa barre latérale ; celui de sa liste en
+//! attendant). La liste est celle que DragonTree a en mémoire (`repo_directory`) ; ses réglages d'affichage (ordre de
+//! l'historique, portée du graphe), son git et son dossier de clonage sont relus dans son fichier quand il change,
+//! jamais écrits. Un dépôt est désigné par une empreinte de son chemin (`depot/<clé>`) : pas de chemin Windows dans un
+//! chemin d'écran, et la même clé quand la liste change d'ordre.
+//!
+//! DragonTree vit même masqué dans Eyrie (`background_tick`, appelé par `lib.rs`) : le dépôt que regarde le téléphone
+//! est son « foyer distant » (`set_remote_focus`), relu comme l'onglet affiché quand il change sur le disque. Une
+//! lecture ratée de DragonTree (état, branches) se dit sur le téléphone.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -27,8 +32,9 @@ use std::time::{Duration, Instant, SystemTime};
 
 use dragontree_app::DragonTreeApp;
 use dragontree_app::repo::{Refresh, RemoteOp, RepoTab};
+use dragontree_app::repo_list::{QuickStatus, RepoDirectory};
 use dragontree_app::settings::{Settings, long_path_key, path_key};
-use dragontree_git::discovery::{FoundRepo, repo_head};
+use dragontree_git::discovery::repo_head;
 use dragontree_git::{
     CancelToken, Commit, CommitInfo, DiffOptions, FileChange, FileState, Git, GraphLayout, HeadState, LogOptions,
     LogOrder, LogScope, Oid, Repo, StatusEntry, StatusSnapshot,
@@ -45,11 +51,14 @@ use crate::liste::{self, Entry, JOB_SHOWN, Job, Listed, RepoState, repo_key};
 /// liste ; ceux des bandeaux pliés au départ, toutes les 5 min.
 const SWEEP_EVERY: Duration = Duration::from_secs(30);
 const SWEEP_FOLDED_EVERY: Duration = Duration::from_secs(300);
-/// Les réglages et la liste du scan de DragonTree sont relus (s'ils ont changé) au plus toutes les 5 s.
+/// Les réglages de DragonTree sont relus (s'ils ont changé) au plus toutes les 5 s.
 const SETTINGS_EVERY: Duration = Duration::from_secs(5);
-/// DragonTree ne suit les changements sur disque que dans l'onglet affiché : un dépôt regardé depuis le téléphone lui
-/// est fait relire au plus toutes les 20 s.
-const REFRESH_EVERY: Duration = Duration::from_secs(20);
+/// Le téléphone demande l'écran qu'il montre toutes les 300 ms : un dépôt dont aucun écran n'a été demandé depuis 3 s
+/// n'est plus regardé (DragonTree n'a plus de foyer distant).
+const FOCUS_FOR: Duration = Duration::from_secs(3);
+/// Un dépôt de nouveau regardé après 30 s sans l'être voit ses branches relues, comme DragonTree quand sa fenêtre
+/// revient au premier plan.
+const LOOK_AGAIN: Duration = Duration::from_secs(30);
 /// Le diff d'un fichier du dossier de travail est relu au plus toutes les 15 s tant qu'il est regardé.
 const DIFF_EVERY: Duration = Duration::from_secs(15);
 /// Une opération attend au plus 30 s que DragonTree ait ouvert son dépôt.
@@ -102,10 +111,18 @@ fn state_of(s: &StatusSnapshot) -> RepoState {
     }
 }
 
-/// L'état du dépôt tel que DragonTree l'a lu ; `None` : pas encore lu.
+/// L'état du dépôt tel que DragonTree l'a lu ; `None` : pas encore lu. Une lecture ratée (ouverture, état, branches)
+/// l'emporte : ce qui avait été lu avant n'est plus sûr.
 fn tab_state(t: &RepoTab) -> Option<RepoState> {
+    let failed = |e: String| Some(RepoState { error: Some(e), ..Default::default() });
     if let Some(e) = &t.open_error {
-        return Some(RepoState { error: Some(e.to_string()), ..Default::default() });
+        return failed(e.to_string());
+    }
+    if let Some(e) = &t.status_error {
+        return failed(format!("Lecture de l'état impossible : {}", short_error(&e.to_string())));
+    }
+    if let Some(e) = &t.refs_error {
+        return failed(format!("Lecture des branches impossible : {}", short_error(&e.to_string())));
     }
     t.status.as_deref().map(state_of)
 }
@@ -256,7 +273,7 @@ impl Load {
 
     /// Ce sur quoi la lecture est faite : les pointes qu'elle parcourt (et l'ordre d'un historique). Une lecture faite
     /// sur d'autres est périmée ; tant qu'elles ne bougent pas, elle ne l'est pas, même quand DragonTree relit ses
-    /// branches (toutes les 20 s pour un dépôt regardé).
+    /// branches (à chaque changement sur le disque d'un dépôt regardé).
     fn stamp(&self) -> u64 {
         let mut h = DefaultHasher::new();
         match self {
@@ -380,6 +397,16 @@ fn git(cell: &GitCell, configured: Option<PathBuf>) -> Result<Git, String> {
     found
 }
 
+/// Un état rapide (celui de la barre latérale de DragonTree) et la branche `head`, pour la liste.
+fn quick_state(q: QuickStatus, head: Option<HeadState>) -> RepoState {
+    let branch = match head {
+        Some(HeadState::Branch(b) | HeadState::Unborn(b)) => Some(b),
+        _ => None,
+    };
+    let error = q.error.or_else(|| q.untrusted.then(|| "git refuse ce dépôt (safe.directory) : voir sur le PC".into()));
+    RepoState { branch, upstream: None, ahead: q.ahead, behind: q.behind, changes: q.dirty as usize, error }
+}
+
 /// L'état rapide d'un dépôt, comme le relevé de la barre latérale de DragonTree (`quick_status` : rien de ce que
 /// désigne la configuration du dépôt n'est lancé), et sa branche lue sur le disque.
 fn read_state(git: &Result<Git, String>, path: &Path) -> RepoState {
@@ -390,13 +417,7 @@ fn read_state(git: &Result<Git, String>, path: &Path) -> RepoState {
         Ok(g) => g,
         Err(e) => return RepoState { error: Some(e.clone()), ..Default::default() },
     };
-    let q = dragontree_app::repo_list::quick_status(git, path);
-    let branch = match repo_head(path) {
-        Some(HeadState::Branch(b) | HeadState::Unborn(b)) => Some(b),
-        _ => None,
-    };
-    let error = q.error.or_else(|| q.untrusted.then(|| "git refuse ce dépôt (safe.directory) : voir sur le PC".into()));
-    RepoState { branch, upstream: None, ahead: q.ahead, behind: q.behind, changes: q.dirty as usize, error }
+    quick_state(dragontree_app::repo_list::quick_status(git, path), repo_head(path))
 }
 
 /// Des noms de dossiers où le téléphone ne fait jamais ouvrir de dépôt, où qu'ils soient (en minuscules).
@@ -483,7 +504,7 @@ fn check_repo_dir(dir: &Path, forbidden: &[PathBuf]) -> Result<PathBuf, String> 
     Ok(full)
 }
 
-/// Ce qu'un fichier lu de DragonTree (réglages, liste du scan) était quand il a été lu.
+/// Ce qu'était le fichier des réglages de DragonTree quand il a été lu.
 fn stamp_of(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
@@ -509,19 +530,14 @@ struct Waiting {
 
 /// Ce que le téléphone garde entre deux appels.
 pub struct Phone {
+    /// Le fichier des réglages de DragonTree : ses réglages d'affichage, son git et son dossier de clonage (la liste
+    /// des dépôts, elle, est lue en mémoire).
     settings_path: PathBuf,
-    /// La liste du dernier scan de DragonTree (`repos-cache.json`, celle que lit `RepoListState::load_cache`).
-    scan_path: PathBuf,
     checked: Option<Instant>,
-    /// Ce qu'étaient les fichiers à leur dernière lecture réussie : un fichier illisible (en cours de remplacement par
-    /// DragonTree) est relu la fois suivante, la liste gardant ce qu'elle avait.
+    /// Ce qu'était le fichier à sa dernière lecture réussie : un fichier illisible (en cours de remplacement par
+    /// DragonTree) est relu la fois suivante, les réglages gardant ce qu'ils avaient.
     settings_stamp: Option<SystemTime>,
-    scan_stamp: Option<SystemTime>,
     settings: Settings,
-    found: Vec<FoundRepo>,
-    /// Ajoutés depuis le téléphone, le plus récent en tête : dans la liste avant même que DragonTree ait enregistré
-    /// ses réglages.
-    added: Vec<PathBuf>,
     /// Dépôts que le téléphone a ouverts lui-même dans un onglet de DragonTree, pour les lire : ils restent rangés où
     /// ils étaient dans la liste.
     opened: HashSet<String>,
@@ -530,10 +546,12 @@ pub struct Phone {
     sweep: Arc<Mutex<Sweep>>,
     git: GitCell,
     reads: SharedReads,
-    /// Par dépôt : quand DragonTree l'a relu à la demande du téléphone.
-    refreshed: HashMap<String, Instant>,
-    /// Par dépôt : depuis quand le téléphone attend que DragonTree lise son état et ses branches (une lecture ratée ne
-    /// se dit que sur le PC) ; oublié dès qu'il les a lus.
+    /// Par dépôt : quand le téléphone l'a regardé pour la dernière fois.
+    watched: HashMap<String, Instant>,
+    /// Quand DragonTree a reçu son foyer distant (le dépôt regardé) pour la dernière fois ; `None` : il n'en a pas.
+    focus: Option<Instant>,
+    /// Par dépôt : depuis quand le téléphone attend que DragonTree lise son état et ses branches ; oublié dès qu'il les
+    /// a lus, ou qu'une lecture a échoué (elle se dit alors elle-même).
     since: HashMap<String, Instant>,
     /// Par chemin d'écran : les lignes demandées de sa liste par pages (« plus »).
     pages: HashMap<String, usize>,
@@ -545,23 +563,20 @@ pub struct Phone {
 }
 
 impl Phone {
-    /// `settings_path` : les réglages de DragonTree ; `scan_path` : la liste de son dernier scan.
-    pub fn new(settings_path: PathBuf, scan_path: PathBuf) -> Phone {
+    /// `settings_path` : les réglages de DragonTree.
+    pub fn new(settings_path: PathBuf) -> Phone {
         Phone {
             forbidden: forbidden_zones(settings_path.parent()),
             settings_path,
-            scan_path,
             checked: None,
             settings_stamp: None,
-            scan_stamp: None,
             settings: Settings::default(),
-            found: Vec::new(),
-            added: Vec::new(),
             opened: HashSet::new(),
             sweep: Arc::default(),
             git: GitCell::default(),
             reads: SharedReads::default(),
-            refreshed: HashMap::new(),
+            watched: HashMap::new(),
+            focus: None,
             since: HashMap::new(),
             pages: HashMap::new(),
             cells: HashMap::new(),
@@ -570,8 +585,9 @@ impl Phone {
         }
     }
 
-    /// Relit les réglages de DragonTree et la liste de son scan s'ils ont changé (au plus toutes les 5 s), sans
-    /// jamais les réécrire. Une lecture ratée est refaite la fois suivante.
+    /// Relit les réglages de DragonTree s'ils ont changé (au plus toutes les 5 s), sans jamais les réécrire : il les
+    /// enregistre dès qu'ils changent, affiché ou masqué (`background_tick`). Une lecture ratée est refaite la fois
+    /// suivante.
     fn update(&mut self) {
         if self.checked.is_some_and(|t| t.elapsed() < SETTINGS_EVERY) {
             return;
@@ -586,26 +602,19 @@ impl Phone {
                 self.settings_stamp = stamp;
             }
         }
-        let stamp = stamp_of(&self.scan_path);
-        if stamp != self.scan_stamp {
-            let read: Option<Vec<FoundRepo>> = match stamp {
-                // Pas de scan (aucun dossier racine) : pas de liste.
-                None => Some(Vec::new()),
-                Some(_) => std::fs::read(&self.scan_path).ok().and_then(|b| serde_json::from_slice(&b).ok()),
-            };
-            if let Some(found) = read {
-                self.found = found;
-                self.scan_stamp = stamp;
-            }
-        }
     }
 
     /// Tous les dépôts de la liste, rangés par bandeau.
     fn repos(&mut self, app: &DragonTreeApp) -> Vec<Listed> {
+        self.repos_in(app, &app.repo_directory())
+    }
+
+    /// Tous les dépôts de `dir` (ce que DragonTree sait de ses dépôts), rangés par bandeau.
+    fn repos_in(&mut self, app: &DragonTreeApp, dir: &RepoDirectory) -> Vec<Listed> {
         self.update();
         let opened = &self.opened;
         let open = |p: &Path| app.repo_tab(p).is_some() && !opened.contains(&repo_key(p));
-        let list = liste::list(&self.settings, &self.found, &self.added, app.active_repo_dir(), open);
+        let list = liste::list(dir, open);
         // Un onglet que le téléphone avait ouvert, refermé depuis sur le PC : rouvert, il sera à l'utilisateur.
         for l in list.iter().filter(|l| app.repo_tab(&l.path).is_none()) {
             self.opened.remove(&repo_key(&l.path));
@@ -666,14 +675,20 @@ impl Phone {
         }
     }
 
-    fn entry(&mut self, app: &DragonTreeApp, repo: Listed) -> Entry {
+    /// Le dépôt `repo` de la liste et ce qu'on en sait : l'état lu par son onglet, sinon le relevé fait ici, sinon
+    /// celui de la liste de DragonTree en attendant ; la couleur de son onglet (`dir` : ce que DragonTree sait de ses
+    /// dépôts).
+    fn entry(&mut self, app: &DragonTreeApp, dir: &RepoDirectory, repo: Listed) -> Entry {
         let key = repo_key(&repo.path);
         let tab = app.repo_tab(&repo.path);
         let state = match tab {
             Some(t) => tab_state(t),
-            None => lock(&self.sweep).states.get(&key).map(|(s, _)| s.clone()),
+            None => lock(&self.sweep).states.get(&key).map(|(s, _)| s.clone()).or_else(|| {
+                let (q, head) = app.repo_quick_status(&repo.path)?;
+                Some(quick_state(q, head))
+            }),
         };
-        let color = self.settings.tab_colors.get(&path_key(&repo.path)).map(|c| {
+        let color = dir.tab_colors.get(&path_key(&repo.path)).map(|c| {
             let c = c.color(&dragontree_app::theme::Palette::light());
             u32::from_be_bytes([0, c.r(), c.g(), c.b()])
         });
@@ -684,7 +699,8 @@ impl Phone {
     /// L'accueil : tous les dépôts ; l'état de ceux que DragonTree n'a pas ouverts est relevé à part, d'abord ceux des
     /// bandeaux ouverts au départ.
     fn home(&mut self, app: &DragonTreeApp) -> Screen {
-        let repos = self.repos(app);
+        let dir = app.repo_directory();
+        let repos = self.repos_in(app, &dir);
         let (mut shown, mut folded) = (Vec::new(), Vec::new());
         for r in repos.iter().filter(|r| app.repo_tab(&r.path).is_none()) {
             let in_band = repos.iter().filter(|o| o.group == r.group).count();
@@ -695,16 +711,22 @@ impl Phone {
             }
         }
         self.sweep(shown, folded, false);
-        let sweeping = lock(&self.sweep).running;
-        let entries: Vec<Entry> = repos.into_iter().map(|r| self.entry(app, r)).collect();
-        let add = self.add_act(&entries);
-        liste::home(&entries, sweeping, Some(add))
+        let busy = if dir.scanning {
+            Some("Analyse des dossiers de DragonTree…")
+        } else if dir.sweeping || lock(&self.sweep).running {
+            Some("Relevé de l'état des dépôts…")
+        } else {
+            None
+        };
+        let entries: Vec<Entry> = repos.into_iter().map(|r| self.entry(app, &dir, r)).collect();
+        let add = self.add_act(&entries, &dir);
+        liste::home(&entries, busy, Some(add))
     }
 
     /// « Ajouter un dépôt existant… » : un dossier du PC, choisi dans le sélecteur du téléphone, qui doit être un dépôt
     /// git. Raccourcis : le dossier de clonage et les dossiers analysés de DragonTree, puis les dossiers où sont déjà
     /// ses dépôts ; ceux-ci sont marqués « déjà là ».
-    fn add_act(&self, entries: &[Entry]) -> Act {
+    fn add_act(&self, entries: &[Entry], dir: &RepoDirectory) -> Act {
         let mut places = Vec::new();
         let mut seen = HashSet::new();
         let mut place = |label: String, path: &Path, glyph: &str| {
@@ -714,10 +736,10 @@ impl Phone {
             }
             fresh
         };
-        if let Some(dir) = &self.settings.default_clone_dir {
-            place("Dossier de clonage".into(), dir, "📥");
+        if let Some(clone_dir) = &self.settings.default_clone_dir {
+            place("Dossier de clonage".into(), clone_dir, "📥");
         }
-        for root in &self.settings.scan_roots {
+        for root in &dir.roots {
             place(format!("Dossier analysé : {}", liste::repo_name(root)), root, "📁");
         }
         let mut parents = 0;
@@ -736,7 +758,8 @@ impl Phone {
 
     /// Ajoute à DragonTree le dépôt du dossier `input` (choisi sur le PC dans le sélecteur du téléphone, contrôlé par
     /// [`check_repo_dir`]) et l'ouvre sur le téléphone. Comme « Ouvrir un dépôt… » sur le PC : DragonTree l'affiche
-    /// et le retient. Déjà dans la liste (sous une autre forme du même chemin, peut-être) : le téléphone l'ouvre.
+    /// et le retient (dans la liste aussitôt, en mémoire). Déjà dans la liste (sous une autre forme du même chemin,
+    /// peut-être) : le téléphone l'ouvre.
     fn add(&mut self, app: &mut DragonTreeApp, input: Option<&str>) -> Result<(String, bool), String> {
         let raw = input.map(str::trim).filter(|t| !t.is_empty()).ok_or("Aucun dossier choisi.")?;
         let dir = check_repo_dir(Path::new(raw), &self.forbidden)?;
@@ -745,33 +768,34 @@ impl Phone {
             return Ok((format!("{OPEN_PREFIX}depot/{}", repo_key(&known.path)), false));
         }
         app.show_repo(&dir);
-        let key = repo_key(&dir);
-        self.added.retain(|p| repo_key(p) != key);
-        self.added.insert(0, dir);
-        Ok((format!("{OPEN_PREFIX}depot/{key}"), false))
+        Ok((format!("{OPEN_PREFIX}depot/{}", repo_key(&dir)), false))
     }
 
-    /// Le dépôt regardé est ouvert dans un onglet de DragonTree (en fond), et relu par lui au plus toutes les 20 s.
+    /// Le dépôt regardé est ouvert dans un onglet de DragonTree (en fond) et devient son foyer distant : relu comme
+    /// l'onglet affiché quand il change sur le disque. Regardé de nouveau après un moment, ses branches sont relues.
     fn watch(&mut self, app: &mut DragonTreeApp, repo: &Path) {
         let key = repo_key(repo);
+        app.set_remote_focus(Some(repo));
+        self.focus = Some(Instant::now());
+        let again = self.watched.insert(key.clone(), Instant::now()).is_none_or(|t| t.elapsed() >= LOOK_AGAIN);
         if app.repo_tab(repo).is_none() {
             // L'ouverture lit tout.
             app.open_repo_tab(repo);
             self.opened.insert(key.clone());
-            self.refreshed.insert(key.clone(), Instant::now());
             self.since.insert(key, Instant::now());
             return;
         }
-        if self.refreshed.get(&key).is_none_or(|t| t.elapsed() >= REFRESH_EVERY) {
-            app.refresh_repo(repo, Refresh::REFS.with_extras());
-            self.refreshed.insert(key, Instant::now());
+        if again {
+            app.refresh_repo(repo, Refresh::REFS);
         }
     }
 
-    /// DragonTree n'a toujours pas lu l'état ou les branches de l'onglet `t` (dépôt `key`) 15 s après que le téléphone
-    /// les attend : sa lecture est longue, ou a raté. Ce que le téléphone lit lui-même (un historique) n'y entre pas.
+    /// DragonTree n'a toujours pas lu l'état ou les branches de l'onglet `t` (dépôt `key`), sans erreur, 15 s après que
+    /// le téléphone les attend : sa lecture est longue. Une lecture ratée se dit elle-même ; ce que le téléphone lit
+    /// lui-même (un historique) n'y entre pas.
     fn slow(&mut self, key: &str, t: &RepoTab) -> bool {
-        if t.open_error.is_some() || (t.status.is_some() && t.refs.is_some()) {
+        let failed = t.open_error.is_some() || t.status_error.is_some() || t.refs_error.is_some();
+        if failed || (t.status.is_some() && t.refs.is_some()) {
             self.since.remove(key);
             return false;
         }
@@ -918,6 +942,8 @@ impl Phone {
             remotes: t.remotes.clone(),
             op: t.status.is_some().then_some(t.op_state),
             auth_error: t.fetch_auth_error().map(short_error),
+            status_error: t.status_error.as_ref().map(|e| short_error(&e.to_string())),
+            refs_error: t.refs_error.as_ref().map(|e| short_error(&e.to_string())),
             count: self.pages.get(path).copied().unwrap_or(depot::PAGE),
             ..Default::default()
         };
@@ -1032,11 +1058,12 @@ impl Phone {
             ["etiquettes"] => depot::tags(&base, &view, now, busy),
             _ => return None,
         };
-        // Ce que fait DragonTree (sa progression, et son « Annuler »), ou ce qu'a donné sa dernière opération, en tête
-        // de chaque écran du dépôt.
-        if let Some(j) = job {
-            screen.blocks.insert(0, job_block(j));
-        }
+        // Ce que fait DragonTree (sa progression, et son « Annuler »), ou ce qu'a donné sa dernière opération, puis ses
+        // lectures ratées dont l'écran montre la lecture d'avant, en tête de chaque écran du dépôt.
+        let stale = depot::stale_reads(&view).into_iter();
+        let stale = stale.map(|text| Block::Note { text, tone: Tone::Warn, progress: None, acts: Vec::new() });
+        let top: Vec<Block> = job.map(job_block).into_iter().chain(stale).collect();
+        screen.blocks.splice(0..0, top);
         Some(screen)
     }
 
@@ -1094,7 +1121,6 @@ impl Phone {
             } else {
                 app.refresh_repo(&repo, Refresh::ALL.with_extras());
             }
-            self.refreshed.insert(key.clone(), Instant::now());
             self.since.insert(key.clone(), Instant::now());
             lock(&self.reads).remove(&key);
             return Ok(("DragonTree relit le dépôt…".into(), false));
@@ -1134,9 +1160,14 @@ impl Phone {
         Ok((format!("{label} : lancé dans DragonTree"), false))
     }
 
-    /// À chaque image : les opérations qui attendaient l'ouverture de leur dépôt partent quand DragonTree l'a ouvert
-    /// (ou sont abandonnées s'il n'y arrive pas).
+    /// À chaque image : le dépôt que le téléphone ne regarde plus (aucun de ses écrans demandé depuis 3 s) cesse d'être
+    /// le foyer distant de DragonTree ; les opérations qui attendaient l'ouverture de leur dépôt partent quand
+    /// DragonTree l'a ouvert (ou sont abandonnées s'il n'y arrive pas).
     pub fn after_logic(&mut self, app: &mut DragonTreeApp) {
+        if self.focus.is_some_and(|t| t.elapsed() >= FOCUS_FOR) {
+            app.set_remote_focus(None);
+            self.focus = None;
+        }
         if self.waiting.is_empty() {
             return;
         }
@@ -1178,12 +1209,9 @@ mod tests {
     /// connus y sont marqués.
     #[test]
     fn adding_a_repo_offers_the_pc_folders_of_dragontree() {
-        let mut phone = Phone::new(PathBuf::from("absent.json"), PathBuf::from("absent-scan.json"));
-        phone.settings = Settings {
-            default_clone_dir: Some(r"C:\dev".into()),
-            scan_roots: vec![r"C:\dev".into(), r"D:\sources".into()],
-            ..Default::default()
-        };
+        let mut phone = Phone::new(PathBuf::from("absent.json"));
+        phone.settings = Settings { default_clone_dir: Some(r"C:\dev".into()), ..Default::default() };
+        let dir = RepoDirectory { roots: vec![r"C:\dev".into(), r"D:\sources".into()], ..Default::default() };
         let entries: Vec<Entry> = (0..9)
             .map(|i| {
                 let path = PathBuf::from(format!(r"C:\p{}\depot{i}", i % 8));
@@ -1197,14 +1225,14 @@ mod tests {
                 Entry { repo, state: None, job: None, color: None, slow: false }
             })
             .collect();
-        let add = phone.add_act(&entries);
+        let add = phone.add_act(&entries, &dir);
         assert_eq!(add.id, "ajouter");
         let spec = add.input.as_ref().and_then(|i| i.folder.clone()).expect("un sélecteur de dossiers");
         assert_eq!(spec.want, FOLDER_REPO);
         let places: Vec<&str> = spec.places.iter().map(|p| p.path.as_str()).collect();
         assert_eq!(places, [r"C:\dev", r"D:\sources", r"C:\p0", r"C:\p1", r"C:\p2", r"C:\p3", r"C:\p4", r"C:\p5"]);
         assert_eq!(spec.known.len(), 9);
-        let s = liste::home(&[], false, Some(add));
+        let s = liste::home(&[], None, Some(add));
         assert!(s.action_ids().contains("ajouter"), "aussi en bouton quand la liste est vide : {s:?}");
     }
 
@@ -1358,63 +1386,53 @@ mod tests {
         let settings = Settings { recent_repos: vec![repo.to_path_buf()], ..Default::default() };
         let file = profile.join("settings.json");
         std::fs::write(&file, serde_json::to_vec(&settings).unwrap()).unwrap();
-        Phone::new(file, profile.join("repos-cache.json"))
+        Phone::new(file)
     }
 
-    /// Le profil de DragonTree où `repo` n'est que dans la liste de son dernier scan, sous son dossier parent analysé.
+    /// Le profil de DragonTree où `repo` n'est que sous son dossier parent analysé (dans la liste de son dernier scan,
+    /// qu'il lit au démarrage avant de scanner de nouveau).
     fn phone_scanning(profile: &Path, repo: &Path) -> Phone {
         std::fs::create_dir_all(profile).unwrap();
         let file = profile.join("settings.json");
         let settings = Settings { scan_roots: vec![repo.parent().unwrap().to_path_buf()], ..Default::default() };
         std::fs::write(&file, serde_json::to_vec(&settings).unwrap()).unwrap();
-        let found = FoundRepo {
+        let found = dragontree_git::discovery::FoundRepo {
             path: repo.to_path_buf(),
             name: liste::repo_name(repo),
             root: repo.parent().unwrap().to_path_buf(),
             kind: dragontree_git::discovery::RepoKind::Normal,
         };
         std::fs::write(profile.join("repos-cache.json"), serde_json::to_vec(&[found]).unwrap()).unwrap();
-        Phone::new(file, profile.join("repos-cache.json"))
+        Phone::new(file)
     }
 
-    /// Les réglages et la liste du scan sont relus quand ils changent ; un fichier illisible (DragonTree en train de
-    /// le remplacer) ne vide pas la liste et sera relu.
+    /// Ses réglages d'affichage sont relus quand ils changent ; un fichier illisible (DragonTree en train de le
+    /// remplacer) ne les perd pas et sera relu.
     #[test]
-    fn a_bad_read_of_the_settings_keeps_the_list_and_is_retried() {
+    fn a_bad_read_of_the_settings_keeps_them_and_is_retried() {
         let dir = std::env::temp_dir().join(format!("suite-dragontree-reglages-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let (file, scan) = (dir.join("settings.json"), dir.join("repos-cache.json"));
-        let write = |recent: &str| {
-            let s = Settings { recent_repos: vec![recent.into()], ..Default::default() };
+        let file = dir.join("settings.json");
+        let write = |topological_order: bool| {
+            let s = Settings { topological_order, show_tags: false, ..Default::default() };
             std::fs::write(&file, serde_json::to_vec(&s).unwrap()).unwrap();
         };
-        let mut phone = Phone::new(file.clone(), scan.clone());
+        let mut phone = Phone::new(file.clone());
         let update = |phone: &mut Phone| {
             phone.checked = None;
             phone.update();
             std::thread::sleep(Duration::from_millis(20));
         };
-        write(r"C:\dev\a");
-        let found = FoundRepo {
-            path: r"C:\dev\b".into(),
-            name: "b".into(),
-            root: r"C:\dev".into(),
-            kind: dragontree_git::discovery::RepoKind::Normal,
-        };
-        std::fs::write(&scan, serde_json::to_vec(&[found]).unwrap()).unwrap();
+        write(true);
         update(&mut phone);
-        assert_eq!((phone.settings.recent_repos.len(), phone.found.len()), (1, 1));
+        assert!(phone.settings.topological_order && !phone.settings.show_tags);
         std::fs::write(&file, b"{ en cours d'ecriture").unwrap();
-        std::fs::write(&scan, b"[").unwrap();
         update(&mut phone);
-        assert_eq!(phone.settings.recent_repos, [PathBuf::from(r"C:\dev\a")], "gardée");
-        assert_eq!(phone.found.len(), 1, "gardée");
-        write(r"C:\dev\c");
-        std::fs::remove_file(&scan).unwrap();
+        assert!(phone.settings.topological_order && !phone.settings.show_tags, "gardés");
+        write(false);
         update(&mut phone);
-        assert_eq!(phone.settings.recent_repos, [PathBuf::from(r"C:\dev\c")], "relue");
-        assert!(phone.found.is_empty(), "plus de scan");
+        assert!(!phone.settings.topological_order, "relus");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1683,6 +1701,170 @@ mod tests {
         None
     }
 
+    /// La ligne du dépôt `key` dans la liste.
+    fn row_in(home: &Screen, key: &str) -> Option<suite_sdk::mobile::ui::Row> {
+        rows(home).into_iter().find(|r| r.key == key).cloned()
+    }
+
+    /// Le défaut du 28/10 : une lecture ratée restait « Lecture… » sans dire pourquoi, et un dépôt regardé n'était
+    /// relu que toutes les 20 s. L'erreur de DragonTree se dit dans la liste et sur l'écran du dépôt (à la place de
+    /// « Lecture… », ou en tête quand l'écran montre sa lecture d'avant) ; le dépôt regardé est relu dès qu'il change
+    /// sur le disque, et plus quand le téléphone ne le regarde plus.
+    #[test]
+    fn a_read_error_of_dragontree_is_said_and_the_watched_repo_follows_the_disk() {
+        let Ok(git) = Git::discover() else { return };
+        let dir = std::env::temp_dir().join(format!("suite-dragontree-erreurs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let repo = dir.join("depot");
+        new_repo(&git, &repo);
+        // Un index illisible : DragonTree ouvre le dépôt, mais ne peut pas en lire l'état.
+        let index = repo.join(".git").join("index");
+        let index_was = std::fs::read(&index).unwrap();
+        std::fs::write(&index, "illisible").unwrap();
+        let profile = dir.join("profil");
+        let mut phone = phone_for(&profile, &repo);
+        let mut h = dragontree(&profile);
+        let key = repo_key(&repo);
+        let base = format!("depot/{key}");
+        let s = wait_screen(&mut h, &mut phone, &base, "n'a pas pu lire l'état");
+        let text = format!("{s:?}");
+        assert!(text.contains("« Actualiser » relance la lecture") && !text.contains("Lecture du dépôt"), "{text}");
+        assert!(s.blocks.iter().any(|b| matches!(b, Block::Note { tone: Tone::Danger, .. })), "{s:?}");
+        // Même longtemps après : pas de « lecture longue », l'erreur est connue.
+        phone.since.insert(key.clone(), Instant::now().checked_sub(SLOW_AFTER * 2).expect("un PC allumé"));
+        let s = phone.screen(h.state_mut(), &base).unwrap();
+        assert!(!format!("{s:?}").contains("très gros"), "{s:?}");
+        let row = row_in(&phone.screen(h.state_mut(), "").unwrap(), &key).expect("dans la liste");
+        assert!(row.subtitle.starts_with("Lecture de l'état impossible : "), "{row:?}");
+        assert_eq!(row.tone, Some(Tone::Danger));
+
+        // Réparé, puis « Actualiser » : lu.
+        std::fs::write(&index, &index_was).unwrap();
+        phone.action(h.state_mut(), &base, "actualiser", None).unwrap();
+        let s = wait_screen(&mut h, &mut phone, &base, "lisez-moi.txt");
+        assert!(!format!("{s:?}").contains("n'a pas pu"), "{s:?}");
+        // Regardé depuis le téléphone, l'onglet de fond est relu dès que le dépôt change sur le disque.
+        assert!(h.state().active_repo_dir().is_none(), "onglet de fond");
+        std::fs::write(repo.join("neuf.txt"), "neuf\n").unwrap();
+        let s = wait_screen(&mut h, &mut phone, &base, "neuf.txt");
+        assert!(format!("{s:?}").contains("neuf.txt"), "relu sans « Actualiser » : {s:?}");
+        // Une lecture ratée après une bonne : en tête, l'écran montre la lecture d'avant.
+        let head = repo.join(".git").join("HEAD");
+        let head_was = std::fs::read(&head).unwrap();
+        std::fs::write(&head, "illisible\n").unwrap();
+        let s = wait_screen(&mut h, &mut phone, &base, "n'a pas pu relire les branches");
+        assert!(
+            matches!(&s.blocks[0], Block::Note { tone: Tone::Warn, text, .. } if text.contains("lecture d'avant")),
+            "{s:?}"
+        );
+        assert!(format!("{s:?}").contains("lisez-moi.txt"), "la lecture d'avant : {s:?}");
+        std::fs::write(&head, &head_was).unwrap();
+        let s = wait_gone(&mut h, &mut phone, &base, "n'a pas pu");
+        assert!(!format!("{s:?}").contains("n'a pas pu"), "relu, réparé : {s:?}");
+
+        // Plus regardé (aucun écran demandé depuis 3 s) : plus relu, il attend de nouveau qu'on le regarde.
+        phone.focus = Instant::now().checked_sub(FOCUS_FOR * 2);
+        phone.after_logic(h.state_mut());
+        assert!(phone.focus.is_none());
+        std::fs::write(repo.join("plus-regarde.txt"), "rien\n").unwrap();
+        let deadline = Instant::now() + Duration::from_millis(1500);
+        while Instant::now() < deadline {
+            h.step();
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let status = h.state().repo_tab(&repo).and_then(|t| t.status.clone()).unwrap();
+        assert!(!status.entries.iter().any(|e| e.path == "plus-regarde.txt"), "plus regardé : pas relu");
+        drop(h);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Eyrie où DragonTree est masqué : sa logique tourne à chaque image (`visible` faux), jamais son `ui`.
+    struct HiddenInEyrie {
+        module: Box<dyn suite_sdk::Module>,
+        host: suite_sdk::Host,
+    }
+
+    impl eframe::App for HiddenInEyrie {
+        fn logic(&mut self, ctx: &eframe::egui::Context, frame: &mut eframe::Frame) {
+            let mut cx = suite_sdk::Cx { host: &self.host, frame, active: false, visible: false };
+            self.module.logic(ctx, &mut cx);
+        }
+
+        fn ui(&mut self, _ui: &mut eframe::egui::Ui, _frame: &mut eframe::Frame) {}
+    }
+
+    impl HiddenInEyrie {
+        fn screen(&mut self, path: &str) -> Option<Screen> {
+            let mut frame = eframe::Frame::_new_kittest();
+            let mut cx = suite_sdk::Cx { host: &self.host, frame: &mut frame, active: false, visible: false };
+            self.module.mobile_screen(path, &mut cx)
+        }
+    }
+
+    /// Le défaut du 28/10 : masqué dans Eyrie, DragonTree ne relisait rien et n'enregistrait rien (`ui` seul le
+    /// faisait). Le module le fait vivre : l'onglet ouvert pour le téléphone est enregistré dans ses réglages, et le
+    /// dépôt regardé est relu dès qu'il change sur le disque.
+    #[test]
+    fn hidden_in_eyrie_dragontree_still_follows_the_watched_repo() {
+        let Ok(git) = Git::discover() else { return };
+        let dir = std::env::temp_dir().join(format!("suite-dragontree-masque-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let repo = dir.join("depot");
+        new_repo(&git, &repo);
+        let profile = dir.join("profil");
+        let file = profile.join("settings.json");
+        drop(phone_for(&profile, &repo));
+        dragontree_forges::secrets::use_vaults(
+            Arc::new(suite_accounts::MemoryVault::default()),
+            Arc::new(suite_accounts::MemoryVault::default()),
+        );
+        let (suite, trial) = (dir.join("suite"), profile.clone());
+        let mut h = Harness::builder().with_size(eframe::egui::vec2(800.0, 600.0)).build_eframe(move |cc| {
+            let host = suite_sdk::Host::new(cc.egui_ctx.clone(), suite, suite_sdk::theme::ThemeChoice::Graphite);
+            host.set_accounts_dir(trial.join("comptes"));
+            let bcx = suite_sdk::BuildCx { cc, host: host.clone(), data: suite_sdk::DataMode::Trial(trial) };
+            let module = crate::build(&bcx).unwrap_or_else(|e| panic!("{e}"));
+            HiddenInEyrie { module, host }
+        });
+        let base = format!("depot/{}", repo_key(&repo));
+        let saved = || {
+            let s: Option<Settings> = std::fs::read(&file).ok().and_then(|b| serde_json::from_slice(&b).ok());
+            s.is_some_and(|s| s.open_tabs.iter().any(|p| path_key(p) == path_key(&repo)))
+        };
+        let wait = |h: &mut Harness<'static, HiddenInEyrie>, what: &str, cond: &dyn Fn(&Screen) -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(40);
+            loop {
+                h.step();
+                let s = h.state_mut().screen(&base).expect("écran du dépôt");
+                if cond(&s) {
+                    return;
+                }
+                assert!(Instant::now() < deadline, "délai dépassé : {what} : {s:?}");
+                std::thread::sleep(Duration::from_millis(25));
+            }
+        };
+        wait(&mut h, "dépôt lu", &|s| format!("{s:?}").contains("lisez-moi.txt"));
+        assert!(saved(), "l'onglet ouvert pour le téléphone est enregistré, DragonTree masqué");
+        std::fs::write(repo.join("neuf.txt"), "neuf\n").unwrap();
+        wait(&mut h, "neuf.txt relu", &|s| format!("{s:?}").contains("neuf.txt"));
+        drop(h);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Fait tourner DragonTree jusqu'à ce que l'écran `path` ne contienne plus `text`.
+    fn wait_gone(h: &mut H, phone: &mut Phone, path: &str, text: &str) -> Screen {
+        let deadline = Instant::now() + Duration::from_secs(40);
+        loop {
+            h.step();
+            phone.after_logic(h.state_mut());
+            let s = phone.screen(h.state_mut(), path).expect("écran");
+            if !format!("{s:?}").contains(text) || Instant::now() > deadline {
+                return s;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
     /// Un dépôt que le téléphone a ouvert pour le lire reste dans son bandeau ; son onglet refermé sur le PC, il n'est
     /// plus « au téléphone » : rouvert ensuite par l'utilisateur, il est parmi les dépôts ouverts sur le PC, même en
     /// fond.
@@ -1700,7 +1882,7 @@ mod tests {
         std::fs::create_dir_all(&profile).unwrap();
         let settings = Settings { recent_repos: vec![repo.clone(), other.clone()], ..Default::default() };
         std::fs::write(profile.join("settings.json"), serde_json::to_vec(&settings).unwrap()).unwrap();
-        let mut phone = Phone::new(profile.join("settings.json"), profile.join("repos-cache.json"));
+        let mut phone = Phone::new(profile.join("settings.json"));
         let mut h = dragontree(&profile);
         let key = repo_key(&repo);
         let band = |h: &mut H, phone: &mut Phone| band_of(&phone.screen(h.state_mut(), "").unwrap(), &key);
@@ -1820,8 +2002,8 @@ mod tests {
         let d = wait_screen(&mut h, &mut phone, &renamed, "Premier commit");
         assert_eq!(d.title, "autre2", "{d:?}");
 
-        // DragonTree relit ses branches (toutes les 20 s pour un dépôt regardé) : tant qu'elles n'ont pas bougé,
-        // l'historique lu à part ne l'est pas de nouveau ; un commit de plus, il l'est.
+        // DragonTree relit ses branches (à chaque changement sur le disque d'un dépôt regardé) : tant qu'elles n'ont
+        // pas bougé, l'historique lu à part ne l'est pas de nouveau ; un commit de plus, il l'est.
         let log = format!("log:HEAD:{}", depot::PAGE);
         let read_at = |phone: &Phone| {
             let all = lock(&phone.reads);

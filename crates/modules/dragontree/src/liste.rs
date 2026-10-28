@@ -3,20 +3,22 @@
 //! - **Ouverts sur le PC** : l'onglet affiché, puis les autres onglets de DragonTree (sauf ceux que le téléphone a
 //!   ouverts lui-même pour lire un dépôt : la liste ne bouge pas parce qu'on a regardé un dépôt) ;
 //! - **Épinglés** : ses favoris ;
-//! - un bandeau par **dossier racine** analysé (ceux de ses réglages, et la liste de son dernier scan), plié au-delà
-//!   de 15 dépôts ;
+//! - un bandeau par **dossier racine** analysé (les dépôts que son scan a trouvés dessous), plié au-delà de 15 dépôts ;
 //! - **Récents** : ceux qui ne sont sous aucune racine.
 //!
 //! Chaque dépôt n'y est qu'une fois, dans le premier bandeau qui le prend ; ceux que DragonTree masque n'y sont pas,
 //! sauf ouverts ou épinglés. Deux dépôts du même nom sont distingués par leur dossier parent (« Ozmo · Ozmo2 »).
-//! Ce que DragonTree a lu d'un dépôt ouvert sert son état ; pour les autres, un relevé rapide fait à part.
+//! La liste est celle que DragonTree a en mémoire (`DragonTreeApp::repo_directory`) : ce qu'il vient d'ouvrir y est,
+//! même masqué. Ce que DragonTree a lu d'un dépôt ouvert sert son état ; pour les autres, un relevé rapide fait à part,
+//! et en attendant celui de sa liste.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use dragontree_app::settings::{Settings, path_key};
+use dragontree_app::repo_list::RepoDirectory;
+use dragontree_app::settings::path_key;
 use dragontree_git::discovery::{FoundRepo, RepoKind};
 use suite_sdk::mobile::ui::{Act, Band, Row, Screen, Tone};
 
@@ -115,26 +117,22 @@ pub fn titles(paths: &[&Path]) -> Vec<String> {
     out
 }
 
-/// Les dépôts de DragonTree : `settings` (ses onglets, favoris, récents, dépôts masqués, racines), `found` (la liste
-/// de son dernier scan), `added` (ajoutés depuis le téléphone, le plus récent en tête), l'onglet affiché `active`,
-/// et `open` : le dépôt est ouvert dans un onglet de DragonTree par l'utilisateur (pas par le téléphone).
-pub fn list(
-    settings: &Settings,
-    found: &[FoundRepo],
-    added: &[PathBuf],
-    active: Option<&Path>,
-    open: impl Fn(&Path) -> bool,
-) -> Vec<Listed> {
+/// Les dépôts de DragonTree, d'après ce qu'il en sait (`dir` : ses onglets et l'affiché, favoris, récents, dépôts
+/// masqués, racines et dépôts trouvés dessous) ; `open` : le dépôt est ouvert dans un onglet de DragonTree par
+/// l'utilisateur (pas par le téléphone).
+pub fn list(dir: &RepoDirectory, open: impl Fn(&Path) -> bool) -> Vec<Listed> {
     let key_set = |paths: &[PathBuf]| paths.iter().map(|p| path_key(p)).collect::<HashSet<String>>();
-    let hidden = key_set(&settings.hidden_repos);
-    let favorites = key_set(&settings.favorites);
+    let hidden = key_set(&dir.hidden);
+    let favorites = key_set(&dir.favorites);
+    let active = dir.active.as_deref();
     let active_key = active.map(path_key);
-    let found_by_key: HashMap<String, &FoundRepo> = found.iter().map(|f| (path_key(&f.path), f)).collect();
+    let found: Vec<&FoundRepo> = dir.found.iter().map(|f| &f.repo).collect();
+    let found_by_key: HashMap<String, &FoundRepo> = found.iter().map(|f| (path_key(&f.path), *f)).collect();
     // Les racines dans l'ordre des réglages. Comme dans la barre latérale de DragonTree, un dépôt du scan sous une
-    // racine retirée depuis (DragonTree ne réécrit pas sa liste quand il n'en reste aucune) n'y est plus.
-    let roots: &[PathBuf] = &settings.scan_roots;
+    // racine retirée depuis (il reste dans sa liste jusqu'à la fin du scan suivant) n'y est plus.
+    let roots: &[PathBuf] = &dir.roots;
     let in_roots = |root: &Path| roots.iter().any(|r| path_key(r) == path_key(root));
-    let mut scanned: Vec<&FoundRepo> = found.iter().filter(|f| in_roots(&f.root)).collect();
+    let mut scanned: Vec<&FoundRepo> = found.iter().copied().filter(|f| in_roots(&f.root)).collect();
     scanned.sort_by_key(|f| {
         let root = roots.iter().position(|r| path_key(r) == path_key(&f.root)).unwrap_or(usize::MAX);
         (root, f.relative_parent().to_lowercase(), f.name.to_lowercase())
@@ -142,11 +140,10 @@ pub fn list(
     let candidates = active
         .map(Path::to_path_buf)
         .into_iter()
-        .chain(settings.open_tabs.iter().cloned())
-        .chain(settings.favorites.iter().cloned())
+        .chain(dir.tabs.iter().cloned())
+        .chain(dir.favorites.iter().cloned())
         .chain(scanned.iter().map(|f| f.path.clone()))
-        .chain(added.iter().cloned())
-        .chain(settings.recent_repos.iter().cloned());
+        .chain(dir.recent.iter().cloned());
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for path in candidates {
@@ -306,8 +303,8 @@ fn row_of(e: &Entry) -> Row {
     let mut row = Row::new(&e.repo.title).key(&key).glyph(kind_glyph(e.repo.kind)).open(format!("depot/{key}"));
     row = match &e.state {
         Some(st) => row.subtitle(state_text(st)).tone(state_tone(st)),
-        // Sa lecture ratée ne se dit que sur le PC.
-        None if e.slow => row.subtitle("lecture… (voir DragonTree sur le PC)").tone(Tone::Warn),
+        // Toujours pas lu, sans erreur (une lecture ratée a la sienne, dans `state`) : une lecture longue.
+        None if e.slow => row.subtitle("lecture longue… (voir DragonTree sur le PC)").tone(Tone::Warn),
         None => row.subtitle("lecture…"),
     };
     if let Some(c) = e.color {
@@ -322,14 +319,14 @@ fn row_of(e: &Entry) -> Row {
     row.act(Act::new(format!("pc:{key}"), "Afficher dans DragonTree sur le PC").glyph("🖥️"))
 }
 
-/// L'accueil : les dépôts par bandeau ; `sweeping` : l'état de ceux que DragonTree n'a pas ouverts est en cours de
-/// relevé ; `add` : l'action « Ajouter un dépôt existant… ».
-pub fn home(entries: &[Entry], sweeping: bool, add: Option<Act>) -> Screen {
+/// L'accueil : les dépôts par bandeau ; `busy` : ce qui est en cours sur la liste (analyse des dossiers racines,
+/// relevé de l'état des dépôts), en sous-titre ; `add` : l'action « Ajouter un dépôt existant… ».
+pub fn home(entries: &[Entry], busy: Option<&str>, add: Option<Act>) -> Screen {
     let mut s = Screen::new("DragonTree").search("Chercher un dépôt");
     s.acts.extend(add.clone());
     s.acts.push(Act::new("actualiser", "Actualiser").glyph("🔄"));
-    if sweeping {
-        s.subtitle = "Relevé de l'état des dépôts…".into();
+    if let Some(b) = busy {
+        s.subtitle = b.into();
     }
     let mut jobs: Vec<(&Entry, &Job)> = entries
         .iter()
@@ -361,6 +358,7 @@ pub fn home(entries: &[Entry], sweeping: bool, add: Option<Act>) -> Screen {
 
 #[cfg(test)]
 mod tests {
+    use dragontree_app::repo_list::ListedRepo;
     use suite_sdk::mobile::ui::{Block, Fold};
 
     use super::*;
@@ -394,19 +392,6 @@ mod tests {
     /// récents hors racines ; chacun une fois ; les masqués absents ; les homonymes distingués par leur parent.
     #[test]
     fn the_list_has_every_repo_of_dragontree_once_and_by_band() {
-        let settings = Settings {
-            open_tabs: vec![r"C:\dev\Ozmo2\Ozmo".into(), r"C:\dev\diapaz".into()],
-            favorites: vec![r"c:\dev\XIMI\".into()],
-            recent_repos: vec![
-                r"C:\dev\ximi".into(),
-                r"C:\ailleurs\walle".into(),
-                r"C:\dev\cache".into(),
-                r"C:\vieux\garde".into(),
-            ],
-            hidden_repos: vec![r"C:\dev\cache".into()],
-            scan_roots: vec![r"C:\dev".into()],
-            ..Default::default()
-        };
         let scan = [
             found(r"C:\dev", "ximi"),
             found(r"C:\dev", r"Ozmo2\Ozmo"),
@@ -414,14 +399,29 @@ mod tests {
             found(r"C:\dev", "diapaz"),
             found(r"C:\dev", "cache"),
             found(r"C:\dev", "cockpit"),
-            // Sous une racine retirée des réglages : plus dans la liste, sauf récent.
+            // Sous une racine retirée des réglages, pas encore rescannée : plus dans la liste, sauf récent.
             found(r"C:\vieux", "oublie"),
             found(r"C:\vieux", "garde"),
         ];
-        let added = [PathBuf::from(r"D:\neuf")];
+        let dir = RepoDirectory {
+            tabs: vec![r"C:\dev\walle".into(), r"C:\dev\Ozmo2\Ozmo".into(), r"C:\dev\diapaz".into()],
+            active: Some(r"C:\dev\walle".into()),
+            favorites: vec![r"c:\dev\XIMI\".into()],
+            recent: vec![
+                r"D:\neuf".into(),
+                r"C:\dev\ximi".into(),
+                r"C:\ailleurs\walle".into(),
+                r"C:\dev\cache".into(),
+                r"C:\vieux\garde".into(),
+            ],
+            hidden: vec![r"C:\dev\cache".into()],
+            roots: vec![r"C:\dev".into()],
+            found: scan.into_iter().map(|repo| ListedRepo { repo, status: None, head: None }).collect(),
+            ..Default::default()
+        };
         // Diapaz est ouvert par le téléphone seulement : il reste dans sa racine.
         let open = |p: &Path| path_key(p) == path_key(Path::new(r"C:\dev\Ozmo2\Ozmo"));
-        let l = list(&settings, &scan, &added, Some(Path::new(r"C:\dev\walle")), open);
+        let l = list(&dir, open);
         let got: Vec<(&str, Group, bool)> = l.iter().map(|l| (l.title.as_str(), l.group.clone(), l.active)).collect();
         let root = Group::Root(r"C:\dev".into());
         assert_eq!(
@@ -466,8 +466,9 @@ mod tests {
             Group::Recent,
             Some(RepoState { error: Some("dossier introuvable".into()), ..Default::default() }),
         );
-        let s = home(&[shown, busy, broken], false, None);
+        let s = home(&[shown, busy, broken], Some("Relevé de l'état des dépôts…"), None);
         assert!(!s.search.is_empty(), "une recherche");
+        assert_eq!(s.subtitle, "Relevé de l'état des dépôts…");
         let bands: Vec<(&str, Fold)> = s
             .blocks
             .iter()
@@ -503,8 +504,8 @@ mod tests {
         assert!(push.confirm.is_some(), "push confirmé");
     }
 
-    /// Un onglet que DragonTree n'a toujours pas lu le dit dans la liste (sa lecture ratée ne se dit que sur le PC),
-    /// au lieu de « lecture… » sans fin.
+    /// Un onglet que DragonTree n'a toujours pas lu, sans erreur, le dit dans la liste au lieu de « lecture… » sans
+    /// fin ; une lecture ratée dit pourquoi.
     #[test]
     fn a_tab_dragontree_does_not_read_says_so() {
         let mut stuck = entry(r"C:\dev\ozmo", Group::Open, None);
@@ -512,7 +513,14 @@ mod tests {
         assert_eq!((row.subtitle.as_str(), row.tone), ("lecture…", None));
         stuck.slow = true;
         let row = row_of(&stuck);
-        assert_eq!((row.subtitle.as_str(), row.tone), ("lecture… (voir DragonTree sur le PC)", Some(Tone::Warn)));
+        assert_eq!(
+            (row.subtitle.as_str(), row.tone),
+            ("lecture longue… (voir DragonTree sur le PC)", Some(Tone::Warn))
+        );
+        let error = "Lecture de l'état impossible : index illisible";
+        stuck.state = Some(RepoState { error: Some(error.into()), ..Default::default() });
+        let row = row_of(&stuck);
+        assert_eq!((row.subtitle.as_str(), row.tone), (error, Some(Tone::Danger)));
     }
 
     #[test]
@@ -520,7 +528,7 @@ mod tests {
         let root = Group::Root(r"C:\dev".into());
         let entries: Vec<Entry> =
             (0..=FOLD_ABOVE).map(|i| entry(&format!(r"C:\dev\d{i}"), root.clone(), None)).collect();
-        let s = home(&entries, false, None);
+        let s = home(&entries, None, None);
         assert!(matches!(&s.blocks[0], Block::Section { fold: Fold::Closed, aside, .. } if aside == "16"));
     }
 }
