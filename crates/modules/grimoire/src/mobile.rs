@@ -1,7 +1,8 @@
 //! Grimoire sur le téléphone, en lecture : les profils de Claude Code (compte connecté), les limites relevées par son
 //! relais (5 h et semaine par compte, comme Gringotts ; quand Gringotts tourne, une ligne y mène au lieu de les montrer
 //! deux fois), les serveurs MCP du profil actif hors projet (gérés, utilisateur, plugins), dans un bandeau plié ; et
-//! « Ouvrir sur le PC » sur un profil ou l'onglet MCP, par le canal des demandes de Grimoire (`instance::Request`).
+//! « Ouvrir sur le PC » sur un profil, ou l'onglet MCP (au menu de son bandeau, qui se voit plié), par le canal des
+//! demandes de Grimoire (`instance::Request`).
 //!
 //! Tout se lit par la bibliothèque de Grimoire, sans toucher à l'application. `.claude.json` et la configuration
 //! peuvent être longs à lire : relus dans un fil, au plus toutes les 10 s tant que le téléphone regarde.
@@ -165,7 +166,14 @@ pub fn home(data: Option<&Data>, now: i64, gringotts: bool) -> Screen {
         }
     }
 
-    s.band(Band::new("mcp", "Serveurs MCP").aside(d.mcp.len().to_string()).glyph("🔌").open(false));
+    // L'onglet MCP du PC s'ouvre du menu du bandeau : à portée même plié.
+    s.band(
+        Band::new("mcp", "Serveurs MCP")
+            .aside(d.mcp.len().to_string())
+            .glyph("🔌")
+            .open(false)
+            .act(Act::new("mcp", "Ouvrir l'onglet MCP sur le PC").glyph("🖥️")),
+    );
     if d.mcp.is_empty() {
         s.empty("Aucun serveur MCP hors projet.");
     }
@@ -188,7 +196,6 @@ pub fn home(data: Option<&Data>, now: i64, gringotts: bool) -> Screen {
                 .glyph("🔌"),
         );
     }
-    s.buttons(vec![Act::new("mcp", "Ouvrir l'onglet MCP sur le PC").glyph("🖥️")]);
     s
 }
 
@@ -360,6 +367,13 @@ mod tests {
         );
         let ids: Vec<String> = s.action_ids().into_iter().collect();
         assert_eq!(ids, ["mcp", "ouvrir:defaut", "ouvrir:equipe"]);
+        // « Ouvrir l'onglet MCP » est au menu du bandeau MCP, plié : plus de bouton caché sous ses serveurs.
+        let mcp = s.blocks.iter().find_map(|b| match b {
+            Block::Section { key, acts, .. } if key == "mcp" => Some(acts),
+            _ => None,
+        });
+        assert_eq!(mcp.map(|a| a.iter().map(|a| a.id.as_str()).collect::<Vec<_>>()), Some(vec!["mcp"]));
+        assert!(!s.blocks.iter().any(|b| matches!(b, Block::Buttons { .. })));
 
         let loading = home(None, now, false);
         assert!(loading.action_ids().is_empty());
