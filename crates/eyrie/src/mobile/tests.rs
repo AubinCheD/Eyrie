@@ -678,6 +678,22 @@ fn eyrie_started_from_a_phone_says_so() {
     assert!(s.core.notes.toasts.iter().any(|(n, _)| n.title.ends_with(&text)), "bulle");
 }
 
+/// À côté de « Démarrer Eyrie depuis le téléphone », la page dit que seuls les téléphones qui ont « Agir » le peuvent
+/// (les autres ne reçoivent pas de clé de démarrage).
+#[test]
+fn the_phones_page_says_only_phones_with_act_can_start_eyrie() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = suite();
+    {
+        let s = h.state_mut();
+        s.core.tailnet.os = Arc::new(crate::veille::fake::Fake::default());
+        s.core.act(crate::app::Action::OpenSettings(crate::settings::Page::Phones));
+    }
+    h.run_steps(3);
+    assert!(h.query_by_label("Démarrer Eyrie depuis le téléphone").is_some());
+    assert!(h.query_by_label("Seuls les téléphones qui ont « Agir » peuvent démarrer Eyrie.").is_some());
+}
+
 /// Le veilleur inscrit à l'ouverture de session mais désactivé dans le Gestionnaire des tâches (onglet Démarrage) :
 /// la page Téléphones le dit, au lieu de « Lancé à chaque ouverture de session Windows. ». Réactivé, elle le voit.
 #[test]

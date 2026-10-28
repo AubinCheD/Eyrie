@@ -317,14 +317,16 @@ fn standby_failure(state: &mut PageState, node: Option<&Path>) -> Option<veille:
 fn standby(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui) {
     let p = suite.core.palette();
     ui.checkbox(&mut suite.core.st.mobile.wake, tr("Démarrer Eyrie depuis le téléphone")).on_hover_text(tr(
-        "Le veilleur du PC garde Eyrie joignable sur le tailnet quand elle est fermée : un téléphone appairé peut alors la démarrer (elle s'ouvre réduite). Le PC doit être allumé, éveillé, et la session Windows ouverte (verrouillée, ça va).",
+        "Le veilleur du PC garde Eyrie joignable sur le tailnet quand elle est fermée : un téléphone appairé qui a « Agir » peut alors la démarrer (elle s'ouvre réduite). Le PC doit être allumé, éveillé, et la session Windows ouverte (verrouillée, ça va).",
     ));
-    if !suite.core.st.mobile.wake {
-        return;
-    }
     let line = |ui: &mut egui::Ui, text: &str, color| {
         ui.add(egui::Label::new(RichText::new(text).color(color)).wrap());
     };
+    // Eyrie ne donne la clé de démarrage qu'aux téléphones qui peuvent agir, et le veilleur refuse les autres.
+    line(ui, tr("Seuls les téléphones qui ont « Agir » peuvent démarrer Eyrie."), p.text_dim);
+    if !suite.core.st.mobile.wake {
+        return;
+    }
     if !suite.core.st.tailnet.enabled {
         line(ui, tr("Tailscale est coupé, le veilleur aussi : activez-le dans la page Tailscale."), p.warn);
         return;
