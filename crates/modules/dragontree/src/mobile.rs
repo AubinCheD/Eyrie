@@ -321,11 +321,12 @@ fn read(repo: &Repo, what: &Load, known: Option<&(CommitInfo, Vec<FileChange>)>,
             r.diffs.insert(format!("c:{id}:{f}"), res);
         }
         Load::Log { rev, count, topo, .. } => {
-            // `rev` vient des branches lues par DragonTree (`HEAD`, `refs/…`) : jamais une option de git.
+            // `rev` vient des branches lues par DragonTree (`HEAD`, `refs/…`) : jamais une option de git. Un commit de
+            // plus que demandé dit s'il y a une suite.
             let opts = LogOptions {
                 scope: LogScope::Revs(vec![rev.clone()]),
                 order: if *topo { LogOrder::Topo } else { LogOrder::Date },
-                max_count: Some(*count),
+                max_count: Some(*count + 1),
                 ..Default::default()
             };
             let res = repo.log(&opts, &CancelToken::new()).map(LogPage::of).map_err(|e| e.to_string());
@@ -419,6 +420,14 @@ fn check_repo_dir(dir: &Path) -> Result<(), String> {
 /// Ce qu'un fichier lu de DragonTree (réglages, liste du scan) était quand il a été lu.
 fn stamp_of(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+/// Combien de commits d'un historique lu à part montrer, et s'il y en a d'autres : `read` commits lus pour `asked`
+/// demandés (un de plus est lu, qui dit s'il y a une suite), `count` demandés maintenant (plus que `asked` : une
+/// lecture plus longue est en cours, la suite arrive). À 2 000, la suite est dite sur le PC.
+fn page_of(read: usize, asked: usize, count: usize) -> (usize, bool) {
+    let shown = read.min(asked).min(count);
+    (shown, read > shown)
 }
 
 /// Un graphe découpé en lignes : le graphe, combien de lignes, et leurs parts.
@@ -731,7 +740,12 @@ impl Phone {
             }
             r.commits.extend(fresh.commits);
             r.diffs.extend(fresh.diffs);
-            r.logs.extend(fresh.logs);
+            // Deux lectures du même historique (« plus » touché pendant une lecture) : la plus longue gagne.
+            for (rev, (count, page)) in fresh.logs {
+                if r.logs.get(&rev).is_none_or(|(had, _)| *had <= count) {
+                    r.logs.insert(rev, (count, page));
+                }
+            }
             r.pending.extend(fresh.pending);
             if fresh.tips.is_some() {
                 r.tips = fresh.tips;
@@ -779,13 +793,11 @@ impl Phone {
             (asked, Ok(page)) => (asked, page),
             (_, Err(e)) => return Some(Err(e)),
         };
-        let cells = self.cells(path, &page.graph, page.commits.len());
+        let (shown, more) = page_of(page.commits.len(), asked, count);
+        let cells = self.cells(path, &page.graph, shown);
         // Le premier commit de l'historique de HEAD est HEAD, même avant que DragonTree ait lu les branches.
         let head = if rev == "HEAD" { page.commits.first().map(|c| c.id) } else { None };
         let rows = historique::rows(&page, &cells, t.refs.as_deref(), &Marks { head, ..Default::default() });
-        // Autant de commits que demandé : il y en a peut-être d'autres ; moins (une lecture plus longue en cours) :
-        // la suite arrive.
-        let more = page.commits.len() >= asked.min(count) && page.commits.len() < depot::PAGE_MAX;
         Some(Ok(LogView { rows, more, scope: String::new() }))
     }
 
@@ -1183,6 +1195,18 @@ mod tests {
         assert!(matches!(job_block(failed), Block::Note { progress: None, tone: Tone::Danger, .. }));
     }
 
+    /// Un historique est lu un commit plus loin que demandé : exactement 100 commits n'offrent pas un « plus » qui
+    /// n'ajoute rien ; à 2 000, la suite est dite sur le PC ; pendant une lecture plus longue, la suite reste offerte.
+    #[test]
+    fn a_history_page_knows_whether_more_commits_follow() {
+        assert_eq!(page_of(100, 100, 100), (100, false), "exactement 100 : rien de plus");
+        assert_eq!(page_of(101, 100, 100), (100, true));
+        assert_eq!(page_of(42, 100, 100), (42, false));
+        assert_eq!(page_of(101, 100, 200), (100, true), "la suite arrive");
+        assert_eq!(page_of(2001, 2000, 2000), (2000, true), "au-delà de 2 000 : sur le PC");
+        assert!(historique::more_row(2000, true).is_some_and(|r| r.tap.is_none() && r.title.contains("sur le PC")));
+    }
+
     /// DragonTree dans un profil d'essai, sans le coffre de Windows.
     fn dragontree(profile: &Path) -> H {
         dragontree_forges::secrets::use_vaults(
@@ -1339,6 +1363,67 @@ mod tests {
         sh(&["add", "."]);
         sh(&["commit", "-q", "-m", "Premier commit"]);
         std::fs::write(repo.join("lisez-moi.txt"), "un\ndeux\n").unwrap();
+    }
+
+    /// `n` commits vides de plus sur `main` (« Commit 0 »… « Commit n-1 »), d'un coup (`git fast-import`).
+    fn more_commits(git: &Git, repo: &Path, n: usize) {
+        use std::io::Write;
+        let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
+        let mut stream = String::new();
+        for i in 0..n {
+            let message = format!("Commit {i}");
+            let at = now + i as u64;
+            stream.push_str(&format!("commit refs/heads/main\ncommitter Essai <essai@exemple.org> {at} +0000\n"));
+            stream.push_str(&format!("data {}\n{message}\n", message.len()));
+            if i == 0 {
+                stream.push_str("from refs/heads/main^0\n");
+            }
+            stream.push('\n');
+        }
+        let mut child = std::process::Command::new(git.exe())
+            .args(["fast-import", "--quiet"])
+            .current_dir(repo)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(stream.as_bytes()).unwrap();
+        assert!(child.wait().unwrap().success(), "git fast-import");
+    }
+
+    /// L'historique par pages : 100 commits, puis « plus » en ajoute 100 (lus plus loin, à part), jusqu'au bout,
+    /// où il n'y a plus de « plus » ; une branche d'exactement 100 commits n'en offre pas un qui n'ajouterait rien.
+    #[test]
+    fn the_history_grows_by_pages_to_its_end() {
+        let Ok(git) = Git::discover() else { return };
+        let dir = std::env::temp_dir().join(format!("suite-dragontree-pages-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let repo = dir.join("depot");
+        new_repo(&git, &repo);
+        // « Premier commit », puis « Commit 0 » à « Commit 248 » : 250 ; `cent` en a 100.
+        more_commits(&git, &repo, 249);
+        sh(&git, &repo, &["branch", "cent", "main~150"]);
+
+        let profile = dir.join("profil");
+        let mut phone = phone_for(&profile, &repo);
+        let mut h = dragontree(&profile);
+        let base = format!("depot/{}", repo_key(&repo));
+        let path = format!("{base}/historique");
+        let commits = |s: &Screen| rows(s).iter().filter(|r| r.graph.is_some()).count();
+        let s = wait_screen(&mut h, &mut phone, &path, "\"Commit 248\"");
+        assert_eq!(commits(&s), depot::PAGE, "{s:?}");
+        assert!(s.action_ids().contains("plus"), "{s:?}");
+        for (last, shown, more) in [("\"Commit 49\"", 200, true), ("\"Premier commit\"", 250, false)] {
+            assert_eq!(phone.action(h.state_mut(), &path, "plus", None).unwrap(), (String::new(), false));
+            let s = wait_screen(&mut h, &mut phone, &path, last);
+            assert_eq!((commits(&s), s.action_ids().contains("plus")), (shown, more), "{s:?}");
+        }
+        let cent = format!("{base}/branche/{}", branches::branch_key("refs/heads/cent"));
+        let d = wait_screen(&mut h, &mut phone, &cent, "\"Premier commit\"");
+        assert_eq!(commits(&d), 100, "{d:?}");
+        assert!(!d.action_ids().contains("plus"), "exactement 100 : pas de « plus » vide : {d:?}");
+        drop(h);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Fait tourner DragonTree jusqu'à ce que l'écran `path` ait fini de lire ce qu'il montre (au plus 10 s).
