@@ -1,5 +1,6 @@
 //! Menagerie sur le téléphone : les services gérés (en marche ou non, leurs ports), les ports ouverts du poste (arrêter
-//! le processus), les conteneurs Docker (démarrer, arrêter, relancer, journal).
+//! le processus), les conteneurs Docker groupés par projet compose comme sur le PC (démarrer, arrêter, relancer,
+//! journal), chaque partie dans un bandeau pliable, et une recherche.
 //!
 //! Tout vient de ce que Menagerie expose publiquement : son état enregistré (`App::st`) et le dernier relevé de son
 //! moniteur (`App::monitor`). Chaque action passe par Menagerie, comme son bouton sur le PC : un service par
@@ -16,7 +17,7 @@ use menagerie::docker::{self, Container, Docker};
 use menagerie::monitor::Snapshot;
 use menagerie::persist::ManagedSpec;
 use menagerie::ports::{Category, Detected};
-use suite_sdk::mobile::ui::{Act, Row, Screen, Tone};
+use suite_sdk::mobile::ui::{Act, Band, Row, Screen, Tone};
 
 /// Un journal de conteneur est relu au plus toutes les 5 s tant qu'il est regardé.
 const LOGS_EVERY: Duration = Duration::from_secs(5);
@@ -24,6 +25,8 @@ const LOGS_EVERY: Duration = Duration::from_secs(5);
 const LOGS_MAX: usize = 12_000;
 /// Le résultat d'une action Docker reste affiché une minute dans l'accueil.
 const JOB_SHOWN: Duration = Duration::from_secs(60);
+/// Au-delà, le bandeau des ports ouverts est plié au départ.
+const PORTS_OPEN: usize = 6;
 
 /// Le libellé d'une action Docker.
 fn verb_label(verb: &str) -> Option<&'static str> {
@@ -91,8 +94,16 @@ fn job_of(name: &str, j: &DockerJob) -> Option<Job> {
     }
 }
 
-/// Les actions Docker récentes (lancées d'ici ou du PC), finies, de la plus ancienne à la plus récente.
-fn recent_jobs(app: &App) -> Vec<Job> {
+/// Les actions Docker de Menagerie, lancées d'ici ou du PC : les conteneurs qui en attendent la fin, et ce que les
+/// dernières ont donné (de la plus ancienne à la plus récente).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Jobs {
+    pub busy: HashSet<String>,
+    pub done: Vec<Job>,
+}
+
+fn jobs(app: &App) -> Jobs {
+    let busy = app.docker_jobs().iter().filter(|(_, j)| **j == DockerJob::Running).map(|(id, _)| id.clone()).collect();
     let mut done: Vec<(&Instant, Job)> = app
         .docker_jobs()
         .values()
@@ -104,10 +115,9 @@ fn recent_jobs(app: &App) -> Vec<Job> {
     done.sort_by_key(|(at, _)| **at);
     // Une action sur un projet compose finit pour tous ses conteneurs à la fois : dite une fois.
     done.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
-    done.into_iter().map(|(_, j)| j).collect()
+    Jobs { busy, done: done.into_iter().map(|(_, j)| j).collect() }
 }
 
-/// L'accueil ; `jobs` : les actions Docker récentes, par conteneur.
 /// Ce que Menagerie sait d'un service géré qu'il supervise : son état (« en cours », « planté »…).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Live {
@@ -132,24 +142,82 @@ fn service_acts(id: u64, name: &str, live: Option<&Live>) -> Vec<Act> {
     }
 }
 
+/// Une ligne de conteneur ; `busy` : une action de Menagerie est en cours sur lui (ses actions attendent sa fin,
+/// comme ses boutons sur le PC).
+fn container_row(c: &Container, busy: bool) -> Row {
+    let mut row = Row::new(&c.name)
+        .key(format!("docker/{}", c.id))
+        .subtitle(format!("{} · {}", c.image, c.status))
+        .detail(ports_text(&c.ports))
+        .glyph(if c.running() { "●" } else { "○" })
+        .open(format!("docker/{}", c.id));
+    if c.running() {
+        row = row.tone(Tone::Ok);
+    }
+    if busy {
+        row.progress(None)
+    } else {
+        row.acts = container_acts(c);
+        row
+    }
+}
+
+/// Les conteneurs groupés comme sur le PC : un groupe par projet compose (par nom), les autres à la fin ; dans un
+/// groupe, ceux qui tournent d'abord.
+fn by_project(list: &[Container]) -> Vec<(Option<&str>, Vec<&Container>)> {
+    let mut groups: Vec<(Option<&str>, Vec<&Container>)> = Vec::new();
+    for c in list {
+        match groups.iter_mut().find(|(p, _)| *p == c.project.as_deref()) {
+            Some((_, v)) => v.push(c),
+            None => groups.push((c.project.as_deref(), vec![c])),
+        }
+    }
+    groups.sort_by_key(|(p, _)| (p.is_none(), p.map(str::to_lowercase)));
+    for (_, v) in &mut groups {
+        v.sort_by_key(|c| !c.running());
+    }
+    groups
+}
+
+/// L'accueil : les services gérés, les ports ouverts (pliés au-delà de [`PORTS_OPEN`]), un bandeau par projet compose
+/// et ce que font les actions Docker.
 pub fn home(
     managed: &[ManagedSpec],
     live: &BTreeMap<u64, Live>,
     names: &BTreeMap<String, String>,
     snap: &Snapshot,
-    jobs: &[Job],
+    jobs: &Jobs,
 ) -> Screen {
-    let mut s = Screen::new("Menagerie");
+    let mut s = Screen::new("Menagerie").search("Chercher un service, un port, un conteneur");
     if snap.scans == 0 {
         s.subtitle = "Premier relevé du poste en cours…".into();
     }
-    for j in jobs {
+    if let Some(Docker::Running(list)) = &snap.docker {
+        let busy: Vec<&str> = list.iter().filter(|c| jobs.busy.contains(&c.id)).map(|c| c.name.as_str()).collect();
+        match busy.len() {
+            0 => {}
+            1 => {
+                s.progress(format!("Docker : {} en cours…", busy[0]), None, None);
+            }
+            n => {
+                s.progress(format!("Docker : {n} conteneurs en cours…"), None, None);
+            }
+        }
+    }
+    for j in &jobs.done {
         s.note(&j.text, j.tone);
     }
 
     // Services gérés : en marche si le processus noté tourne toujours (même numéro, même heure de création).
     let mut owned: HashSet<u32> = HashSet::new();
-    s.section("Services gérés", managed.len().to_string());
+    let failed = managed.iter().filter(|m| live.get(&m.id).is_some_and(|l| l.failure)).count();
+    let mut band = Band::new("services", "Services gérés").aside(managed.len().to_string()).glyph("⚙️");
+    if failed > 0 {
+        band = band
+            .badge(if failed == 1 { "1 planté".to_string() } else { format!("{failed} plantés") })
+            .tone(Tone::Danger);
+    }
+    s.band(band);
     if managed.is_empty() {
         s.empty("Aucun service géré.");
     }
@@ -157,6 +225,7 @@ pub fn home(
         let tree = managed_tree(spec, snap);
         let state = live.get(&spec.id);
         let mut row = Row::new(&spec.name)
+            .key(format!("service/{}", spec.id))
             .subtitle(format!("{} · {}", spec.command, short_path(&spec.dir)))
             .open(format!("service/{}", spec.id));
         row.acts = service_acts(spec.id, &spec.name, state);
@@ -187,7 +256,13 @@ pub fn home(
     let mut open: Vec<&Detected> =
         snap.services.iter().filter(|d| d.category == Category::Dev && !owned.contains(&d.proc.pid)).collect();
     open.sort_by_key(|d| d.ports.first().copied().unwrap_or(0));
-    s.section("Ports ouverts", open.len().to_string());
+    let public = open.iter().filter(|d| d.public).count();
+    let mut band =
+        Band::new("ports", "Ports ouverts").aside(open.len().to_string()).glyph("🔁").open(open.len() <= PORTS_OPEN);
+    if public > 0 {
+        band = band.badge(format!("{public} visible(s) du réseau")).tone(Tone::Warn);
+    }
+    s.band(band);
     if open.is_empty() {
         s.empty(if snap.scans == 0 {
             "Relevé en cours…"
@@ -201,7 +276,11 @@ pub fn home(
         if d.public {
             sub = format!("{sub} · visible du réseau");
         }
-        let mut row = Row::new(name).subtitle(sub).detail(format!("n° {}", d.proc.pid)).glyph("🔁");
+        let mut row = Row::new(name)
+            .key(format!("port/{}:{}", d.proc.pid, d.proc.created))
+            .subtitle(sub)
+            .detail(format!("n° {}", d.proc.pid))
+            .glyph("🔁");
         if d.public {
             row = row.tone(Tone::Warn);
         }
@@ -214,52 +293,49 @@ pub fn home(
         s.row(row);
     }
 
-    // Docker.
+    // Docker : un bandeau par projet compose, comme sur le PC.
+    let docker = Band::new("docker", "Docker").glyph("🐳");
     match &snap.docker {
         None => {
-            s.section("Docker", "");
+            s.band(docker);
             s.empty("Relevé en cours…");
         }
         Some(Docker::Absent) => {
-            s.section("Docker", "");
+            s.band(docker);
             s.empty("Docker n'est pas installé.");
         }
         Some(Docker::Stopped(why)) => {
-            s.section("Docker", "");
+            s.band(docker.tone(Tone::Warn));
             s.note(format!("Docker ne répond pas : {why}"), Tone::Warn);
         }
         Some(Docker::Error(why)) => {
-            s.section("Docker", "");
+            s.band(docker.tone(Tone::Danger));
             s.note(format!("Docker : {why}"), Tone::Danger);
         }
+        Some(Docker::Running(list)) if list.is_empty() => {
+            s.band(docker.aside("0"));
+            s.empty("Aucun conteneur.");
+        }
         Some(Docker::Running(list)) => {
-            let up = list.iter().filter(|c| c.running()).count();
-            s.section("Docker", format!("{up} / {}", list.len()));
-            if list.is_empty() {
-                s.empty("Aucun conteneur.");
-            }
-            for c in list {
-                let mut sub = format!("{} · {}", c.image, c.status);
-                if let Some(p) = &c.project {
-                    sub = format!("{p} · {sub}");
+            let groups = by_project(list);
+            let several = groups.len() > 1 || groups[0].0.is_some();
+            for (project, members) in groups {
+                let up = members.iter().filter(|c| c.running()).count();
+                let band = match project {
+                    Some(p) => Band::new(format!("projet/{p}"), p).aside("compose"),
+                    None if several => Band::new("autres-conteneurs", "Autres conteneurs"),
+                    None => Band::new("docker", "Docker"),
+                };
+                s.band(band.glyph("🐳").badge(format!("{up} / {}", members.len())).open(up > 0 || !several));
+                for c in members {
+                    s.row(container_row(c, jobs.busy.contains(&c.id)));
                 }
-                let mut row = Row::new(&c.name)
-                    .subtitle(sub)
-                    .detail(ports_text(&c.ports))
-                    .glyph(if c.running() { "●" } else { "○" })
-                    .open(format!("docker/{}", c.id));
-                if c.running() {
-                    row = row.tone(Tone::Ok);
-                }
-                row.acts = container_acts(c);
-                s.row(row);
             }
         }
     }
     s
 }
 
-/// Un conteneur : son état, ses actions, la fin de son journal (`None` : lecture en cours).
 /// Un service géré : son état, ses actions, la fin de son journal.
 pub fn service(spec: &ManagedSpec, live: Option<&Live>, log: &str) -> Screen {
     let label = live.map(|l| l.label.clone()).unwrap_or_else(|| "arrêté".into());
@@ -282,10 +358,17 @@ pub fn service(spec: &ManagedSpec, live: Option<&Live>, log: &str) -> Screen {
     s
 }
 
+/// Un conteneur : son état, ses actions, la fin de son journal (`None` : lecture en cours).
 pub fn container(c: &Container, job: Option<&Job>, logs: Option<&Result<String, String>>) -> Screen {
     let mut s = Screen::new(&c.name).subtitle(format!("{} · {}", c.image, c.status));
-    if let Some(j) = job {
-        s.note(&j.text, j.tone);
+    match job {
+        Some(j) if j.tone == Tone::Info => {
+            s.progress(&j.text, None, None);
+        }
+        Some(j) => {
+            s.note(&j.text, j.tone);
+        }
+        None => {}
     }
     if !c.ports.is_empty() {
         s.row(Row::new("Ports").detail(ports_text(&c.ports)));
@@ -350,8 +433,7 @@ fn live(app: &App) -> BTreeMap<u64, Live> {
 pub fn screen(app: &mut App, phone: &Shared, path: &str) -> Option<Screen> {
     let snap = app.monitor().snapshot();
     if path.is_empty() {
-        let jobs = recent_jobs(app);
-        return Some(home(&app.st.managed, &live(app), &app.st.names, &snap, &jobs));
+        return Some(home(&app.st.managed, &live(app), &app.st.names, &snap, &jobs(app)));
     }
     if let Some(id) = path.strip_prefix("service/") {
         let id: u64 = id.parse().ok()?;
@@ -421,9 +503,30 @@ pub fn action(app: &mut App, phone: &Shared, action: &str) -> Result<Option<Stri
 mod tests {
     use menagerie::persist::RunRecord;
     use menagerie::ports::ProcInfo;
-    use suite_sdk::mobile::ui::Block;
+    use suite_sdk::mobile::ui::{Block, Fold, PROGRESS_UNKNOWN};
 
     use super::*;
+
+    fn rows(s: &Screen) -> Vec<&Row> {
+        s.blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::Row(r) => Some(r),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Les bandeaux d'un écran : (clé, pliage, pastille, ton).
+    fn bands(s: &Screen) -> Vec<(&str, Fold, &str, Option<Tone>)> {
+        s.blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::Section { key, fold, badge, tone, .. } => Some((key.as_str(), *fold, badge.as_str(), *tone)),
+                _ => None,
+            })
+            .collect()
+    }
 
     fn detected(pid: u32, name: &str, ports: &[u16], category: Category) -> Detected {
         Detected {
@@ -480,20 +583,24 @@ mod tests {
             spec(1, "web", Some(RunRecord { pid: 10, created: 500 })),
             spec(2, "api", Some(RunRecord { pid: 99, created: 7 })),
         ];
-        let s = home(&managed, &BTreeMap::new(), &BTreeMap::new(), &snap, &[]);
-        let rows: Vec<&Row> = s
-            .blocks
-            .iter()
-            .filter_map(|b| match b {
-                Block::Row(r) => Some(r),
-                _ => None,
-            })
-            .collect();
+        let s = home(&managed, &BTreeMap::new(), &BTreeMap::new(), &snap, &Jobs::default());
+        let rows = rows(&s);
         assert_eq!((rows[0].title.as_str(), rows[0].detail.as_str(), rows[0].tone), ("web", ":3000", Some(Tone::Ok)));
         assert_eq!((rows[1].title.as_str(), rows[1].detail.as_str()), ("api", "arrêté"));
         // Ports ouverts : ni node (au service géré), ni les composants de Windows.
         assert_eq!(rows[2].title, "dotnet — contoso-web");
         assert_eq!(rows.len(), 5);
+        // Sans projet compose, un seul bandeau Docker, ceux qui tournent d'abord.
+        assert_eq!(
+            bands(&s),
+            [
+                ("services", Fold::Open, "", None),
+                ("ports", Fold::Open, "", None),
+                ("docker", Fold::Open, "1 / 2", None)
+            ]
+        );
+        assert_eq!((rows[3].title.as_str(), rows[4].title.as_str()), ("db", "cache"));
+        assert!(!s.search.is_empty());
         let ids: Vec<String> = s.action_ids().into_iter().collect();
         // Sans état vivant de Menagerie (essai), les services gérés proposent « Démarrer ».
         assert_eq!(
@@ -508,6 +615,68 @@ mod tests {
             ]
         );
         assert_eq!(s.opens().into_iter().collect::<Vec<_>>(), ["docker/abc", "docker/def", "service/1", "service/2"]);
+    }
+
+    /// Comme le PC : un bandeau par projet compose (par nom), « Autres conteneurs » à la fin, ceux qui tournent
+    /// d'abord ; un projet tout arrêté est plié. Une action en cours se voit (barre, et plus d'action sur la ligne).
+    #[test]
+    fn containers_are_grouped_by_compose_project() {
+        let in_project = |id: &str, name: &str, state: &str, p: &str| Container {
+            project: Some(p.into()),
+            ..container(id, name, state)
+        };
+        let snap = Snapshot {
+            docker: Some(Docker::Running(vec![
+                container("seul", "seul", "running"),
+                in_project("w1", "web-db", "exited", "web"),
+                in_project("w2", "web-app", "running", "web"),
+                in_project("a1", "api-db", "exited", "Api"),
+            ])),
+            scans: 1,
+            ..Default::default()
+        };
+        let jobs = Jobs { busy: HashSet::from(["w2".to_string()]), done: Vec::new() };
+        let s = home(&[], &BTreeMap::new(), &BTreeMap::new(), &snap, &jobs);
+        let docker: Vec<(&str, Fold, &str)> = bands(&s).into_iter().skip(2).map(|(k, f, b, _)| (k, f, b)).collect();
+        assert_eq!(
+            docker,
+            [
+                ("projet/Api", Fold::Closed, "0 / 1"),
+                ("projet/web", Fold::Open, "1 / 2"),
+                ("autres-conteneurs", Fold::Open, "1 / 1")
+            ]
+        );
+        let titles: Vec<&str> = rows(&s).iter().map(|r| r.title.as_str()).collect();
+        assert_eq!(titles, ["api-db", "web-app", "web-db", "seul"]);
+        let busy = rows(&s)[1];
+        assert_eq!((busy.progress, busy.acts.len()), (Some(PROGRESS_UNKNOWN), 0), "une action à la fois");
+        assert!(
+            matches!(&s.blocks[0], Block::Note { progress: Some(PROGRESS_UNKNOWN), text, .. } if text == "Docker : web-app en cours…")
+        );
+    }
+
+    #[test]
+    fn many_open_ports_fold_and_a_port_seen_from_the_network_warns() {
+        let mut services: Vec<Detected> =
+            (0..7).map(|i| detected(100 + i, "node", &[3000 + i as u16], Category::Dev)).collect();
+        let s = home(
+            &[],
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &Snapshot { services: services.clone(), scans: 1, ..Default::default() },
+            &Jobs::default(),
+        );
+        assert_eq!(bands(&s)[1], ("ports", Fold::Closed, "", None));
+        services.truncate(2);
+        services[1].public = true;
+        let s = home(
+            &[],
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &Snapshot { services, scans: 1, ..Default::default() },
+            &Jobs::default(),
+        );
+        assert_eq!(bands(&s)[1], ("ports", Fold::Open, "1 visible(s) du réseau", Some(Tone::Warn)));
     }
 
     #[test]
@@ -571,11 +740,12 @@ mod tests {
         assert!(action(&mut app, &phone, "docker:restart:abc").is_err(), "une action à la fois");
         let s = screen(&mut app, &phone, "docker/abc").unwrap();
         assert!(s.action_ids().is_empty());
-        assert!(
-            s.blocks
-                .iter()
-                .any(|b| matches!(b, Block::Note { tone: Tone::Info, text, .. } if text == "db : en cours…"))
-        );
+        assert!(s.blocks.iter().any(|b| matches!(
+            b,
+            Block::Note { tone: Tone::Info, progress: Some(PROGRESS_UNKNOWN), text, .. } if text == "db : en cours…"
+        )));
+        let home = screen(&mut app, &phone, "").unwrap();
+        assert!(home.blocks.iter().any(|b| matches!(b, Block::Note { text, .. } if text == "Docker : db en cours…")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
