@@ -256,7 +256,10 @@ pub fn play(ui: &AppWindow, scene: &str) {
         }
         // Comme sur Android : le nœud Tailscale de l'application, connecté.
         "reglages" => {
-            show_tailnet(ui, Tailnet::Running { name: "eyrie-pixel-8.tail1234.ts.net".into(), ip: "100.64.0.7".into() });
+            show_tailnet(
+                ui,
+                Tailnet::Running { name: "eyrie-pixel-8.tail1234.ts.net".into(), ip: "100.64.0.7".into() },
+            );
             with(|c| c.nav_select(scene));
         }
         "accueil" => ui.set_page(0),

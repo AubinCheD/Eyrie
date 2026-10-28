@@ -49,7 +49,9 @@ impl Tailnet {
             Tailnet::Starting => (1, "Connexion au tailnet…".into()),
             Tailnet::NeedsLogin(url) if url.is_empty() => (1, "Connexion au tailnet…".into()),
             Tailnet::NeedsLogin(_) => (2, "Ce téléphone n'est pas encore connecté à votre compte Tailscale.".into()),
-            Tailnet::Running { name, .. } => (3, format!("Sur le tailnet : {}", name.split('.').next().unwrap_or(name))),
+            Tailnet::Running { name, .. } => {
+                (3, format!("Sur le tailnet : {}", name.split('.').next().unwrap_or(name)))
+            }
             Tailnet::Failed(e) => (4, format!("Tailscale : {e}")),
         }
     }

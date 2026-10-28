@@ -87,7 +87,8 @@ pub fn run() -> Result<(), slint::PlatformError> {
     };
     if demo.is_none() {
         // Le nœud Tailscale (Android) démarre tout de suite : il se connecte pendant que l'interface s'affiche.
-        let name = if store.prefs.device_name.is_empty() { platform::device_name() } else { store.prefs.device_name.clone() };
+        let name =
+            if store.prefs.device_name.is_empty() { platform::device_name() } else { store.prefs.device_name.clone() };
         tailnet::start(dir.join("tailnet"), tailnet::hostname(&name));
     }
     app::Controller::install(&ui, store, demo.is_some());

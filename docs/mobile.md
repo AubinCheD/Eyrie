@@ -49,6 +49,8 @@ Slint l'aura stabilisé et qu'un Mac sera disponible.
   tailnet, **port 4747**. Pour chaque connexion, il demande à Tailscale qui se connecte (`WhoIs` : compte et appareil),
   ouvre une connexion vers le port local d'Eyrie (127.0.0.1, port aléatoire), y écrit une ligne d'en-tête
   `{"jeton":…,"login":…,"noeud":…,"adresse":…}` puis relaie les octets dans les deux sens.
+- Un compagnon qui s'arrête de lui-même est relancé par Eyrie (après 5 s, puis le double à chaque fois, 2 min au
+  plus ; remis à zéro une fois le nœud connecté). Tailscale se reconnecte seul après une coupure du réseau.
 - Eyrie lui donne l'adresse locale et un **jeton aléatoire** par son entrée standard (jamais en argument : la ligne de
   commande se lit depuis les autres processus). Une connexion locale sans le bon jeton est fermée.
 - Le téléphone rejoint le tailnet **par Eyrie elle-même** (demande du 28/10 : « je dois être connecté à Tailscale via
@@ -162,8 +164,10 @@ Fawkes, Owlery, Menagerie, Patronus et DragonTree) : `close_terminal`, `remote_c
   de tous les modules, les notifications, la palette (recherche), les réglages.
 - **Terminal** : plein écran, police à chasse fixe, zoom (A− / A+), défilement de l'historique, barre de touches
   (Échap, Tab, Ctrl, flèches, Entrée), champ de saisie au-dessus du clavier, réponses rapides quand Claude attend.
-- **Hors ligne** : bandeau « Reconnexion… », dernières données gardées, reconnexion automatique (délai croissant,
-  immédiate au retour au premier plan).
+- **Hors ligne** : bandeau « Reconnexion… », dernières données gardées, reconnexion automatique (délai croissant
+  jusqu'à 30 s, immédiate au retour au premier plan et quand le téléphone se reconnecte à Tailscale). Une coupure
+  sans fermeture (changement de réseau, PC en veille) se voit au plus tard après 45 s sans rien du PC, qui répond
+  `Pong` à chaque `Ping` (toutes les 15 s).
 - **Notifications** : une bulle quand une notification arrive du PC ; sur Android, en arrière-plan, une
   notification du système pour ce qui se met à attendre (session Claude…) et pour les alertes, tant que
   l'application tourne (pas de service au premier plan : Android peut couper le réseau au bout d'un moment).

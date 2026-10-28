@@ -537,7 +537,13 @@ fn tailscale(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui) {
             suite.core.st.tailnet.enabled = true;
             suite.shell.settings.tailnet_login = true;
         }
-        hint(ui, p, tr("Eyrie démarre son propre nœud, puis ouvre la page de connexion de Tailscale (Google, Microsoft, GitHub…)."));
+        hint(
+            ui,
+            p,
+            tr(
+                "Eyrie démarre son propre nœud, puis ouvre la page de connexion de Tailscale (Google, Microsoft, GitHub…).",
+            ),
+        );
         ui.add_space(4.0);
     }
     ui.checkbox(&mut suite.core.st.tailnet.enabled, tr("Rejoindre mon tailnet"));

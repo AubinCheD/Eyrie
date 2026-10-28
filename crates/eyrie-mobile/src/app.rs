@@ -266,7 +266,9 @@ impl Controller {
     fn tailnet_login(&self) {
         match &self.tailnet {
             Tailnet::NeedsLogin(url) if !url.is_empty() => platform::open_url(url),
-            Tailnet::Failed(_) => tailnet::start(platform::data_dir().join("tailnet"), tailnet::hostname(&self.device().0)),
+            Tailnet::Failed(_) => {
+                tailnet::start(platform::data_dir().join("tailnet"), tailnet::hostname(&self.device().0))
+            }
             _ => {}
         }
     }

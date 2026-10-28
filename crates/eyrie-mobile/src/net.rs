@@ -1,11 +1,13 @@
-//! La liaison avec le PC, dans son propre fil : connexion, salut, lecture, envoi, `Ping` toutes les 15 s, et
-//! reconnexion avec un délai croissant (1 s, 2 s… 30 s), immédiate quand l'application revient au premier plan
-//! (`kick`). Un refus du PC (appareil retiré, autre compte Tailscale) n'est pas réessayé en boucle.
+//! La liaison avec le PC, dans son propre fil : connexion, salut, lecture, envoi, `Ping` toutes les 15 s (45 s sans
+//! rien du PC : coupée), et reconnexion avec un délai croissant (1 s, 2 s… 30 s), immédiate quand l'application
+//! revient au premier plan ou que le téléphone se reconnecte à Tailscale (`kick`). Un refus du PC (appareil retiré,
+//! autre compte Tailscale) n'est pas réessayé en boucle.
 //!
 //! Et l'appairage, en une fois : connexion, preuve, code de vérification, attente du clic sur le PC.
 //!
 //! Sur Android, les connexions passent par le nœud Tailscale de l'application (`tailnet`).
 
+use std::io;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;
 
@@ -15,6 +17,9 @@ use suite_mobile::msg::{ToPc, ToPhone};
 
 const CONNECT: Duration = Duration::from_secs(6);
 const PING: Duration = Duration::from_secs(15);
+/// Sans rien du PC pendant ce temps (il répond `Pong` à chaque `Ping`), la liaison est tenue pour coupée : une
+/// coupure sans fermeture (changement de réseau, PC en veille) se voit en moins d'une minute.
+const SILENCE: Duration = Duration::from_secs(45);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
 #[derive(Debug)]
@@ -51,11 +56,23 @@ impl Link {
         model: String,
         on: impl Fn(NetEvent) + Send + 'static,
     ) -> Link {
+        Self::start_with(addrs, pc_key, me, device, model, SILENCE, on)
+    }
+
+    fn start_with(
+        addrs: Vec<String>,
+        pc_key: [u8; 32],
+        me: Keypair,
+        device: String,
+        model: String,
+        silence: Duration,
+        on: impl Fn(NetEvent) + Send + 'static,
+    ) -> Link {
         let (tx, rx) = mpsc::channel::<Cmd>();
         let back = tx.clone();
         let _ = std::thread::Builder::new()
             .name("eyrie-liaison".into())
-            .spawn(move || run(addrs, pc_key, me, device, model, rx, back, on));
+            .spawn(move || run(addrs, pc_key, me, device, model, silence, rx, back, on));
         Link { tx }
     }
 
@@ -96,6 +113,7 @@ fn run(
     me: Keypair,
     device: String,
     model: String,
+    silence: Duration,
     rx: mpsc::Receiver<Cmd>,
     back: mpsc::Sender<Cmd>,
     on: impl Fn(NetEvent),
@@ -134,12 +152,18 @@ fn run(
         on(NetEvent::Online(welcome));
         let client::Connection { rx: mut reader, tx: mut writer, .. } = conn;
         let socket = writer.get_mut().try_clone().ok();
+        let _ = reader.get_ref().set_read_timeout(Some(silence));
         // La lecture, dans un fil : chaque message part vers l'interface ; une coupure réveille l'envoi.
         let (msg_tx, msg_rx) = mpsc::channel::<Result<ToPhone, String>>();
         let dropped = back.clone();
         let _ = std::thread::Builder::new().name("eyrie-lecture".into()).spawn(move || {
             loop {
-                let r = reader.recv::<ToPhone>().map_err(|e| e.to_string());
+                let r = reader.recv::<ToPhone>().map_err(|e| match e.kind() {
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => {
+                        format!("rien reçu du PC depuis {} s", silence.as_secs())
+                    }
+                    _ => e.to_string(),
+                });
                 let end = r.is_err();
                 if msg_tx.send(r).is_err() || end {
                     break;
@@ -253,4 +277,57 @@ pub fn pair(
             Err(e) => on(PairEvent::Failed(e.to_string())),
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::TcpListener;
+    use std::time::Instant;
+
+    use suite_mobile::channel;
+    use suite_mobile::msg::{PROTOCOL, Rights};
+
+    use super::*;
+
+    /// Un PC qui accueille le téléphone puis se tait sans fermer la connexion (réseau coupé, PC en veille) : la
+    /// liaison le voit et passe hors ligne pour se reconnecter.
+    #[test]
+    fn a_silent_pc_is_taken_as_disconnected() {
+        let pc = Keypair::generate();
+        let pc_key = pc.public;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let server = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let (t, _) = channel::accept(&mut s, &pc).unwrap();
+            let (mut r, mut w) = t.split(s.try_clone().unwrap(), s);
+            let _hello: ToPc = r.recv().unwrap();
+            let welcome =
+                ToPhone::Welcome { protocol: PROTOCOL, pc: "PC".into(), eyrie: "x".into(), rights: Rights::default() };
+            w.send(&welcome).unwrap();
+            // Plus rien : ni `Pong`, ni fermeture.
+            std::thread::sleep(Duration::from_secs(3));
+        });
+        let (tx, rx) = mpsc::channel();
+        let silence = Duration::from_millis(400);
+        let link =
+            Link::start_with(vec![addr], pc_key, Keypair::generate(), "x".into(), "y".into(), silence, move |ev| {
+                let _ = tx.send(ev);
+            });
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut online = false;
+        loop {
+            match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(NetEvent::Online(_)) => online = true,
+                Ok(NetEvent::Offline { reason, .. }) if online => {
+                    assert!(reason.contains("rien reçu du PC"), "{reason}");
+                    break;
+                }
+                Ok(_) => {}
+                Err(_) => panic!("la liaison ne voit pas le silence du PC (en ligne : {online})"),
+            }
+        }
+        drop(link);
+        server.join().unwrap();
+    }
 }

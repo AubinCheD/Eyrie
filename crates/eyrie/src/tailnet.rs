@@ -38,6 +38,16 @@ struct Running {
 
 pub struct Tailnet {
     running: Option<Running>,
+    /// Quand le compagnon en marche s'est arrêté de lui-même (il sera relancé).
+    exited: Option<Instant>,
+    /// Relances depuis la dernière fois que le nœud était connecté.
+    restarts: u32,
+}
+
+/// Délai avant de relancer un compagnon arrêté de lui-même, selon les relances déjà faites : 5 s, puis le double à
+/// chaque fois, 2 min au plus.
+fn restart_delay(restarts: u32) -> Duration {
+    Duration::from_secs(5 << restarts.min(5)).min(Duration::from_secs(120))
 }
 
 /// Où trouver le compagnon : `EYRIE_TAILNET_EXE`, `eyrie-tailnet.exe` à côté d'`eyrie.exe` ou compilé dans ce dépôt ;
@@ -120,10 +130,11 @@ fn relay_line(relay: &Option<(String, String)>) -> String {
 
 impl Tailnet {
     pub fn new(_dir: &Path) -> Self {
-        Tailnet { running: None }
+        Tailnet { running: None, exited: None, restarts: 0 }
     }
 
-    /// Démarre, arrête ou redémarre le compagnon selon les réglages ; lui donne la consigne de relais du pont mobile.
+    /// Démarre, arrête ou redémarre le compagnon selon les réglages, et le relance s'il s'est arrêté de lui-même ; lui
+    /// donne la consigne de relais du pont mobile.
     pub fn poll(
         &mut self,
         settings: &TailnetSettings,
@@ -131,6 +142,19 @@ impl Tailnet {
         ctx: &egui::Context,
         relay: Option<(String, String)>,
     ) {
+        if let Some(r) = &mut self.running
+            && r.child.as_mut().is_some_and(|c| matches!(c.try_wait(), Ok(Some(_))))
+        {
+            let since = *self.exited.get_or_insert_with(Instant::now);
+            if since.elapsed() >= restart_delay(self.restarts) {
+                self.restarts += 1;
+                // Relancé juste après, comme un compagnon voulu mais absent.
+                self.stop();
+            }
+        }
+        if matches!(self.state(), Some(TailnetState::Running { .. })) {
+            self.restarts = 0;
+        }
         let wanted = settings.enabled.then(|| hostname(settings));
         let current = self.running.as_ref().map(|r| r.hostname.clone());
         if wanted != current {
@@ -169,6 +193,7 @@ impl Tailnet {
 
     /// Ferme l'entrée du compagnon, qui se déconnecte proprement ; l'arrête de force au bout de 3 s.
     pub fn stop(&mut self) {
+        self.exited = None;
         let Some(mut r) = self.running.take() else { return };
         drop(r.stdin.take());
         let Some(mut child) = r.child.take() else { return };
@@ -233,7 +258,10 @@ fn start(dir: &Path, hostname: &str, ctx: egui::Context) -> Running {
             // Sortie fermée : le compagnon s'est arrêté (ou Eyrie l'a arrêté).
             let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
             if !matches!(*s, TailnetState::Failed(_)) {
-                *s = TailnetState::Failed(format!("le compagnon s'est arrêté (détails : {})", log.display()));
+                *s = TailnetState::Failed(format!(
+                    "le compagnon s'est arrêté, Eyrie le relance (détails : {})",
+                    log.display()
+                ));
             }
             ctx.request_repaint();
         });
@@ -257,6 +285,12 @@ mod tests {
         let h = hostname(&TailnetSettings { enabled: true, hostname: String::new() });
         assert!(h.starts_with("suite"), "{h}");
         assert_eq!(hostname(&TailnetSettings { enabled: true, hostname: "Mon Poste".into() }), "mon-poste");
+    }
+
+    #[test]
+    fn a_stopped_companion_is_restarted_ever_more_slowly() {
+        let delays: Vec<u64> = (0..8).map(|n| restart_delay(n).as_secs()).collect();
+        assert_eq!(delays, [5, 10, 20, 40, 80, 120, 120, 120]);
     }
 
     #[test]
