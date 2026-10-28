@@ -14,14 +14,17 @@ export global Theme {
     out property <color> pressed: dark ? #30343d : #dce2ea;
     out property <color> border: dark ? #343842 : #d6dce5;
     out property <color> text: dark ? #e3e5ea : #1b1d22;
-    // Contraste d'au moins 4,5:1 sur le fond et les cartes, dans les deux thèmes (texte pâle compris).
+    // Contraste d'au moins 4,5:1 sur le fond, les cartes et les champs (`surface-2`), dans les deux thèmes (texte pâle
+    // compris).
     out property <color> text-dim: dark ? #a7adb8 : #4f5562;
-    out property <color> text-faint: dark ? #8a909c : #646b77;
+    out property <color> text-faint: dark ? #8e94a0 : #5f6672;
     out property <color> accent: dark ? #5b8def : #0067c0;
-    out property <color> on-accent: #ffffff;
+    // Le texte sur un bouton plein : foncé dans le thème sombre (le blanc y manque de contraste), comme les pastilles.
+    out property <color> on-accent: dark ? #121316 : #ffffff;
     out property <color> accent-soft: dark ? #5b8def33 : #0067c01f;
     out property <color> ok: dark ? #4cb872 : #1d7a41;
-    out property <color> warn: dark ? #f2a93b : #b56900;
+    // Plus foncé qu'un orange vif en clair : le blanc des pastilles « attend » y garde plus de 5:1.
+    out property <color> warn: dark ? #f2a93b : #9e5c00;
     out property <color> danger: dark ? #e5677a : #c42b1c;
     out property <color> scrim: #00000099;
     out property <color> term-bg: dark ? #121316 : #fbfcfd;
