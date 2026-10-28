@@ -231,6 +231,8 @@ pub struct Entry {
     pub job: Option<Job>,
     /// Couleur de son onglet dans DragonTree (0xRRGGBB).
     pub color: Option<u32>,
+    /// Ouvert dans DragonTree, qui ne l'a toujours pas lu après un long moment (lecture longue, ou ratée).
+    pub slow: bool,
 }
 
 fn sync_text(ahead: u32, behind: u32) -> Option<String> {
@@ -306,6 +308,8 @@ fn row_of(e: &Entry) -> Row {
     let mut row = Row::new(&e.repo.title).key(&key).glyph(kind_glyph(e.repo.kind)).open(format!("depot/{key}"));
     row = match &e.state {
         Some(st) => row.subtitle(state_text(st)).tone(state_tone(st)),
+        // Sa lecture ratée ne se dit que sur le PC.
+        None if e.slow => row.subtitle("lecture… (voir DragonTree sur le PC)").tone(Tone::Warn),
         None => row.subtitle("lecture…"),
     };
     if let Some(c) = e.color {
@@ -385,7 +389,7 @@ mod tests {
     }
 
     fn entry(path: &str, group: Group, state: Option<RepoState>) -> Entry {
-        Entry { repo: listed(path, group), state, job: None, color: None }
+        Entry { repo: listed(path, group), state, job: None, color: None, slow: false }
     }
 
     /// Les dépôts de DragonTree : l'onglet affiché et les onglets, les favoris, un bandeau par racine (le scan), les
@@ -490,6 +494,18 @@ mod tests {
         assert!(ids.contains("actualiser"));
         let push = s.all_acts().into_iter().find(|a| a.id == format!("push:{key}")).unwrap();
         assert!(push.confirm.is_some(), "push confirmé");
+    }
+
+    /// Un onglet que DragonTree n'a toujours pas lu le dit dans la liste (sa lecture ratée ne se dit que sur le PC),
+    /// au lieu de « lecture… » sans fin.
+    #[test]
+    fn a_tab_dragontree_does_not_read_says_so() {
+        let mut stuck = entry(r"C:\dev\ozmo", Group::Open, None);
+        let row = row_of(&stuck);
+        assert_eq!((row.subtitle.as_str(), row.tone), ("lecture…", None));
+        stuck.slow = true;
+        let row = row_of(&stuck);
+        assert_eq!((row.subtitle.as_str(), row.tone), ("lecture… (voir DragonTree sur le PC)", Some(Tone::Warn)));
     }
 
     #[test]

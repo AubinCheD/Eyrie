@@ -597,7 +597,7 @@ impl Phone {
         }
     }
 
-    fn entry(&self, app: &DragonTreeApp, repo: Listed) -> Entry {
+    fn entry(&mut self, app: &DragonTreeApp, repo: Listed) -> Entry {
         let key = repo_key(&repo.path);
         let tab = app.repo_tab(&repo.path);
         let state = match tab {
@@ -608,7 +608,8 @@ impl Phone {
             let c = c.color(&dragontree_app::theme::Palette::light());
             u32::from_be_bytes([0, c.r(), c.g(), c.b()])
         });
-        Entry { state, job: self.job(&key, tab), color, repo }
+        let slow = tab.is_some_and(|t| self.slow(&key, t));
+        Entry { state, job: self.job(&key, tab), color, slow, repo }
     }
 
     /// L'accueil : tous les dépôts ; l'état de ceux que DragonTree n'a pas ouverts est relevé à part, d'abord ceux des
@@ -1121,7 +1122,7 @@ mod tests {
                     kind: dragontree_git::discovery::RepoKind::Normal,
                     active: false,
                 };
-                Entry { repo, state: None, job: None, color: None }
+                Entry { repo, state: None, job: None, color: None, slow: false }
             })
             .collect();
         let add = phone.add_act(&entries);
