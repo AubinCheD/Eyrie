@@ -172,6 +172,10 @@ export component AppWindow inherits Window {
             root.open-url(a.url);
             return;
         }
+        if a.open != "" {
+            root.open-path(a.open);
+            return;
+        }
         root.pending = a;
         if a.confirm != "" {
             root.confirm-visible = true;

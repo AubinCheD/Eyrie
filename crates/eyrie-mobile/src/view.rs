@@ -71,6 +71,7 @@ pub fn act_in(a: &Act, local: &Local) -> UiAct {
         input_value: input.value.into(),
         multiline: input.multiline,
         url: a.url.clone().unwrap_or_default().into(),
+        open: a.open.clone().unwrap_or_default().into(),
         busy: local.busy(a),
     }
 }
@@ -393,6 +394,8 @@ fn row(r: &Row, first: bool, last: bool, local: &Local) -> UiRow {
         opens: r.open.is_some(),
         tap: r.tap.as_ref().map(|a| act_in(a, local)).unwrap_or_default(),
         has_tap: r.tap.is_some(),
+        trailing: r.trailing.as_ref().map(|a| act_in(a, local)).unwrap_or_default(),
+        has_trailing: r.trailing.is_some(),
         acts: acts(&r.acts, local),
         value: 0.0,
         mono: false,
@@ -818,6 +821,24 @@ mod tests {
         assert_eq!(r[0].acts.row_data(0).map(|a| a.label.to_string()), Some("Annuler".into()));
         assert!(r[1].has_progress && r[1].indeterminate);
         assert!(!r[2].has_progress);
+    }
+
+    /// Le bouton visible d'une ligne suit l'état en cours de son action ; une action qui ouvre un écran du téléphone
+    /// le dit (rien n'est envoyé au PC).
+    #[test]
+    fn a_trailing_button_and_a_local_screen_act_reach_the_phone() {
+        let mut s = Screen::new("Patronus");
+        s.row(
+            Row::new("build")
+                .trailing(Act::new("lancer:build", "Lancer").primary())
+                .act(Act::screen("Historique", "tache/build")),
+        );
+        let mut local = Local::default();
+        local.pending.insert("lancer:build".into());
+        let r = rows(&s, &local);
+        assert!(r[0].has_trailing && r[0].trailing.busy && r[0].trailing.style == 1);
+        assert!(!r[0].busy, "le bouton visible porte son indicateur ; la ligne reste touchable");
+        assert_eq!(r[0].acts.row_data(0).map(|a| a.open.to_string()), Some("tache/build".into()));
     }
 
     #[test]

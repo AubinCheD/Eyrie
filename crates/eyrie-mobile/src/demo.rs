@@ -123,7 +123,8 @@ fn patronus_home() -> Screen {
             .tone(Tone::Ok)
             .detail("réussie")
             .open("tache/revue")
-            .act(Act::new("lancer:revue", "Lancer maintenant").glyph("▶️")),
+            .trailing(Act::new("lancer:revue", "Lancer").glyph("▶").primary())
+            .act(Act::new("consigne:revue", "Lancer avec une consigne…").input("Consigne", "")),
     );
     s.row(
         Row::new("Mise à jour des dépendances")
@@ -135,7 +136,12 @@ fn patronus_home() -> Screen {
             .open("tache/deps")
             .act(Act::new("arreter:deps", "Arrêter").glyph("⏹️").danger()),
     );
-    s.row(Row::new("Nettoyage des branches").subtitle("Le lundi à 9 h").glyph("🧹").open("tache/menage"));
+    s.row(
+        Row::new("Nettoyage des branches")
+            .subtitle("Le lundi à 9 h")
+            .glyph("🧹")
+            .tap(Act::new("lancer:menage", "Lancer").glyph("▶")),
+    );
     s.section("Boîte de réception", "2 non lus");
     s.row(Row::new("Revue des PR du matin").subtitle("Réussie · 0,42 €").detail("8:03").glyph("●").open("run/41"));
     s.row(

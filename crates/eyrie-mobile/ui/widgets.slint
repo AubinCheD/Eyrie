@@ -17,6 +17,8 @@ export struct UiAct {
     input-value: string,
     multiline: bool,
     url: string,
+    // Action propre au téléphone : ouvrir ce sous-écran du module (rien n'est envoyé au PC).
+    open: string,
     busy: bool,
 }
 
@@ -54,6 +56,9 @@ export struct UiRow {
     opens: bool,
     tap: UiAct,
     has-tap: bool,
+    // Un bouton visible à droite, en plus du menu.
+    trailing: UiAct,
+    has-trailing: bool,
     acts: [UiAct],
     value: float,
     mono: bool,
@@ -310,11 +315,13 @@ export component ActButton inherits Rectangle {
     in property <int> style: 0;
     in property <bool> enabled: true;
     in property <bool> busy;
+    // Marge de part et d'autre du libellé (plus serrée dans une ligne).
+    in property <length> pad: 16px;
     callback clicked();
     property <color> ink: root.style == 1 ? Theme.on-accent : root.style == 2 ? Theme.danger : Theme.text;
     height: 48px;
-    preferred-width: content.preferred-width + 32px;
-    border-radius: 24px;
+    preferred-width: content.preferred-width;
+    border-radius: self.height / 2;
     opacity: !enabled ? 0.45 : busy ? 0.7 : 1;
     background: style == 1 ? (ta.pressed ? Theme.accent.darker(0.15) : Theme.accent)
         : style == 2 ? (ta.pressed ? Theme.danger.with-alpha(0.25) : Theme.danger.with-alpha(0.14))
@@ -325,8 +332,8 @@ export component ActButton inherits Rectangle {
     accessible-enabled: root.enabled && !root.busy;
     accessible-action-default => { root.clicked(); }
     content := HorizontalLayout {
-        padding-left: 16px;
-        padding-right: 16px;
+        padding-left: root.pad;
+        padding-right: root.pad;
         spacing: 7px;
         alignment: center;
         if root.busy: VerticalLayout {
@@ -612,14 +619,56 @@ export component BandHeader inherits Rectangle {
     }
 }
 
-// Une ligne de liste, dans une carte arrondie par section.
+// L'action que fait le toucher d'une ligne, quand elle n'ouvre pas d'écran : le toucher agit sur le PC.
+component TapPill inherits Rectangle {
+    in property <UiAct> act;
+    property <color> ink: act.style == 2 ? Theme.danger : Theme.accent;
+    height: 28px;
+    width: min(130px, content.preferred-width);
+    border-radius: 14px;
+    background: root.ink.with-alpha(0.14);
+    content := HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 5px;
+        if root.act.busy: VerticalLayout {
+            alignment: center;
+            Busy {
+                size: 14px;
+                tint: root.ink;
+            }
+        }
+        if !root.act.busy && root.act.glyph != "": Text {
+            text: root.act.glyph;
+            color: root.ink;
+            font-size: 12.5px;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.act.label;
+            color: root.ink;
+            font-size: 12.5px;
+            font-weight: 600;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+}
+
+// Une ligne de liste, dans une carte arrondie par section. Le toucher ouvre son écran (chevron), sinon fait son action
+// (en pastille), sinon ouvre son menu ; l'appui long ou ⋯ ouvre le menu ; un bouton visible peut être à droite.
 export component RowView inherits Rectangle {
     in property <UiRow> item;
     callback tapped();
     callback menu();
+    callback trailing();
     callback haptic();
     property <bool> long-fired;
     height: max(60px, content.preferred-height);
+    accessible-role: list-item;
+    accessible-label: item.title + (item.badge != "" ? ", " + item.badge : "") + (item.subtitle != "" ? ", " + item.subtitle : "") + (item.detail != "" ? ", " + item.detail : "");
+    accessible-description: item.opens ? "Ouvre l'écran" : item.has-tap ? item.tap.label + " sur le PC" : "";
+    accessible-action-default => { root.tapped(); }
     Rectangle {
         x: Theme.pad;
         width: parent.width - 2 * Theme.pad;
@@ -630,6 +679,19 @@ export component RowView inherits Rectangle {
         border-bottom-left-radius: item.last ? Theme.radius : 0;
         border-bottom-right-radius: item.last ? Theme.radius : 0;
         clip: true;
+        // Sous le contenu : les boutons de la ligne (⋯, bouton visible) reçoivent leurs touchers, le reste va à la ligne.
+        ta := TouchArea {
+            pointer-event(e) => {
+                if e.kind == PointerEventKind.down {
+                    root.long-fired = false;
+                }
+            }
+            clicked => {
+                if !root.long-fired {
+                    root.tapped();
+                }
+            }
+        }
         // Liseré du ton (Claude attend, échec…).
         if item.tone >= 3: Rectangle {
             x: 0;
@@ -701,10 +763,29 @@ export component RowView inherits Rectangle {
                 vertical-alignment: center;
                 horizontal-alignment: right;
                 max-width: 110px;
-                min-width: min(110px, self.preferred-width);
+                min-width: item.has-trailing ? 0px : min(110px, self.preferred-width);
                 overflow: elide;
             }
-            if item.busy: VerticalLayout {
+            if item.has-tap && !item.opens: VerticalLayout {
+                alignment: center;
+                TapPill {
+                    act: item.tap;
+                }
+            }
+            if item.has-trailing: VerticalLayout {
+                alignment: center;
+                ActButton {
+                    height: 40px;
+                    pad: 12px;
+                    min-width: self.preferred-width;
+                    text: item.trailing.label;
+                    glyph: item.trailing.glyph;
+                    style: item.trailing.style;
+                    busy: item.trailing.busy;
+                    clicked => { root.trailing(); }
+                }
+            }
+            if item.busy && !(item.has-tap && item.tap.busy): VerticalLayout {
                 alignment: center;
                 Busy { }
             }
@@ -715,10 +796,13 @@ export component RowView inherits Rectangle {
                 tint: Theme.text-dim;
                 clicked => { root.menu(); }
             }
-            if item.acts.length == 0 && item.opens: Icon {
-                kind: "chevron";
-                tint: Theme.text-faint;
-                size: 22px;
+            if item.opens: VerticalLayout {
+                alignment: center;
+                Icon {
+                    kind: "chevron";
+                    tint: Theme.text-faint;
+                    size: 22px;
+                }
             }
         }
         // Une opération en cours sur la ligne : une barre en bas.
@@ -737,20 +821,6 @@ export component RowView inherits Rectangle {
             height: 1px;
             width: parent.width - 62px;
             background: Theme.border;
-        }
-        ta := TouchArea {
-            width: parent.width - (item.acts.length > 0 ? 46px : 0px);
-            x: 0;
-            pointer-event(e) => {
-                if e.kind == PointerEventKind.down {
-                    root.long-fired = false;
-                }
-            }
-            clicked => {
-                if !root.long-fired {
-                    root.tapped();
-                }
-            }
         }
         Timer {
             interval: 520ms;
@@ -877,7 +947,7 @@ export component CommitRowView inherits Rectangle {
                     clicked => { root.menu(); }
                 }
             }
-            if item.acts.length == 0 && item.opens: VerticalLayout {
+            if item.opens: VerticalLayout {
                 alignment: center;
                 Icon {
                     kind: "chevron";
