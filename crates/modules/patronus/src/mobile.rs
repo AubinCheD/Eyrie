@@ -768,6 +768,13 @@ mod tests {
         // Les tâches : celle qui ne peut pas partir d'abord.
         assert_eq!((rows[3].key.as_str(), rows[3].tone), ("tache/casse", Some(Tone::Danger)));
         assert_eq!(rows[4].key, "tache/build");
+
+        // Un départ attend la fin : la ligne le dit ; sans début connu, « en cours ».
+        let mut snap = sample();
+        snap.tasks[0].pending = true;
+        assert_eq!(self::rows(&home(&snap, at(27, 12)))[0].subtitle, "depuis 4 min · relancée à la fin");
+        snap.tasks[0].since = None;
+        assert_eq!(self::rows(&home(&snap, at(27, 12)))[0].subtitle, "en cours · relancée à la fin");
     }
 
     /// Les tâches : bloquées, puis par prochaine échéance, inactives à la fin ; pliées au-delà de six, sauf si l'une ne

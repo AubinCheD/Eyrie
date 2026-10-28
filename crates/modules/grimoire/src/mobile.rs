@@ -391,6 +391,21 @@ mod tests {
         assert_eq!(phone.action("gringotts"), Ok(Some(format!("{MODULE_PREFIX}gringotts"))));
     }
 
+    /// Sans Gringotts ni relevé, le bandeau des limites dit comment en avoir.
+    #[test]
+    fn without_gringotts_or_records_the_limits_say_how_to_get_some() {
+        let now = 1_800_000_000;
+        let d = Data { limits: Vec::new(), ..sample(now) };
+        let s = home(Some(&d), now, false);
+        let keys: Vec<&str> = bands(&s).into_iter().map(|(k, ..)| k).collect();
+        assert_eq!(keys, ["profils", "limites", "mcp"]);
+        let empty = Block::Empty {
+            text: "Aucun relevé : le relais des limites s'installe depuis Grimoire, sur le PC.".into(),
+        };
+        assert!(s.blocks.contains(&empty));
+        assert!(!s.action_ids().contains("gringotts"));
+    }
+
     #[test]
     fn open_on_the_pc_goes_through_grimoire_requests() {
         let (tx, rx) = mpsc::channel();

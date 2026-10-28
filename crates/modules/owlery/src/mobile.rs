@@ -674,29 +674,37 @@ mod tests {
         assert!(matches!(rx.try_recv(), Ok(Incoming::Refresh)));
     }
 
+    /// Une vraie instance d'Owlery sur l'exemple, groupée par `by`, dans un dossier d'essai (rien n'est écrit).
+    fn app(now: i64, by: GroupBy, dir: &std::path::Path) -> App {
+        let (inbox, rules) = sample(now);
+        let _ = std::fs::remove_dir_all(dir);
+        let settings = Settings { rules, group_by: by, ..Default::default() };
+        let state = AppState { inbox, settings, ..Default::default() };
+        let opts = StartOptions::for_tests(
+            dir.to_path_buf(),
+            Arc::new(owlery::secrets::MemoryStore::default()),
+            Arc::new(owlery::demo::DemoFetcher),
+        );
+        let cc = eframe::CreationContext::_new_kittest(suite_sdk::egui::Context::default());
+        App::new(&cc, opts, Loaded { state, problems: Vec::new(), writable: false })
+    }
+
+    fn status(app: &App, id: &str, now: i64) -> Status {
+        let st = app.state();
+        st.inbox.status(&st.inbox.items[id], now)
+    }
+
     /// Les gestes de groupe passent par Owlery : tout un dépôt marqué lu, un report, puis « Annuler » sur le dernier,
     /// et sur chaque entrée du groupe, une à une, jusqu'à ce qu'il n'y ait plus rien à annuler.
     #[test]
     fn group_gestures_and_undo_go_through_owlery() {
         let now = now();
-        let (inbox, rules) = sample(now);
         let dir = std::env::temp_dir().join(format!("suite-owlery-telephone-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let state = AppState { inbox, settings: Settings { rules, ..Default::default() }, ..Default::default() };
-        let opts = StartOptions::for_tests(
-            dir.clone(),
-            Arc::new(owlery::secrets::MemoryStore::default()),
-            Arc::new(owlery::demo::DemoFetcher),
-        );
-        let cc = eframe::CreationContext::_new_kittest(suite_sdk::egui::Context::default());
-        let mut app = App::new(&cc, opts, Loaded { state, problems: Vec::new(), writable: false });
+        let mut app = app(now, GroupBy::Repo, &dir);
         let ctx = suite_sdk::egui::Context::default();
         let (tx, _rx) = mpsc::channel();
         let phone = Phone::new(tx);
-        let status = |app: &App, id: &str| {
-            let st = app.state();
-            st.inbox.status(&st.inbox.items[id], now)
-        };
+        let status = |app: &App, id: &str| status(app, id, now);
 
         assert_eq!(
             phone.action(&mut app, &ctx, "", "tout-lu:contoso/web"),
@@ -721,6 +729,32 @@ mod tests {
             Ok(Some("Dépôt ignoré : contoso/api".into()))
         );
         assert!(app.state().settings.rules.muted_repos.contains("contoso/api"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Groupé par sorte, « Tout marquer lu » vise la sorte (`revue`) ; sur l'écran d'une entrée, un report vise
+    /// l'entrée de l'écran.
+    #[test]
+    fn grouped_by_kind_a_whole_kind_is_read_and_an_item_snoozes_from_its_screen() {
+        let now = now();
+        let dir = std::env::temp_dir().join(format!("suite-owlery-telephone-sorte-{}", std::process::id()));
+        let mut app = app(now, GroupBy::Kind, &dir);
+        let ctx = suite_sdk::egui::Context::default();
+        let (tx, _rx) = mpsc::channel();
+        let phone = Phone::new(tx);
+        assert!(phone.screen(&app, "").unwrap().action_ids().contains("tout-lu:revue"));
+        assert_eq!(
+            phone.action(&mut app, &ctx, "", "tout-lu:revue"),
+            Ok(Some("2 entrées marquées lues (« Annuler » les reprend une à une)".into()))
+        );
+        assert_eq!((status(&app, "a", now), status(&app, "b", now)), (Status::Read, Status::Read));
+        assert_eq!(status(&app, "c", now), Status::Unread, "une autre sorte");
+
+        assert!(phone.screen(&app, "item/c").unwrap().action_ids().contains("reporter-lundi"));
+        assert_eq!(phone.action(&mut app, &ctx, "item/c", "reporter-lundi"), Ok(Some("Reportée à lundi matin".into())));
+        let monday = Snooze::Monday.until(now);
+        assert!(matches!(status(&app, "c", now), Status::Snoozed { until } if until >= monday));
+        assert!(phone.action(&mut app, &ctx, "item/parti", "reporter-lundi").is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

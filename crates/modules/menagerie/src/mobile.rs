@@ -655,6 +655,16 @@ mod tests {
         assert!(
             matches!(&s.blocks[0], Block::Note { progress: Some(PROGRESS_UNKNOWN), text, .. } if text == "Docker : web-app en cours…")
         );
+
+        // Hors projet, rien ne tourne : « Autres conteneurs » plié ; sans aucun projet, le seul bandeau reste ouvert.
+        let stopped =
+            |list: Vec<Container>| Snapshot { docker: Some(Docker::Running(list)), scans: 1, ..Default::default() };
+        let snap = stopped(vec![container("seul", "seul", "exited"), in_project("w2", "web-app", "running", "web")]);
+        let s = home(&[], &BTreeMap::new(), &BTreeMap::new(), &snap, &Jobs::default());
+        assert_eq!(bands(&s)[3], ("autres-conteneurs", Fold::Closed, "0 / 1", None));
+        let snap = stopped(vec![container("seul", "seul", "exited")]);
+        let s = home(&[], &BTreeMap::new(), &BTreeMap::new(), &snap, &Jobs::default());
+        assert_eq!(bands(&s)[2], ("docker", Fold::Open, "0 / 1", None));
     }
 
     /// Plus de six ports : pliés ; un port visible du réseau met le bandeau en alerte, déplié.
