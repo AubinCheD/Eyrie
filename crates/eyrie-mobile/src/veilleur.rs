@@ -96,6 +96,16 @@ const ANSWER: Duration = Duration::from_secs(5);
 /// autre (5 preuves fausses bloquent l'appareil un quart d'heure).
 pub const PROOF_REFUSED: &str = "preuve refusée";
 
+/// Le refus d'un téléphone qui n'a pas (ou plus) le droit « Agir » sur le PC (`actRefused` de `compagnon/veille.go`) :
+/// Eyrie ne lui donne plus de clé.
+pub const ACT_REFUSED: &str = "ce téléphone n'a pas le droit « Agir » sur le PC";
+
+/// Le refus dit-il que la clé gardée ne sert plus ([`PROOF_REFUSED`], [`ACT_REFUSED`]) ? Elle est alors oubliée, et
+/// « Démarrer Eyrie » n'est plus proposé avant la clé du prochain accueil.
+pub fn key_refused(reason: &str) -> bool {
+    reason == PROOF_REFUSED || reason == ACT_REFUSED
+}
+
 /// Le salut du veilleur.
 #[derive(Deserialize)]
 struct Hello {
@@ -371,6 +381,7 @@ pub fn shown(away: &Away, start: &Start, wake: bool, now: u64) -> Shown {
         Start::Idle | Start::Asked => String::new(),
     };
     let proof_refused = matches!(start, Start::Refused(r) if r == PROOF_REFUSED);
+    let key_refused = matches!(start, Start::Refused(r) if key_refused(r));
     // La carte suit celle du PC, qui le nomme : son titre est plus court que la ligne d'état.
     let (closed_line, closed_title) = match away.closed {
         true => ("Eyrie a été fermée sur le PC", "Eyrie a été fermée"),
@@ -392,14 +403,15 @@ pub fn shown(away: &Away, start: &Start, wake: bool, now: u64) -> Shown {
     }
     match away.reach {
         Reach::Standby(Eyrie::Fermee) => {
-            let can_start = wake && !proof_refused;
+            let can_start = wake && !key_refused;
             let text = if can_start {
                 "Le PC est allumé : vous pouvez la démarrer d'ici."
             } else if proof_refused {
                 "Ce téléphone pourra de nouveau la démarrer après une connexion à Eyrie ouverte sur le PC."
             } else {
-                "Le PC est allumé, mais ce téléphone ne peut pas encore la démarrer : il en reçoit le droit à sa \
-                 prochaine connexion à Eyrie."
+                // Sans clé : Eyrie ne la donne, à la connexion, qu'à un appareil qui a « Agir ».
+                "Le PC est allumé, mais ce téléphone ne peut pas la démarrer : il lui faut le droit « Agir » dans \
+                 Eyrie, sur le PC (Réglages › Téléphones), et une connexion à Eyrie pour en recevoir la clé."
             };
             Shown { error, can_start, ..s(2, closed_line, closed_title, text.into()) }
         }
@@ -646,7 +658,9 @@ mod tests {
         let s = shown(&away(Reach::Standby(Eyrie::Fermee)), &Start::Idle, true, now);
         assert_eq!((s.kind, s.line.as_str(), s.can_start), (2, "Eyrie est fermée sur le PC", true));
         let s = shown(&away(Reach::Standby(Eyrie::Fermee)), &Start::Idle, false, now);
-        assert!(!s.can_start && s.text.contains("prochaine connexion"), "sans clé : {s:?}");
+        // Sans clé : il lui faut « Agir » (Eyrie ne la donne qu'aux appareils qui peuvent agir) et une connexion.
+        assert!(!s.can_start && s.text.contains("« Agir »") && s.text.contains("Réglages › Téléphones"), "{s:?}");
+        assert!(s.text.contains("connexion"), "{s:?}");
 
         let s = shown(&away(Reach::PcAway { seen: now as i64 - 7200 }), &Start::Idle, true, now);
         assert_eq!((s.kind, s.line.as_str()), (1, "PC injoignable"));
@@ -697,5 +711,20 @@ mod tests {
         assert!(s.can_start);
         let s = shown(&fermee, &Start::Failed("délai dépassé".into()), true, now);
         assert_eq!((s.error.as_str(), s.can_start), ("Le veilleur du PC n'a pas répondu (délai dépassé).", true));
+    }
+
+    /// Un téléphone qui n'a plus « Agir » sur le PC : le veilleur le refuse, le téléphone oublie sa clé (comme après
+    /// une preuve refusée) et dit pourquoi il ne peut plus démarrer Eyrie ; les autres refus gardent la clé.
+    #[test]
+    fn a_phone_without_the_act_right_forgets_its_key_and_says_why() {
+        assert!(key_refused(PROOF_REFUSED) && key_refused(ACT_REFUSED));
+        assert!(!key_refused("trop de démarrages : réessayez dans 25 s"));
+        let now = 1_761_600_000;
+        let fermee = away(Reach::Standby(Eyrie::Fermee));
+        for wake in [true, false] {
+            let s = shown(&fermee, &Start::Refused(ACT_REFUSED.into()), wake, now);
+            assert_eq!(s.error, "Démarrage refusé : ce téléphone n'a pas le droit « Agir » sur le PC");
+            assert!(!s.can_start && s.text.contains("Réglages › Téléphones"), "{s:?}");
+        }
     }
 }

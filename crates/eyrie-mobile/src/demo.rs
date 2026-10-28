@@ -8,7 +8,8 @@
 //! chemin saisi à la main) ; le PC sans Eyrie (voir
 //! `veilleur.rs`) : `fermee` (« Démarrer Eyrie »), `fermee-par-pc` (elle vient de se fermer), `fermee-sans-cle`,
 //! `fermee-sans-veilleur` (le PC a quitté le tailnet avec elle),
-//! `demarrage`, `acces-coupe`, `refus-demarrage`, `preuve-refusee`, `injoignable`, `telephone-hors-ligne` ; le
+//! `demarrage`, `acces-coupe`, `refus-demarrage`, `preuve-refusee`, `sans-agir` (le téléphone n'a plus « Agir »),
+//! `injoignable`, `telephone-hors-ligne` ; le
 //! terminal : `terminal-ctrl` (Ctrl collé), `terminal-copie` (le texte à copier), `terminal-coller` (un collage de
 //! plusieurs lignes à confirmer), `terminal-ctrl-coller` (Ctrl collé, puis Coller : relâché), `terminal-saisie` (sur
 //! plusieurs lignes), `terminal-zoom`, `terminal-suivi` (le bas
@@ -889,7 +890,8 @@ pub fn play(ui: &AppWindow, scene: &str) {
         | "demarrage"
         | "acces-coupe"
         | "refus-demarrage"
-        | "preuve-refusee" => {
+        | "preuve-refusee"
+        | "sans-agir" => {
             let fermee = Away { reach: Reach::Standby(Eyrie::Fermee), ..Away::default() };
             let (away, start, wake, age) = match scene {
                 "fermee-par-pc" => (Away { closed: true, ..Away::default() }, Start::Idle, true, 5),
@@ -910,6 +912,7 @@ pub fn play(ui: &AppWindow, scene: &str) {
                 }
                 "refus-demarrage" => (fermee, Start::Refused(UNSAFE_EYRIE.into()), true, 300),
                 "preuve-refusee" => (fermee, Start::Refused(crate::veilleur::PROOF_REFUSED.into()), true, 300),
+                "sans-agir" => (fermee, Start::Refused(crate::veilleur::ACT_REFUSED.into()), false, 300),
                 _ => (fermee, Start::Idle, true, 240),
             };
             with(|c| c.demo_away("PORTABLE-AUBIN", away, start, wake, age));

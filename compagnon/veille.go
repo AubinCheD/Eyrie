@@ -11,10 +11,10 @@ package main
 //  3. veilleur → téléphone : {"ok":true,"etat":"demarrage"} ou {"ok":false,"raison":"…"}.
 //
 // Seul un appareil appairé reçoit un défi : le compte Tailscale de la connexion (WhoIs) doit être celui d'un appareil
-// de mobile\appareils.json ; les autres ne reçoivent rien. Le veilleur relit à chaque demande les appareils et
-// mobile\veille.dpapi (écrit par Eyrie, chiffré par DPAPI) : retirer un appareil ou couper l'accès sur le PC vaut
-// tout de suite. Il n'a pas la clé du PC (Noise) : il peut seulement démarrer Eyrie, et rien d'autre qu'eyrie.exe
-// rangé à côté de lui.
+// de mobile\appareils.json ; les autres ne reçoivent rien. Seul un appareil qui a le droit « Agir » démarre Eyrie.
+// Le veilleur relit à chaque demande les appareils et mobile\veille.dpapi (écrit par Eyrie, chiffré par DPAPI) :
+// retirer un appareil, lui retirer « Agir » ou couper l'accès sur le PC vaut tout de suite. Il n'a pas la clé du PC
+// (Noise) : il peut seulement démarrer Eyrie, et rien d'autre qu'eyrie.exe rangé à côté de lui.
 
 import (
 	"bufio"
@@ -47,6 +47,9 @@ const (
 	wakePort = 4748
 	// Seule demande connue (veille::START).
 	wakeStart = "demarrer"
+	// Le refus d'un appareil sans le droit « Agir » (veilleur::ACT_REFUSED de crates/eyrie-mobile, qui le reconnaît à
+	// ce texte et oublie sa clé).
+	actRefused = "ce téléphone n'a pas le droit « Agir » sur le PC"
 
 	// Une connexion : 5 s au plus, des lignes d'un Kio au plus, quatre à la fois au plus.
 	wakeDeadline = 5 * time.Second
@@ -149,6 +152,24 @@ type pairedDevice struct {
 	Name  string `json:"name"`
 	Key   string `json:"key"`
 	Login string `json:"login"`
+	// Ses droits (Rights de crates/suite-mobile/src/msg.rs), tels qu'écrits : voir mayAct.
+	Rights json.RawMessage `json:"rights"`
+}
+
+// mayAct : l'appareil a-t-il le droit « Agir » ? Démarrer Eyrie en est un usage. Sans droits écrits (appairé avant
+// eux), oui : Eyrie les lui accorde tous (#[serde(default)]). Des droits sans « act » booléen, qu'Eyrie ne lirait
+// pas : non.
+func (d pairedDevice) mayAct() bool {
+	if d.Rights == nil {
+		return true
+	}
+	var r struct {
+		Act *bool `json:"act"`
+	}
+	if json.Unmarshal(d.Rights, &r) != nil || r.Act == nil {
+		return false
+	}
+	return *r.Act
 }
 
 func readDevices(mobile string) ([]pairedDevice, error) {
@@ -432,6 +453,10 @@ func (w *waker) decide(peer, login string, devices []pairedDevice, cfg wakeConfi
 	refuse := func(reason string) string {
 		w.journal(dev.Name, "Démarrage refusé : "+reason, now)
 		return reason
+	}
+	// Eyrie ne donne son secret qu'à un appareil qui a « Agir » ; celui-ci l'a reçu avant que le droit lui soit retiré.
+	if !dev.mayAct() {
+		return refuse(actRefused)
 	}
 	switch w.stateLocked(cfg) {
 	case eyrieCut:

@@ -424,6 +424,66 @@ func TestAccessCutOnThePcRefuses(t *testing.T) {
 	}
 }
 
+// rights écrit les droits de « Pixel 8 » dans appareils.json comme Eyrie (`raw`, du JSON), ou les retire ("").
+func (f *wakeFixture) rights(raw string) {
+	f.t.Helper()
+	path := filepath.Join(f.mobile, "appareils.json")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	var devices []map[string]json.RawMessage
+	if err := json.Unmarshal(b, &devices); err != nil {
+		f.t.Fatal(err)
+	}
+	if raw == "" {
+		delete(devices[0], "rights")
+	} else {
+		devices[0]["rights"] = json.RawMessage(raw)
+	}
+	b, _ = json.Marshal(devices)
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// Démarrer Eyrie est une action : un téléphone sans le droit « Agir » est refusé, même avec une preuve valable (une
+// clé reçue avant que le droit lui soit retiré), sans que cela compte pour une preuve fausse. Sans droits écrits
+// (appairé avant eux), il a « Agir », comme chez Eyrie ; des droits sans « act » lisible ne le donnent pas.
+func TestAPhoneWithoutTheActRightCannotStartEyrie(t *testing.T) {
+	f := newWake(t)
+	for i, raw := range []string{
+		`{"see":true,"act":false,"terminals":true,"files":true}`,
+		`{"see":true,"terminals":true}`,
+		`{"see":true,"act":"oui","terminals":true}`,
+		`null`,
+	} {
+		f.rights(raw)
+		x := f.start()
+		if x.hello.Eyrie != eyrieClosed || x.reply.OK || x.reply.Reason != actRefused || len(f.launches()) != 0 {
+			t.Fatalf("droits %s : %+v", raw, x)
+		}
+		if j := f.journal(); len(j) != i+1 || j[i].Device != "Pixel 8" || !strings.Contains(j[i].Text, "« Agir »") {
+			t.Fatalf("journal : %+v", j)
+		}
+	}
+	f.w.mu.Lock()
+	s := f.w.wrong["127.0.0.1"]
+	f.w.mu.Unlock()
+	if s != nil {
+		t.Fatalf("compté pour une preuve fausse : %+v", s)
+	}
+	f.rights(`{"see":true,"act":true,"terminals":false,"files":false}`)
+	if x := f.start(); !x.reply.OK || len(f.launches()) != 1 {
+		t.Fatalf("avec « Agir » : %+v", x)
+	}
+	f.set(func(f *wakeFixture) { f.clock = f.clock.Add(time.Hour) })
+	f.rights("")
+	if x := f.start(); !x.reply.OK || len(f.launches()) != 2 {
+		t.Fatalf("sans droits écrits : %+v", x)
+	}
+}
+
 // Six démarrages par heure au plus ; une demande d'un autre type est refusée.
 func TestStartsAreRateLimited(t *testing.T) {
 	f := newWake(t)

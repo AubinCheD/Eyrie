@@ -830,10 +830,11 @@ impl Controller {
             Ok(veilleur::Answer::Refused(reason)) => {
                 self.toast(&format!("Démarrage refusé : {reason}"), 4);
                 haptic_error();
-                // Une preuve refusée : la clé gardée ne sert plus (appareil appairé de nouveau, clé du veilleur
-                // changée). Retirée, « Démarrer » n'est plus proposé, même après un redémarrage de l'application, avant
-                // la clé du prochain accueil : pas de preuves fausses en série, que le veilleur finit par bloquer.
-                if reason == veilleur::PROOF_REFUSED {
+                // Une preuve refusée, ou « Agir » retiré sur le PC : la clé gardée ne sert plus (appareil appairé de
+                // nouveau, clé du veilleur changée, droit retiré). Retirée, « Démarrer » n'est plus proposé, même après
+                // un redémarrage de l'application, avant la clé du prochain accueil : pas de preuves fausses en série,
+                // que le veilleur finit par bloquer.
+                if veilleur::key_refused(&reason) {
                     let id = self.link_pc.clone();
                     self.store.set_wake(&id, None);
                 }
