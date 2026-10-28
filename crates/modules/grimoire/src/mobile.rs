@@ -15,7 +15,6 @@ use grimoire::instance::Request;
 use grimoire::limits::Record;
 use grimoire::mcp::{Server, Status};
 use grimoire::profiles::{Account, Profile};
-use suite_sdk::mobile::msg::MODULE_PREFIX;
 use suite_sdk::mobile::ui::{Act, Band, Row, Screen, Tone};
 
 const READ_EVERY: Duration = Duration::from_secs(10);
@@ -154,7 +153,8 @@ pub fn home(data: Option<&Data>, now: i64, gringotts: bool) -> Screen {
             Row::new("Limites des comptes")
                 .subtitle("5 h et semaine, par compte, et ce que coûte chaque conversation")
                 .glyph("📊")
-                .tap(Act::new("gringotts", "Voir dans Gringotts").glyph("💰")),
+                // L'accueil de Gringotts, ouvert par le téléphone : rien n'est envoyé au PC.
+                .tap(Act::module("Voir dans Gringotts", "gringotts", "").glyph("💰")),
         );
     } else if d.limits.is_empty() {
         s.band(Band::new("limites", "Limites").glyph("📊"));
@@ -242,9 +242,6 @@ impl Phone {
     }
 
     pub fn action(&mut self, action: &str) -> Result<Option<String>, String> {
-        if action == "gringotts" {
-            return Ok(Some(format!("{MODULE_PREFIX}gringotts")));
-        }
         let request = match action.split_once(':') {
             Some(("ouvrir", id)) => Request::Open { dir: None, tab: None, profile: Some(id.to_string()) },
             _ if action == "mcp" => {
@@ -264,6 +261,7 @@ mod tests {
     use std::sync::mpsc;
 
     use grimoire::limits::Window;
+    use suite_sdk::mobile::msg::{MODULE_PREFIX, module_target};
     use suite_sdk::mobile::ui::{Block, Fold};
 
     use super::*;
@@ -379,16 +377,22 @@ mod tests {
         assert!(loading.action_ids().is_empty());
     }
 
-    /// Quand Gringotts tourne, les limites n'y sont pas montrées deux fois : une ligne y mène.
+    /// Quand Gringotts tourne, les limites n'y sont pas montrées deux fois : une ligne mène à son accueil, ouvert par
+    /// le téléphone sans rien envoyer au PC (ni droit d'agir, ni bulle sur le PC).
     #[test]
     fn with_gringotts_running_the_limits_lead_there() {
         let now = 1_800_000_000;
         let s = home(Some(&sample(now)), now, true);
         assert!(!s.blocks.iter().any(|b| matches!(b, Block::Meter { .. })));
-        assert!(s.action_ids().contains("gringotts"));
-        let (tx, _rx) = mpsc::channel();
+        let link = s.all_acts().into_iter().find(|a| a.label == "Voir dans Gringotts").expect("une ligne y mène");
+        assert_eq!(link.open, Some(format!("{MODULE_PREFIX}gringotts")));
+        assert_eq!(link.open.as_deref().and_then(module_target), Some(("gringotts", "")));
+        assert!(!link.reaches_pc());
+        assert!(!s.action_ids().contains("gringotts"), "plus d'action au PC");
+        let (tx, rx) = mpsc::channel();
         let mut phone = Phone::new(tx);
-        assert_eq!(phone.action("gringotts"), Ok(Some(format!("{MODULE_PREFIX}gringotts"))));
+        assert!(phone.action("gringotts").is_err());
+        assert!(rx.try_recv().is_err());
     }
 
     /// Sans Gringotts ni relevé, le bandeau des limites dit comment en avoir.
@@ -403,7 +407,7 @@ mod tests {
             text: "Aucun relevé : le relais des limites s'installe depuis Grimoire, sur le PC.".into(),
         };
         assert!(s.blocks.contains(&empty));
-        assert!(!s.action_ids().contains("gringotts"));
+        assert!(!s.all_acts().iter().any(|a| a.label == "Voir dans Gringotts"));
     }
 
     #[test]
