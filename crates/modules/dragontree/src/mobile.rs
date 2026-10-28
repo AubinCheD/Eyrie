@@ -24,7 +24,9 @@
 //! est son « foyer distant » (`set_remote_focus`), relu comme l'onglet affiché quand il change sur le disque. Une
 //! lecture ratée de DragonTree (état, branches) se dit sur le téléphone. Un onglet que le téléphone a ouvert lui-même
 //! (un dépôt regardé, ou ajouté d'ici : `add_repo`, en fond) est refermé par DragonTree après 15 min sans regard ni
-//! opération (`close_repo_tab`) ; jamais un onglet que l'utilisateur a ouvert, ou affiché, sur le PC.
+//! opération (`close_repo_tab`) ; jamais un onglet que l'utilisateur a ouvert, ou affiché, sur le PC. Ces onglets sont
+//! notés à côté de ses réglages (`phone-tabs.json`) : DragonTree les rouvre au démarrage avec ceux de sa dernière
+//! session, et ils restent ceux du téléphone.
 //!
 //! « Cloner un dépôt… » ouvre un brouillon (`clonage.rs`, écran `cloner/<n>`) que DragonTree clone sans fenêtre
 //! (`clone_remote`) ; ses clonages en cours et ce qu'ils ont donné s'affichent en tête de la liste, avec « Annuler ».
@@ -89,6 +91,8 @@ const ERROR_MAX: usize = 400;
 /// plus toutes les 10 s.
 const CLOSE_IDLE_AFTER: Duration = Duration::from_secs(15 * 60);
 const CLOSE_CHECK_EVERY: Duration = Duration::from_secs(10);
+/// Les onglets que le téléphone a ouverts, notés dans ce fichier à côté des réglages de DragonTree (leurs chemins).
+const PHONE_TABS: &str = "phone-tabs.json";
 
 /// Annuler l'opération en cours, comme le bouton Annuler de sa barre de progression (une fenêtre d'identification
 /// restée ouverte sur le PC, un fetch qui ne répond pas…).
@@ -592,6 +596,11 @@ pub struct Phone {
     opened: HashMap<String, (PathBuf, Instant)>,
     /// Quand les onglets ouverts par le téléphone ont été passés en revue pour la dernière fois ([`Phone::close_idle`]).
     idle_checked: Option<Instant>,
+    /// Le fichier où sont notés les onglets du téléphone ([`PHONE_TABS`]), ce qu'il en disait au démarrage (pas encore
+    /// repris : [`Phone::adopt`]) et ce qui y est noté.
+    tabs_path: PathBuf,
+    restored: Option<Vec<PathBuf>>,
+    remembered: Vec<PathBuf>,
     /// Les dossiers où le téléphone ne fait pas ouvrir de dépôt ([`forbidden_zones`]).
     forbidden: Vec<PathBuf>,
     sweep: Arc<Mutex<Sweep>>,
@@ -624,6 +633,10 @@ pub struct Phone {
 impl Phone {
     /// `settings_path` : les réglages de DragonTree.
     pub fn new(settings_path: PathBuf) -> Phone {
+        let tabs_path = settings_path.with_file_name(PHONE_TABS);
+        let mut remembered: Vec<PathBuf> =
+            std::fs::read(&tabs_path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        remembered.sort();
         Phone {
             forbidden: forbidden_zones(settings_path.parent()),
             settings_path,
@@ -632,6 +645,9 @@ impl Phone {
             settings: Settings::default(),
             opened: HashMap::new(),
             idle_checked: None,
+            tabs_path,
+            restored: Some(remembered.clone()),
+            remembered,
             sweep: Arc::default(),
             git: GitCell::default(),
             reads: SharedReads::default(),
@@ -1429,12 +1445,16 @@ impl Phone {
     /// le téléphone a ouverts et laissés 15 min sont refermés ; les opérations qui attendaient l'ouverture de leur dépôt
     /// partent quand DragonTree l'a ouvert (ou sont abandonnées s'il n'y arrive pas).
     pub fn after_logic(&mut self, app: &mut DragonTreeApp) {
+        if let Some(restored) = self.restored.take() {
+            self.adopt(app, restored);
+        }
         if self.focus.is_some_and(|t| t.elapsed() >= FOCUS_FOR) {
             app.set_remote_focus(None);
             self.focus = None;
         }
         self.follow_clones(app);
         self.close_idle(app);
+        self.remember_tabs();
         if self.waiting.is_empty() {
             return;
         }
@@ -1491,6 +1511,30 @@ impl Phone {
         }
     }
 
+    /// Les onglets que le téléphone avait ouverts dans la session d'avant ([`PHONE_TABS`]) : DragonTree les a rouverts
+    /// avec les autres onglets de sa dernière session. Ils restent ceux du téléphone, refermés après 15 min sans regard
+    /// comptées d'ici ; un onglet qu'il n'a pas rouvert, ou qu'il affiche, est oublié.
+    fn adopt(&mut self, app: &DragonTreeApp, restored: Vec<PathBuf>) {
+        let shown = app.active_repo_dir().map(path_key);
+        for tab in restored.iter().filter_map(|p| app.repo_tab(p)) {
+            if shown.as_deref() != Some(path_key(&tab.path).as_str()) {
+                self.opened.entry(repo_key(&tab.path)).or_insert_with(|| (tab.path.clone(), Instant::now()));
+            }
+        }
+    }
+
+    /// Note les onglets du téléphone dans [`PHONE_TABS`] quand ils ont changé : DragonTree les rouvrira au prochain
+    /// démarrage, sans savoir qu'ils sont au téléphone. Une écriture ratée est refaite au prochain changement.
+    fn remember_tabs(&mut self) {
+        let mut tabs: Vec<PathBuf> = self.opened.values().map(|(p, _)| p.clone()).collect();
+        tabs.sort();
+        if tabs == self.remembered {
+            return;
+        }
+        let _ = save_tabs(&self.tabs_path, &tabs);
+        self.remembered = tabs;
+    }
+
     /// Oublie ce que le téléphone gardait du dépôt `key`, dont l'onglet est refermé : ce qui en a été lu à part, son
     /// graphe découpé, ses regards ; regardé de nouveau, il est rouvert et relu.
     fn forget(&mut self, key: &str) {
@@ -1502,6 +1546,16 @@ impl Phone {
         let screens = format!("depot/{key}");
         self.cells.retain(|path, _| path != &screens && !path.starts_with(&format!("{screens}/")));
     }
+}
+
+/// Écrit les onglets du téléphone dans `path` : à côté, puis renommé (jamais à moitié écrit).
+fn save_tabs(path: &Path, tabs: &[PathBuf]) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_vec_pretty(tabs).map_err(std::io::Error::other)?)?;
+    std::fs::rename(&tmp, path)
 }
 
 /// Maintenant, en secondes Unix.
@@ -2527,6 +2581,60 @@ mod tests {
         assert_eq!(band_of(&home, &key), Some("Récents".into()), "toujours dans la liste : {home:?}");
         wait_screen(&mut h, &mut phone, &base(&phones), "lisez-moi.txt");
         assert!(h.state().repo_tab(&phones).is_some() && phone.opened.contains_key(&key), "rouvert en fond");
+        drop(h);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Le défaut relevé à la relecture : DragonTree rouvre au démarrage les onglets de sa dernière session, ceux que le
+    /// téléphone avait ouverts compris ; le téléphone, qui ne s'en souvenait plus, les prenait pour ceux de
+    /// l'utilisateur (« Ouverts sur le PC ») et ne les refermait jamais. Il les retrouve dans `phone-tabs.json` et les
+    /// referme comme avant ; l'onglet de l'utilisateur reste le sien.
+    #[test]
+    fn the_tabs_the_phone_opened_are_still_its_own_after_a_restart() {
+        let Ok(git) = Git::discover() else { return };
+        let dir = std::env::temp_dir().join(format!("suite-dragontree-redemarrage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (phones, users) = (dir.join("telephone"), dir.join("utilisateur"));
+        new_repo(&git, &phones);
+        new_repo(&git, &users);
+        let profile = dir.join("profil");
+        let file = profile.join("settings.json");
+        let mut phone = phone_for(&profile, &phones);
+        let mut h = dragontree(&profile);
+        h.state_mut().show_repo(&users);
+        let base = format!("depot/{}", repo_key(&phones));
+        wait_screen(&mut h, &mut phone, &base, "lisez-moi.txt");
+        let saved = |h: &H| {
+            let s: Option<Settings> = std::fs::read(&file).ok().and_then(|b| serde_json::from_slice(&b).ok());
+            h.state().repo_tab(&phones).is_some()
+                && s.is_some_and(|s| s.open_tabs.iter().any(|p| path_key(p) == path_key(&phones)))
+        };
+        step_until(&mut h, saved);
+        assert!(saved(&h), "DragonTree a enregistré ses deux onglets");
+        drop((h, phone));
+
+        // Eyrie redémarre : DragonTree rouvre ses deux onglets, celui de l'utilisateur affiché.
+        let mut phone = Phone::new(file.clone());
+        let mut h = dragontree(&profile);
+        assert!(h.state().repo_tab(&phones).is_some() && h.state().repo_tab(&users).is_some(), "rouverts");
+        assert_eq!(h.state().active_repo_dir().map(path_key), Some(path_key(&users)));
+        phone.after_logic(h.state_mut());
+        let key = repo_key(&phones);
+        assert!(phone.opened.contains_key(&key) && !phone.opened.contains_key(&repo_key(&users)));
+        let home = phone.screen(h.state_mut(), "").unwrap();
+        assert_eq!(band_of(&home, &key), Some("Récents".into()), "toujours au téléphone : {home:?}");
+
+        // Un quart d'heure sans regard (DragonTree a fini de le rouvrir) : refermé, et plus noté.
+        step_until(&mut h, |h| h.state().repo_tab(&phones).is_some_and(|t| t.repo.is_some() && !t.is_busy()));
+        let long_ago = Instant::now().checked_sub(CLOSE_IDLE_AFTER + Duration::from_secs(60)).expect("un PC allumé");
+        for (_, at) in phone.opened.values_mut() {
+            *at = long_ago;
+        }
+        phone.idle_checked = None;
+        phone.after_logic(h.state_mut());
+        assert!(h.state().repo_tab(&phones).is_none() && h.state().repo_tab(&users).is_some());
+        let noted: Vec<PathBuf> = serde_json::from_slice(&std::fs::read(profile.join(PHONE_TABS)).unwrap()).unwrap();
+        assert!(noted.is_empty(), "{noted:?}");
         drop(h);
         let _ = std::fs::remove_dir_all(&dir);
     }
