@@ -10,7 +10,8 @@
 //! `fermee-sans-veilleur` (le PC a quitté le tailnet avec elle),
 //! `demarrage`, `acces-coupe`, `refus-demarrage`, `preuve-refusee`, `injoignable`, `telephone-hors-ligne` ; le
 //! terminal : `terminal-ctrl` (Ctrl collé), `terminal-copie` (le texte à copier), `terminal-coller` (un collage de
-//! plusieurs lignes à confirmer), `terminal-saisie` (sur plusieurs lignes), `terminal-zoom`, `terminal-suivi` (le bas
+//! plusieurs lignes à confirmer), `terminal-ctrl-coller` (Ctrl collé, puis Coller : relâché), `terminal-saisie` (sur
+//! plusieurs lignes), `terminal-zoom`, `terminal-suivi` (le bas
 //! reste en vue quand la liste rapetisse), `terminal-remonte` (la sortie qui arrive ne ramène pas en bas). Suffixe
 //! `+clair` ou `+sombre` : le thème (sinon celui du système).
 
@@ -639,6 +640,11 @@ fn terminal_scene(ui: &AppWindow, scene: &str) {
         }
         "terminal-coller" => {
             with(|c| c.term_paste("git fetch --all\ngit status --short\ncargo test -p eyrie-mobile\n"));
+        }
+        // Ctrl collé, puis « Coller » : Ctrl se relâche.
+        "terminal-ctrl-coller" => {
+            with(|c| c.term_latch(Latch::Ctrl));
+            with(|c| c.term_paste("git fetch --all\ngit status --short\n"));
         }
         "terminal-saisie" => {
             ui.set_term_draft(

@@ -532,8 +532,10 @@ export component TermView inherits Rectangle {
                             root.key(k.key);
                         }
                     }
+                    // Coller, Copier, A− et A+ ne prennent pas Ctrl ou Alt collé : ils le relâchent.
                     KeyChip {
                         text: "Coller";
+                        dim: root.latch != 0;
                         clicked => {
                             root.haptic();
                             root.paste-clipboard();
@@ -541,6 +543,7 @@ export component TermView inherits Rectangle {
                     }
                     KeyChip {
                         text: "Copier";
+                        dim: root.latch != 0;
                         clicked => {
                             root.haptic();
                             root.copy(-1);
@@ -556,14 +559,18 @@ export component TermView inherits Rectangle {
                     }
                     KeyChip {
                         text: "A−";
+                        dim: root.latch != 0;
                         clicked => {
+                            root.unlatch();
                             root.set-zoom(root.zoom / 1.15);
                             root.zoomed(root.zoom);
                         }
                     }
                     KeyChip {
                         text: "A+";
+                        dim: root.latch != 0;
                         clicked => {
+                            root.unlatch();
                             root.set-zoom(root.zoom * 1.15);
                             root.zoomed(root.zoom);
                         }

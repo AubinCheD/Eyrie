@@ -2028,8 +2028,10 @@ impl Controller {
         }
     }
 
-    /// Le presse-papiers, collé dans le terminal ; sur plusieurs lignes, après confirmation.
+    /// Le presse-papiers, collé dans le terminal ; sur plusieurs lignes, après confirmation. Ctrl ou Alt collé se
+    /// relâche (il ne va pas avec un collage, et la lettre tapée ensuite ne doit pas le prendre).
     pub(crate) fn term_paste(&mut self, clip: &str) {
+        self.set_latch(Latch::None);
         match termkeys::paste(clip) {
             Paste::Empty => self.toast("Le presse-papiers est vide.", 1),
             Paste::Now(text) => {
