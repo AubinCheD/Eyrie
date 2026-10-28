@@ -6,9 +6,9 @@ use suite_mobile::msg::{Badge, CommandCard, ModuleCard, Note, ToPhone, Waiting};
 use suite_mobile::term::{self, Color, Line, Run, TermFrame, TermView};
 use suite_mobile::ui::{Act, Row, Screen, Tone};
 
-use crate::AppWindow;
 use crate::app::with;
 use crate::tailnet::Tailnet;
+use crate::{AppWindow, UiAct};
 
 /// L'état d'un nœud Tailscale, à l'écran (le bureau n'en a pas).
 fn show_tailnet(ui: &AppWindow, t: Tailnet) {
@@ -291,8 +291,12 @@ pub fn play(ui: &AppWindow, scene: &str) {
         "patronus" => {
             with(|c| c.nav_select("patronus"));
         }
+        // Un Fetch envoyé, sans réponse encore (rien ne part en démonstration).
         "depot" => {
-            with(|c| c.open_module_path("dragontree", "depot/eyrie"));
+            with(|c| {
+                c.open_module_path("dragontree", "depot/eyrie");
+                c.run_act(&UiAct { id: "fetch".into(), ..Default::default() }, "");
+            });
         }
         "plus" | "notes" => {
             with(|c| c.nav_select(scene));

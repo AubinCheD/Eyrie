@@ -65,7 +65,9 @@ export component ScreenPage inherits Rectangle {
                     if r.opens {
                         root.open-path(r.path);
                     } else if r.has-tap {
-                        root.act(r.tap);
+                        if !r.tap.busy {
+                            root.act(r.tap);
+                        }
                     } else if r.acts.length > 0 {
                         root.menu(r);
                     }
@@ -113,6 +115,7 @@ export component ScreenPage inherits Rectangle {
                         text: a.label;
                         glyph: a.glyph;
                         style: a.style;
+                        busy: a.busy;
                         clicked => { root.act(a); }
                     }
                 }

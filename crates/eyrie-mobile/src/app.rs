@@ -27,6 +27,8 @@ const DEFAULT_PINS: [&str; 8] =
     ["fawkes", "patronus", "owlery", "menagerie", "gringotts", "dragontree", "grimoire", "carnet"];
 const EXTRAS: [&str; 3] = ["notes", "commandes", "reglages"];
 const TEXT_SIZES: [f32; 3] = [1.0, 1.35, 1.7];
+/// Une action sans résultat du PC passé ce délai : « Le PC n'a pas répondu ».
+const ANSWER_WITHIN: Duration = Duration::from_secs(15);
 
 fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
@@ -48,6 +50,19 @@ struct Signalled {
     notes_until: Option<u64>,
     /// Ce qui attendait au dernier relevé ; `None` : rien reçu depuis la connexion.
     waiting: Option<std::collections::HashSet<String>>,
+}
+
+/// Une action envoyée au PC, en attente de son résultat : son bouton est grisé, avec un indicateur.
+struct Pending {
+    module: String,
+    path: String,
+    act: String,
+}
+
+/// Deux vibrations brèves : un échec.
+fn haptic_error() {
+    platform::haptic();
+    slint::Timer::single_shot(Duration::from_millis(140), platform::haptic);
 }
 
 /// Où l'appairage en cours se connecte.
@@ -93,6 +108,8 @@ pub struct Controller {
     scroll: HashMap<(String, String), f32>,
     scroll_seq: i32,
     req: u32,
+    /// Les actions envoyées sans résultat du PC, par numéro de demande : pas de second envoi de la même.
+    pending: HashMap<u32, Pending>,
     target: Option<Target>,
     /// Ce qui a déjà été signalé (bulle ou notification du système) : rien deux fois, et rien à la première connexion
     /// à un PC (l'état initial n'est pas une nouveauté). Après une coupure, ou un arrêt de l'application par Android,
@@ -205,6 +222,7 @@ impl Controller {
             scroll: HashMap::new(),
             scroll_seq: 0,
             req: 0,
+            pending: HashMap::new(),
             target: None,
             signalled: Signalled::default(),
             demo,
@@ -457,11 +475,23 @@ impl Controller {
                     self.refresh_term(change);
                 }
             }
-            ToPhone::Result { ok, message, .. } => {
+            ToPhone::Result { req, ok, message } => {
+                let done = self.pending.remove(&req);
                 if !ok {
                     self.toast(&message, 4);
-                } else if !message.is_empty() {
-                    self.toast(&message, 2);
+                    haptic_error();
+                } else {
+                    if done.is_some() {
+                        platform::haptic();
+                    }
+                    if !message.is_empty() {
+                        self.toast(&message, 2);
+                    }
+                }
+                if let Some(p) = done
+                    && self.is_shown(&(p.module, p.path))
+                {
+                    self.refresh_screen();
                 }
             }
             ToPhone::Open { module, path } => self.open_module_path(&module, &path),
@@ -670,6 +700,12 @@ impl Controller {
         self.is_module_tab() && key.0 == self.tab && key.1 == self.top_path()
     }
 
+    /// Ce que le téléphone ajoute à cet écran : ses actions en cours.
+    fn local(&self, key: &(String, String)) -> view::Local {
+        let pending = self.pending.values().filter(|p| p.module == key.0 && p.path == key.1);
+        view::Local { pending: pending.map(|p| p.act.clone()).collect() }
+    }
+
     fn followed_term(&self) -> Option<(String, String)> {
         self.followed.as_ref().and_then(|(_, t)| t.clone())
     }
@@ -752,7 +788,8 @@ impl Controller {
         ui.set_subtitle(subtitle.into());
         ui.set_can_back(can_back);
         ui.set_show_pc(acts.iter().any(|a| a.id == "@pc"));
-        view::sync(&self.models.acts, acts.iter().filter(|a| a.id != "@pc").map(view::act).collect());
+        let local = screen_follow.as_ref().map(|k| self.local(k)).unwrap_or_default();
+        view::sync(&self.models.acts, acts.iter().filter(|a| a.id != "@pc").map(|a| view::act_in(a, &local)).collect());
         self.refresh_rows(screen_follow.as_ref().filter(|_| term_follow.is_none()));
         let terminal_mode = term_follow.is_some();
         if terminal_mode && !self.term.is(&term_follow.as_ref().unwrap().0, &term_follow.as_ref().unwrap().1) {
@@ -783,12 +820,13 @@ impl Controller {
             self.shown.clear();
             return;
         };
-        let items = view::items(s);
+        let local = self.local(key);
+        let items = view::items(s, &local);
         if self.shown_for.as_ref() == Some(key) {
-            view::patch(&self.models.rows, &mut self.shown, &items, view::ui_row);
+            view::patch(&self.models.rows, &mut self.shown, &items, |i| view::ui_row(i, &local));
         } else {
             // Un autre écran : la liste repart de zéro, à la position où on l'avait laissée.
-            self.models.rows.set_vec(items.iter().map(view::ui_row).collect::<Vec<_>>());
+            self.models.rows.set_vec(items.iter().map(|i| view::ui_row(i, &local)).collect::<Vec<_>>());
             self.shown = items.iter().map(|i| (i.key.clone(), i.sig)).collect();
             let y = self.scroll.get(key).copied().unwrap_or(0.0);
             self.shown_for = Some(key.clone());
@@ -972,27 +1010,42 @@ impl Controller {
         true
     }
 
-    fn run_act(&mut self, a: &UiAct, input: &str) {
+    pub(crate) fn run_act(&mut self, a: &UiAct, input: &str) {
         if a.id == "@lu" {
             self.send(ToPc::NotesRead);
             return;
         }
-        if !self.is_module_tab() {
+        if !self.is_module_tab() || a.busy {
             return;
         }
         if !self.online {
             self.toast("Hors ligne : l'action n'est pas partie.", 3);
             return;
         }
+        let (module, path, act) = (self.tab.clone(), self.top_path(), a.id.to_string());
+        // Une seule fois tant que le PC n'a pas répondu (deux touchers : deux Pull dans la file de DragonTree).
+        if self.pending.values().any(|p| p.module == module && p.path == path && p.act == act) {
+            return;
+        }
         self.req += 1;
+        let req = self.req;
         let input = (a.has_input).then(|| input.to_string());
-        self.send(ToPc::Action {
-            req: self.req,
-            module: self.tab.clone(),
-            path: self.top_path(),
-            action: a.id.to_string(),
-            input,
+        self.send(ToPc::Action { req, module: module.clone(), path: path.clone(), action: act.clone(), input });
+        self.pending.insert(req, Pending { module, path, act });
+        slint::Timer::single_shot(ANSWER_WITHIN, move || {
+            with(|c| c.no_answer(req));
         });
+        self.refresh_screen();
+    }
+
+    /// Le PC n'a pas donné le résultat d'une action à temps : elle redevient possible.
+    fn no_answer(&mut self, req: u32) {
+        let Some(p) = self.pending.remove(&req) else { return };
+        self.toast("Le PC n'a pas répondu.", 4);
+        haptic_error();
+        if self.is_shown(&(p.module, p.path)) {
+            self.refresh_screen();
+        }
     }
 
     fn run_command(&mut self, c: &CommandItem) {
@@ -1147,6 +1200,7 @@ impl Controller {
         self.missing.clear();
         self.stacks.clear();
         self.scroll.clear();
+        self.pending.clear();
         self.tab = "ensemble".into();
         self.followed = None;
         self.term = TermBuf::default();

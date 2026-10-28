@@ -157,6 +157,9 @@ export component AppWindow inherits Window {
     // Une action : lien local, sinon confirmation, saisie, puis envoi.
     function start-act(a: UiAct) {
         root.sheet-visible = false;
+        if a.busy {
+            return;
+        }
         if a.url != "" {
             root.open-url(a.url);
             return;

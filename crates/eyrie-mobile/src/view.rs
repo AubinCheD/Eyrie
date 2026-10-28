@@ -5,7 +5,7 @@
 //! qui la dessine). La liste est mise à jour sur place ([`patch`]) : seules les lignes changées sont redessinées, et
 //! une ligne touchée ou un appui long en cours survit aux mises à jour du PC (jusqu'à toutes les 300 ms).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use slint::{Color, Model, ModelRc, SharedString, VecModel};
@@ -27,7 +27,25 @@ pub fn rgb(c: u32) -> Color {
     Color::from_rgb_u8((c >> 16) as u8, (c >> 8) as u8, c as u8)
 }
 
+/// Ce que le téléphone ajoute à l'écran du PC, sans rien lui envoyer.
+#[derive(Clone, Debug, Default)]
+pub struct Local {
+    /// Les actions envoyées depuis cet écran dont le PC n'a pas encore donné le résultat (leurs identifiants).
+    pub pending: HashSet<String>,
+}
+
+impl Local {
+    /// L'action est en cours : envoyée et sans réponse, ou déjà faite par le module (`Act.busy`).
+    fn busy(&self, a: &Act) -> bool {
+        a.busy || (!a.id.is_empty() && self.pending.contains(&a.id))
+    }
+}
+
 pub fn act(a: &Act) -> UiAct {
+    act_in(a, &Local::default())
+}
+
+pub fn act_in(a: &Act, local: &Local) -> UiAct {
     let input = a.input.clone().unwrap_or_default();
     UiAct {
         id: a.id.as_str().into(),
@@ -45,11 +63,12 @@ pub fn act(a: &Act) -> UiAct {
         input_value: input.value.into(),
         multiline: input.multiline,
         url: a.url.clone().unwrap_or_default().into(),
+        busy: local.busy(a),
     }
 }
 
-pub fn acts(list: &[Act]) -> ModelRc<UiAct> {
-    ModelRc::new(VecModel::from(list.iter().map(act).collect::<Vec<_>>()))
+fn acts(list: &[Act], local: &Local) -> ModelRc<UiAct> {
+    ModelRc::new(VecModel::from(list.iter().map(|a| act_in(a, local)).collect::<Vec<_>>()))
 }
 
 /// Une ligne de la liste avant d'être dessinée : sa clé, son empreinte, et ce qui la dessine.
@@ -88,42 +107,47 @@ impl Keys {
     }
 }
 
-fn hash_acts(h: &mut DefaultHasher, list: &[Act]) {
-    list.len().hash(h);
+fn hash_acts<'a>(h: &mut DefaultHasher, list: impl IntoIterator<Item = &'a Act>, local: &Local) {
     for a in list {
-        a.hash(h);
+        (a, local.busy(a)).hash(h);
     }
 }
 
 /// Ce qui dessine un bloc (les jauges ont un nombre à virgule : `Block` ne dérive pas `Hash`).
-fn hash_block(h: &mut DefaultHasher, b: &Block) {
+fn hash_block(h: &mut DefaultHasher, b: &Block, local: &Local) {
     std::mem::discriminant(b).hash(h);
     match b {
         Block::Section { title, aside, key, fold, color, glyph, badge, tone, acts } => {
-            (title, aside, key, fold, color, glyph, badge, tone).hash(h);
-            hash_acts(h, acts);
+            (title, aside, key, fold, color, glyph, badge, tone, acts.len()).hash(h);
+            hash_acts(h, acts, local);
         }
-        Block::Row(r) => r.hash(h),
+        Block::Row(r) => {
+            r.hash(h);
+            hash_acts(h, r.tap.iter().chain(&r.trailing).chain(&r.acts), local);
+        }
         Block::Note { text, tone, progress, acts } => {
-            (text, tone, progress).hash(h);
-            hash_acts(h, acts);
+            (text, tone, progress, acts.len()).hash(h);
+            hash_acts(h, acts, local);
         }
         Block::Meter { label, value, text, tone } => (label, value.to_bits(), text, tone).hash(h),
         Block::Text { text, mono } => (text, mono).hash(h),
         Block::Empty { text } => text.hash(h),
-        Block::Buttons { acts } => hash_acts(h, acts),
+        Block::Buttons { acts } => {
+            acts.len().hash(h);
+            hash_acts(h, acts, local);
+        }
         Block::Diff { lines, numbers } => (lines, numbers).hash(h),
     }
 }
 
 /// Les lignes de l'écran, dans l'ordre, avec leur clé et leur empreinte.
-pub fn items(s: &Screen) -> Vec<Item<'_>> {
+pub fn items<'a>(s: &'a Screen, local: &Local) -> Vec<Item<'a>> {
     let is_row = |i: usize| matches!(s.blocks.get(i), Some(Block::Row(_)));
     let mut keys = Keys::default();
     let mut out = Vec::with_capacity(s.blocks.len());
     for (i, b) in s.blocks.iter().enumerate() {
         let mut h = DefaultHasher::new();
-        hash_block(&mut h, b);
+        hash_block(&mut h, b, local);
         let (base, what) = match b {
             Block::Section { title, key, .. } => {
                 (format!("s:{}", if key.is_empty() { title } else { key }), What::Section(b))
@@ -161,10 +185,10 @@ pub fn items(s: &Screen) -> Vec<Item<'_>> {
 }
 
 fn empty(kind: i32, title: &str) -> UiRow {
-    UiRow { kind, title: SharedString::from(title), acts: acts(&[]), ..Default::default() }
+    UiRow { kind, title: SharedString::from(title), acts: acts(&[], &Local::default()), ..Default::default() }
 }
 
-fn row(r: &Row, first: bool, last: bool) -> UiRow {
+fn row(r: &Row, first: bool, last: bool, local: &Local) -> UiRow {
     UiRow {
         kind: 1,
         title: r.title.as_str().into(),
@@ -177,30 +201,31 @@ fn row(r: &Row, first: bool, last: bool) -> UiRow {
         badge: r.badge.as_str().into(),
         path: r.open.clone().unwrap_or_default().into(),
         opens: r.open.is_some(),
-        tap: r.tap.as_ref().map(act).unwrap_or_default(),
+        tap: r.tap.as_ref().map(|a| act_in(a, local)).unwrap_or_default(),
         has_tap: r.tap.is_some(),
-        acts: acts(&r.acts),
+        acts: acts(&r.acts, local),
         value: 0.0,
         mono: false,
         first,
         last,
+        busy: r.tap.iter().chain(&r.acts).any(|a| local.busy(a)),
     }
 }
 
 /// La ligne Slint d'une ligne de la liste.
-pub fn ui_row(item: &Item) -> UiRow {
+pub fn ui_row(item: &Item, local: &Local) -> UiRow {
     match &item.what {
         What::Section(Block::Section { title, aside, .. }) => {
             UiRow { detail: aside.as_str().into(), ..empty(0, &title.to_uppercase()) }
         }
-        What::Row { row: r, first, last } => row(r, *first, *last),
+        What::Row { row: r, first, last } => row(r, *first, *last, local),
         What::Block(Block::Note { text, tone: t, .. }) => UiRow { tone: tone(Some(*t)), ..empty(2, text) },
         What::Block(Block::Meter { label, value, text, tone: t }) => {
             UiRow { detail: text.as_str().into(), value: *value, tone: tone(Some(*t)), ..empty(3, label) }
         }
         What::Block(Block::Text { text, mono }) => UiRow { mono: *mono, ..empty(4, text) },
         What::Block(Block::Empty { text }) => empty(5, text),
-        What::Block(Block::Buttons { acts: list }) => UiRow { acts: acts(list), ..empty(6, "") },
+        What::Block(Block::Buttons { acts: list }) => UiRow { acts: acts(list, local), ..empty(6, "") },
         What::DiffLine { kind, text, first, last } => {
             UiRow { tone: *kind as i32, first: *first, last: *last, ..empty(7, text) }
         }
@@ -209,8 +234,8 @@ pub fn ui_row(item: &Item) -> UiRow {
 }
 
 /// Toutes les lignes Slint de l'écran.
-pub fn rows(s: &Screen) -> Vec<UiRow> {
-    items(s).iter().map(ui_row).collect()
+pub fn rows(s: &Screen, local: &Local) -> Vec<UiRow> {
+    items(s, local).iter().map(|i| ui_row(i, local)).collect()
 }
 
 /// Au-delà, un écran qui change de fond en comble est remplacé d'un coup plutôt que ligne à ligne.
@@ -302,7 +327,7 @@ mod tests {
             .row(Row::new("b").tap(Act::new("lancer", "Lancer")).act(Act::new("x", "X")))
             .note("attention", Tone::Warn)
             .row(Row::new("c"));
-        let r = rows(&s);
+        let r = rows(&s, &Local::default());
         assert_eq!(r.len(), 5);
         assert_eq!((r[0].kind, r[0].title.as_str(), r[0].detail.as_str()), (0, "TÂCHES", "2"));
         assert!(r[1].first && !r[1].last && r[1].opens && r[1].path == "t/a");
@@ -315,7 +340,7 @@ mod tests {
     fn a_diff_becomes_one_row_per_line() {
         let mut s = Screen::new("x");
         s.diff(vec![(3, "@@ -1 +1 @@".into()), (2, "-a".into()), (1, "+b".into())]);
-        let r = rows(&s);
+        let r = rows(&s, &Local::default());
         assert_eq!(r.iter().map(|r| (r.kind, r.tone)).collect::<Vec<_>>(), [(7, 3), (7, 2), (7, 1)]);
         assert!(r[0].first && r[2].last);
     }
@@ -338,7 +363,7 @@ mod tests {
             .row(Row::new("pwsh").glyph("›_"))
             .row(Row::new("Claude").key("t/3"))
             .diff(vec![(0, "a".into()), (1, "+b".into())]);
-        let keys: Vec<String> = items(&s).into_iter().map(|i| i.key).collect();
+        let keys: Vec<String> = items(&s, &Local::default()).into_iter().map(|i| i.key).collect();
         assert_eq!(keys, ["s:Ozmo", "r:pwsh\u{1f}›_", "r:pwsh\u{1f}›_#2", "r:t/3", "d:0", "d:1"]);
     }
 
@@ -364,32 +389,63 @@ mod tests {
         let model = VecModel::<UiRow>::default();
         let mut shown = Vec::new();
         let count = Cell::new(0);
+        let local = Local::default();
         let build = |i: &Item| {
             count.set(count.get() + 1);
-            ui_row(i)
+            ui_row(i, &local)
         };
         let first = screen(10, false);
-        assert_eq!(patch(&model, &mut shown, &items(&first), build), 5);
+        assert_eq!(patch(&model, &mut shown, &items(&first, &local), build), 5);
         assert_eq!(titles(&model), ["Fetch… 10 %", "BRANCHES", "main", "dev", "release"]);
 
         count.set(0);
         let next = screen(42, false);
-        assert_eq!(patch(&model, &mut shown, &items(&next), build), 1, "la note seule");
+        assert_eq!(patch(&model, &mut shown, &items(&next, &local), build), 1, "la note seule");
         assert_eq!(model.row_data(0).unwrap().title, "Fetch… 42 %");
 
         let more = screen(42, true);
-        assert_eq!(patch(&model, &mut shown, &items(&more), build), 1, "la ligne ajoutée seule");
+        assert_eq!(patch(&model, &mut shown, &items(&more, &local), build), 1, "la ligne ajoutée seule");
         assert_eq!(titles(&model), ["Fetch… 42 %", "BRANCHES", "main", "dev", "feature/x", "release"]);
 
-        assert_eq!(patch(&model, &mut shown, &items(&next), build), 0, "retirée : rien à redessiner");
+        assert_eq!(patch(&model, &mut shown, &items(&next, &local), build), 0, "retirée : rien à redessiner");
         assert_eq!(titles(&model), ["Fetch… 42 %", "BRANCHES", "main", "dev", "release"]);
-        assert_eq!(patch(&model, &mut shown, &items(&next), build), 0, "le même écran : rien");
+        assert_eq!(patch(&model, &mut shown, &items(&next, &local), build), 0, "le même écran : rien");
 
         let mut fewer = Screen::new("DragonTree");
         fewer.note("Fetch… 42 %", Tone::Info).section("Branches", "3");
         fewer.row(Row::new("main").key("b/main")).row(Row::new("dev").key("b/dev"));
-        assert_eq!(patch(&model, &mut shown, &items(&fewer), build), 1, "`dev` devient la dernière de sa carte");
+        assert_eq!(
+            patch(&model, &mut shown, &items(&fewer, &local), build),
+            1,
+            "`dev` devient la dernière de sa carte"
+        );
         assert!(model.row_data(3).unwrap().last);
+    }
+
+    /// Une action envoyée et sans réponse, ou que le module fait déjà, est grisée avec un indicateur, où qu'elle soit ;
+    /// seules les lignes qui la portent sont redessinées quand elle part ou revient.
+    #[test]
+    fn a_pending_action_is_busy_wherever_it_is() {
+        let mut s = Screen::new("Dépôt");
+        s.buttons(vec![Act::new("fetch", "Fetch"), Act::new("push", "Push").busy(true)]);
+        s.row(Row::new("main").key("b/main").tap(Act::new("basculer:main", "Basculer")));
+        s.row(Row::new("dev").key("b/dev").act(Act::new("supprimer:dev", "Supprimer")));
+        let idle = Local::default();
+        let busy = |l: &Local| {
+            let r = rows(&s, l);
+            let buttons: Vec<bool> = r[0].acts.iter().map(|a| a.busy).collect();
+            (buttons, r[1].busy, r[1].tap.busy, r[2].busy)
+        };
+        assert_eq!(busy(&idle), (vec![false, true], false, false, false), "Push : le module le fait déjà");
+        let mut sent = Local::default();
+        sent.pending.extend(["fetch".to_string(), "supprimer:dev".to_string()]);
+        assert_eq!(busy(&sent), (vec![true, true], false, false, true));
+
+        let model = VecModel::<UiRow>::default();
+        let mut shown = Vec::new();
+        patch(&model, &mut shown, &items(&s, &idle), |i| ui_row(i, &idle));
+        let built = patch(&model, &mut shown, &items(&s, &sent), |i| ui_row(i, &sent));
+        assert_eq!(built, 2, "les boutons et la ligne `dev`");
     }
 
     #[test]
