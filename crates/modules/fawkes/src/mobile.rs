@@ -161,10 +161,16 @@ fn seen(app: &App) -> HashMap<TermId, Seen> {
     app.st.terminals.iter().map(|t| (t.id, seen_of(app, t.id))).collect()
 }
 
+/// Une session Claude sans Remote Control qui peut le prendre : Fawkes le refuse tant que Claude travaille ou attend
+/// une réponse (`App::remote_control`).
+fn remote_possible(s: &Seen) -> bool {
+    s.claude && !s.remote && !matches!(s.state, State::Working | State::Waiting)
+}
+
 fn term_acts(t: &TermSpec, s: &Seen) -> Vec<Act> {
     let id = t.id;
     let mut acts = Vec::new();
-    if s.claude && !s.remote {
+    if remote_possible(s) {
         acts.push(Act::new(format!("remote:{id}"), "Activer Remote Control").glyph("📡"));
     }
     acts.push(Act::new(format!("redemarrer:{id}"), "Redémarrer").glyph("🔄"));
@@ -219,7 +225,7 @@ struct Tally {
     terms: usize,
     /// Sessions Claude qui tournent (« ✻2 »)…
     claude: usize,
-    /// … dont celles sans Remote Control.
+    /// … dont celles sans Remote Control qui peuvent le prendre (voir [`remote_possible`]).
     without_remote: usize,
     waiting: usize,
     failed: usize,
@@ -233,7 +239,7 @@ fn tally(terms: &[&TermSpec], seen: &HashMap<TermId, Seen>) -> Tally {
     for t in terms {
         let s = seen.get(&t.id).unwrap_or(&UNSEEN);
         n.claude += s.claude as usize;
-        n.without_remote += (s.claude && !s.remote) as usize;
+        n.without_remote += remote_possible(s) as usize;
         n.waiting += (s.state == State::Waiting) as usize;
         n.failed += (s.state == State::Failed) as usize;
         n.live += s.live as usize;
@@ -1065,6 +1071,7 @@ mod tests {
     fn band_menus_offer_what_applies_and_are_whitelisted() {
         let (mut st, mut seen) = three_groups();
         st.groups[1].repo = Some(r"C:\DEV\Eyrie".into());
+        seen.insert(1, claude(State::Ready));
         let s = home(&st, &seen);
         let menu = |s: &Screen, key: &str| -> Vec<String> {
             let acts = s.blocks.iter().find_map(|b| match b {
@@ -1097,8 +1104,15 @@ mod tests {
         assert_eq!(labels[..2], ["Shell dans Eyrie", "Claude dans Eyrie"]);
         let sleep = s.all_acts().into_iter().find(|a| a.id == "veille:g5").unwrap();
         assert!(sleep.confirm.is_some(), "tout un groupe en veille : confirmé");
-        seen.get_mut(&1).unwrap().remote = true;
-        assert!(!home(&st, &seen).action_ids().contains("remote:g5"), "déjà sous Remote Control");
+        // Fawkes refuse Remote Control à Claude qui travaille ou attend : ni dans le bandeau, ni sur la ligne.
+        for busy in [State::Working, State::Waiting] {
+            seen.insert(1, claude(busy));
+            let ids = home(&st, &seen).action_ids();
+            assert!(!ids.contains("remote:g5") && !ids.contains("remote:1"), "{busy:?}");
+        }
+        seen.insert(1, Seen { remote: true, ..claude(State::Ready) });
+        let ids = home(&st, &seen).action_ids();
+        assert!(!ids.contains("remote:g5") && !ids.contains("remote:1"), "déjà sous Remote Control");
     }
 
     /// Chaque action que proposent l'accueil et les écrans « nouveau terminal » est comprise ; redémarrer ou fermer
