@@ -1,12 +1,12 @@
 //! Menagerie sur le téléphone : les services gérés (en marche ou non, leurs ports), les ports ouverts du poste (arrêter
 //! le processus), les conteneurs Docker groupés par projet compose comme sur le PC (démarrer, arrêter, relancer,
-//! journal), chaque partie dans un bandeau pliable, et une recherche.
+//! journal ; tout le projet d'un coup), chaque partie dans un bandeau pliable, et une recherche.
 //!
 //! Tout vient de ce que Menagerie expose publiquement : son état enregistré (`App::st`) et le dernier relevé de son
 //! moniteur (`App::monitor`). Chaque action passe par Menagerie, comme son bouton sur le PC : un service par
-//! `start_service`…, un conteneur par `docker_action` (annoncée sur le PC, ses boutons attendent sa fin, son résultat
-//! est suivi par `docker_job_of`), un programme du poste par `kill_program`. Seul le journal d'un conteneur est lu ici,
-//! dans un fil.
+//! `start_service`…, un conteneur par `docker_action`, un projet compose par `docker_project_action` (annoncées sur le
+//! PC, leurs boutons attendent leur fin, leur résultat est suivi par `docker_job_of`), un programme du poste par
+//! `kill_program`. Seul le journal d'un conteneur est lu ici, dans un fil.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -162,6 +162,29 @@ fn container_row(c: &Container, busy: bool) -> Row {
     }
 }
 
+/// Le menu d'un projet compose, comme ses boutons sur le PC : « Démarrer tout » s'il en est d'arrêtés, « Arrêter tout »
+/// (confirmé) s'il en est qui tournent ; grisés tant qu'une action de Menagerie tourne sur l'un de ses conteneurs.
+fn project_acts(project: &str, members: &[&Container], jobs: &Jobs) -> Vec<Act> {
+    let busy = members.iter().any(|c| jobs.busy.contains(&c.id));
+    let up = members.iter().filter(|c| c.running()).count();
+    let mut acts = Vec::new();
+    if up < members.len() {
+        acts.push(Act::new(format!("projet:start:{project}"), "Démarrer tout").glyph("▶️").busy(busy));
+    }
+    if up > 0 {
+        let what =
+            if up == 1 { "le conteneur qui tourne".to_string() } else { format!("les {up} conteneurs qui tournent") };
+        acts.push(
+            Act::new(format!("projet:stop:{project}"), "Arrêter tout")
+                .glyph("⏹️")
+                .danger()
+                .busy(busy)
+                .confirm(format!("Arrêter {what} dans {project} ?")),
+        );
+    }
+    acts
+}
+
 /// Les conteneurs groupés comme sur le PC : un groupe par projet compose (par nom), les autres à la fin ; dans un
 /// groupe, ceux qui tournent d'abord.
 fn by_project(list: &[Container]) -> Vec<(Option<&str>, Vec<&Container>)> {
@@ -180,7 +203,7 @@ fn by_project(list: &[Container]) -> Vec<(Option<&str>, Vec<&Container>)> {
 }
 
 /// L'accueil : les services gérés, les ports ouverts (pliés au-delà de `PORTS_OPEN`), un bandeau par projet compose
-/// et ce que font les actions Docker.
+/// (avec son menu) et ce que font les actions Docker.
 pub fn home(
     managed: &[ManagedSpec],
     live: &BTreeMap<u64, Live>,
@@ -324,7 +347,11 @@ pub fn home(
             for (project, members) in groups {
                 let up = members.iter().filter(|c| c.running()).count();
                 let band = match project {
-                    Some(p) => Band::new(format!("projet/{p}"), p).aside("compose"),
+                    Some(p) => {
+                        let mut band = Band::new(format!("projet/{p}"), p).aside("compose");
+                        band.acts = project_acts(p, &members, jobs);
+                        band
+                    }
                     None if several => Band::new("autres-conteneurs", "Autres conteneurs"),
                     None => Band::new("docker", "Docker"),
                 };
@@ -497,6 +524,18 @@ pub fn action(app: &mut App, phone: &Shared, action: &str) -> Result<Option<Stri
             lock(phone).logs.remove(id);
             Ok(Some(format!("Envoyé à Docker : {name}")))
         }
+        "projet" => {
+            let (verb, project) = rest.split_once(':').ok_or("action inconnue")?;
+            let name = app.docker_project_action(verb, project)?;
+            // Les journaux de ses conteneurs sont relus après l'action.
+            if let Some(Docker::Running(list)) = &app.monitor().snapshot().docker {
+                let mut p = lock(phone);
+                for c in list.iter().filter(|c| c.project.as_deref() == Some(project)) {
+                    p.logs.remove(&c.id);
+                }
+            }
+            Ok(Some(format!("Envoyé à Docker : {name}")))
+        }
         _ => Err("action inconnue".into()),
     }
 }
@@ -505,7 +544,7 @@ pub fn action(app: &mut App, phone: &Shared, action: &str) -> Result<Option<Stri
 mod tests {
     use menagerie::persist::RunRecord;
     use menagerie::ports::ProcInfo;
-    use suite_sdk::mobile::ui::{Block, Fold, PROGRESS_UNKNOWN};
+    use suite_sdk::mobile::ui::{ActStyle, Block, Fold, PROGRESS_UNKNOWN};
 
     use super::*;
 
@@ -655,6 +694,31 @@ mod tests {
         assert!(
             matches!(&s.blocks[0], Block::Note { progress: Some(PROGRESS_UNKNOWN), text, .. } if text == "Docker : web-app en cours…")
         );
+        // Le menu d'un projet, comme ses boutons sur le PC : ce qui s'applique, grisé pendant une action sur l'un d'eux.
+        let menu = |key: &str| -> Vec<(String, bool)> {
+            s.blocks
+                .iter()
+                .find_map(|b| match b {
+                    Block::Section { key: k, acts, .. } if k == key => {
+                        Some(acts.iter().map(|a| (a.id.clone(), a.busy)).collect())
+                    }
+                    _ => None,
+                })
+                .unwrap()
+        };
+        assert_eq!(menu("projet/Api"), [("projet:start:Api".to_string(), false)], "rien ne tourne");
+        assert_eq!(
+            menu("projet/web"),
+            [("projet:start:web".to_string(), true), ("projet:stop:web".to_string(), true)],
+            "web-app est en cours"
+        );
+        assert!(menu("autres-conteneurs").is_empty(), "pas un projet");
+        let stop = s.all_acts().into_iter().find(|a| a.id == "projet:stop:web").unwrap();
+        assert_eq!(
+            (stop.label.as_str(), stop.style, stop.confirm.as_deref()),
+            ("Arrêter tout", ActStyle::Danger, Some("Arrêter le conteneur qui tourne dans web ?"))
+        );
+        assert!(s.action_ids().contains("projet:stop:web"), "dans la liste blanche du pont");
 
         // Hors projet, rien ne tourne : « Autres conteneurs » plié ; sans aucun projet, le seul bandeau reste ouvert.
         let stopped =
@@ -769,6 +833,48 @@ mod tests {
         )));
         let home = screen(&mut app, &phone, "").unwrap();
         assert!(home.blocks.iter().any(|b| matches!(b, Block::Note { text, .. } if text == "Docker : db en cours…")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Tout un projet compose passe par Menagerie, comme « Démarrer tout » / « Arrêter tout » : les conteneurs à qui
+    /// cela s'applique, en cours chez lui, une action à la fois ; le menu du projet attend sa fin.
+    #[test]
+    fn a_project_action_goes_through_menagerie() {
+        let dir = std::env::temp_dir().join(format!("suite-menagerie-telephone-projet-{}", std::process::id()));
+        let in_web =
+            |id: &str, name: &str, state: &str| Container { project: Some("web".into()), ..container(id, name, state) };
+        let snap = Snapshot {
+            docker: Some(Docker::Running(vec![
+                in_web("w1", "web-db", "exited"),
+                in_web("w2", "web-app", "running"),
+                container("seul", "seul", "exited"),
+            ])),
+            scans: 1,
+            ..Default::default()
+        };
+        // Une commande des conteneurs absente : rien n'est envoyé à un vrai Docker.
+        let st = menagerie::persist::State { docker_cmd: "eyrie-docker-absent".into(), ..Default::default() };
+        let dirs = menagerie::app::Dirs {
+            data: dir.join("data"),
+            logs: dir.join("logs"),
+            relay: dir.join("relais.exe"),
+            key: "essai".into(),
+            create_key: false,
+        };
+        let mut app = App::with(st, Vec::new(), menagerie::monitor::Monitor::fixed(snap), dirs);
+        let phone = Shared::default();
+        assert!(action(&mut app, &phone, "projet:start:inconnu").is_err());
+        assert!(action(&mut app, &phone, "projet:restart:web").is_err(), "seuls démarrer et arrêter tout");
+        assert_eq!(action(&mut app, &phone, "projet:start:web"), Ok(Some("Envoyé à Docker : web".into())));
+        assert_eq!(app.docker_job_of("w1"), Some(&DockerJob::Running), "l'arrêté démarre");
+        assert_eq!(app.docker_job_of("w2"), None, "il tourne déjà");
+        assert!(action(&mut app, &phone, "projet:stop:web").is_err(), "une action à la fois");
+        let home = screen(&mut app, &phone, "").unwrap();
+        let band = home.blocks.iter().find_map(|b| match b {
+            Block::Section { key, acts, .. } if key == "projet/web" => Some(acts.clone()),
+            _ => None,
+        });
+        assert!(band.unwrap().iter().all(|a| a.busy), "le menu du projet attend sa fin");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
