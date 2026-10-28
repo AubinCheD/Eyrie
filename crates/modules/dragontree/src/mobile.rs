@@ -511,7 +511,12 @@ impl Phone {
         self.update();
         let opened = &self.opened;
         let open = |p: &Path| app.repo_tab(p).is_some() && !opened.contains(&repo_key(p));
-        liste::list(&self.settings, &self.found, &self.added, app.active_repo_dir(), open)
+        let list = liste::list(&self.settings, &self.found, &self.added, app.active_repo_dir(), open);
+        // Un onglet que le téléphone avait ouvert, refermé depuis sur le PC : rouvert, il sera à l'utilisateur.
+        for l in list.iter().filter(|l| app.repo_tab(&l.path).is_none()) {
+            self.opened.remove(&repo_key(&l.path));
+        }
+        list
     }
 
     /// Le dépôt de clé `key` dans la liste.
@@ -1390,6 +1395,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Le bandeau de la liste où est le dépôt `key`.
+    fn band_of(home: &Screen, key: &str) -> Option<String> {
+        let mut band = None;
+        for b in &home.blocks {
+            match b {
+                Block::Section { title, .. } => band = Some(title.clone()),
+                Block::Row(r) if r.key == key => return band,
+                _ => {}
+            }
+        }
+        None
+    }
+
     fn rows(s: &Screen) -> Vec<&suite_sdk::mobile::ui::Row> {
         s.blocks
             .iter()
@@ -1487,6 +1505,8 @@ mod tests {
         let s = wait_screen(&mut h, &mut phone, &base, "lisez-moi.txt");
         assert!(format!("{s:?}").contains("Non indexé") && s.tabs.len() == 4, "{s:?}");
         assert!(h.state().repo_tab(&repo).is_some() && h.state().active_repo_dir().is_none(), "onglet de fond");
+        // Ouvert par le téléphone pour le lire : la liste ne bouge pas, il reste dans les récents.
+        assert_eq!(band_of(&phone.screen(h.state_mut(), "").unwrap(), &key), Some("Récents".into()));
         let f = file_key("lisez-moi.txt");
         let diff = wait_screen(&mut h, &mut phone, &format!("{base}/fichier/{f}"), "+deux");
         assert!(format!("{diff:?}").contains("+deux"), "{diff:?}");
@@ -1531,6 +1551,7 @@ mod tests {
         let (_, show) = phone.action(h.state_mut(), &base, "pc", None).unwrap();
         assert!(show);
         assert_eq!(h.state().active_repo_dir().map(path_key), Some(path_key(&repo)));
+        assert_eq!(band_of(&phone.screen(h.state_mut(), "").unwrap(), &key), Some("Ouverts sur le PC".into()));
         drop(h);
         let _ = std::fs::remove_dir_all(&dir);
     }
