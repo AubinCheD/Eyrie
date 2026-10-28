@@ -1147,7 +1147,8 @@ mod tests {
         let repo = dir.join("nouveau");
         new_repo(&git, &repo);
         let profile = dir.join("profil");
-        let mut phone = phone_scanning(&profile, &dir.join("autre"));
+        // Une racine analysée où n'est pas le dépôt à ajouter.
+        let mut phone = phone_scanning(&profile, &dir.join("ailleurs").join("autre"));
         let mut h = dragontree(&profile);
         h.step();
         let key = repo_key(&repo);
@@ -1235,11 +1236,12 @@ mod tests {
         Phone::new(file, profile.join("repos-cache.json"))
     }
 
-    /// Le profil de DragonTree où `repo` n'est que dans la liste de son dernier scan (sous son dossier parent).
+    /// Le profil de DragonTree où `repo` n'est que dans la liste de son dernier scan, sous son dossier parent analysé.
     fn phone_scanning(profile: &Path, repo: &Path) -> Phone {
         std::fs::create_dir_all(profile).unwrap();
         let file = profile.join("settings.json");
-        std::fs::write(&file, serde_json::to_vec(&Settings::default()).unwrap()).unwrap();
+        let settings = Settings { scan_roots: vec![repo.parent().unwrap().to_path_buf()], ..Default::default() };
+        std::fs::write(&file, serde_json::to_vec(&settings).unwrap()).unwrap();
         let found = FoundRepo {
             path: repo.to_path_buf(),
             name: liste::repo_name(repo),

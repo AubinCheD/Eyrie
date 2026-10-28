@@ -3,7 +3,8 @@
 //! - **Ouverts sur le PC** : l'onglet affiché, puis les autres onglets de DragonTree (sauf ceux que le téléphone a
 //!   ouverts lui-même pour lire un dépôt : la liste ne bouge pas parce qu'on a regardé un dépôt) ;
 //! - **Épinglés** : ses favoris ;
-//! - un bandeau par **dossier racine** analysé (la liste de son dernier scan), plié au-delà de 15 dépôts ;
+//! - un bandeau par **dossier racine** analysé (ceux de ses réglages, et la liste de son dernier scan), plié au-delà
+//!   de 15 dépôts ;
 //! - **Récents** : ceux qui ne sont sous aucune racine.
 //!
 //! Chaque dépôt n'y est qu'une fois, dans le premier bandeau qui le prend ; ceux que DragonTree masque n'y sont pas,
@@ -129,14 +130,11 @@ pub fn list(
     let favorites = key_set(&settings.favorites);
     let active_key = active.map(path_key);
     let found_by_key: HashMap<String, &FoundRepo> = found.iter().map(|f| (path_key(&f.path), f)).collect();
-    // Les racines dans l'ordre des réglages, puis celles d'un scan plus ancien qui n'y sont plus.
-    let mut roots: Vec<PathBuf> = settings.scan_roots.clone();
-    for f in found {
-        if !roots.iter().any(|r| path_key(r) == path_key(&f.root)) {
-            roots.push(f.root.clone());
-        }
-    }
-    let mut scanned: Vec<&FoundRepo> = found.iter().collect();
+    // Les racines dans l'ordre des réglages. Comme dans la barre latérale de DragonTree, un dépôt du scan sous une
+    // racine retirée depuis (DragonTree ne réécrit pas sa liste quand il n'en reste aucune) n'y est plus.
+    let roots: &[PathBuf] = &settings.scan_roots;
+    let in_roots = |root: &Path| roots.iter().any(|r| path_key(r) == path_key(root));
+    let mut scanned: Vec<&FoundRepo> = found.iter().filter(|f| in_roots(&f.root)).collect();
     scanned.sort_by_key(|f| {
         let root = roots.iter().position(|r| path_key(r) == path_key(&f.root)).unwrap_or(usize::MAX);
         (root, f.relative_parent().to_lowercase(), f.name.to_lowercase())
@@ -164,7 +162,7 @@ pub fn list(
             Group::Pinned
         } else if hidden.contains(&key) {
             continue;
-        } else if let Some(f) = scan {
+        } else if let Some(f) = scan.filter(|f| in_roots(&f.root)) {
             Group::Root(f.root.clone())
         } else {
             Group::Recent
@@ -399,7 +397,12 @@ mod tests {
         let settings = Settings {
             open_tabs: vec![r"C:\dev\Ozmo2\Ozmo".into(), r"C:\dev\diapaz".into()],
             favorites: vec![r"c:\dev\XIMI\".into()],
-            recent_repos: vec![r"C:\dev\ximi".into(), r"C:\ailleurs\walle".into(), r"C:\dev\cache".into()],
+            recent_repos: vec![
+                r"C:\dev\ximi".into(),
+                r"C:\ailleurs\walle".into(),
+                r"C:\dev\cache".into(),
+                r"C:\vieux\garde".into(),
+            ],
             hidden_repos: vec![r"C:\dev\cache".into()],
             scan_roots: vec![r"C:\dev".into()],
             ..Default::default()
@@ -411,6 +414,9 @@ mod tests {
             found(r"C:\dev", "diapaz"),
             found(r"C:\dev", "cache"),
             found(r"C:\dev", "cockpit"),
+            // Sous une racine retirée des réglages : plus dans la liste, sauf récent.
+            found(r"C:\vieux", "oublie"),
+            found(r"C:\vieux", "garde"),
         ];
         let added = [PathBuf::from(r"D:\neuf")];
         // Diapaz est ouvert par le téléphone seulement : il reste dans sa racine.
@@ -429,6 +435,7 @@ mod tests {
                 ("Ozmo · Survey2", root, false),
                 ("neuf", Group::Recent, false),
                 ("walle · ailleurs", Group::Recent, false),
+                ("garde", Group::Recent, false),
             ]
         );
     }
