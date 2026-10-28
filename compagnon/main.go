@@ -7,6 +7,9 @@
 // d'Eyrie, sur la boucle locale : Eyrie lui en donne l'adresse et le jeton par son entrée standard
 // (`relais.go`). Repris du compagnon de Fawkes (même magasin d'état chiffré, `etat.go`).
 //
+// Avec --veille, c'est le veilleur : lancé à l'ouverture de session, il garde le nœud quand Eyrie est fermée, et
+// Eyrie s'y rattache par un tube nommé au lieu de lancer un compagnon (`tube.go`).
+//
 // Un seul compagnon par nœud (`verrou.go`). Codes de sortie : 0 arrêt demandé, 1 échec, 2 arguments
 // manquants, 3 nœud déjà tenu par un autre compagnon.
 package main
@@ -19,6 +22,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -109,6 +113,7 @@ func run(args []string) int {
 	hostname := fl.String("hostname", "eyrie", "nom d'Eyrie dans le tailnet")
 	version := fl.String("version", "", "version d'Eyrie")
 	port := fl.Int("port", 4747, "port du tailnet où le téléphone se connecte")
+	standby := fl.Bool("veille", false, "veilleur : garde le nœud quand Eyrie est fermée, piloté par un tube nommé")
 	if err := fl.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -152,24 +157,44 @@ func run(args []string) int {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	relay := &relay{}
-	go func() {
-		// Une consigne de relais par ligne ; entrée fermée : Eyrie s'arrête ou ne veut plus du tailnet.
-		sc := bufio.NewScanner(os.Stdin)
-		for sc.Scan() {
-			line := strings.TrimSpace(sc.Text())
-			if line == "" {
-				continue
-			}
-			stop, err := control(relay, line)
-			if err != nil {
-				logf("consigne de relais refusée : %v", err)
-			}
-			if stop {
-				break
-			}
+	if *standby {
+		// L'entrée standard est ignorée : Eyrie se rattache par le tube, avant même que le nœud soit en route.
+		ln, err := listenControl(*dir)
+		if err != nil {
+			fail("tube de contrôle : " + err.Error())
+			return exitFailed
 		}
-		cancel()
-	}()
+		self, err := os.Executable()
+		if err != nil {
+			fail("exécutable du veilleur : " + err.Error())
+			return exitFailed
+		}
+		here := filepath.Dir(self)
+		allowed := []string{filepath.Join(here, "eyrie.exe"), filepath.Join(here, "eyrie-tailnet.exe")}
+		// Les lignes d'état ne vont plus qu'à l'Eyrie rattachée.
+		status.detach(os.Stdout)
+		t := &tube{relay: relay, check: func(c net.Conn) error { return checkClient(c, allowed) }, stop: cancel, logf: logf}
+		go t.serve(ctx, ln)
+	} else {
+		go func() {
+			// Une consigne de relais par ligne ; entrée fermée : Eyrie s'arrête ou ne veut plus du tailnet.
+			sc := bufio.NewScanner(os.Stdin)
+			for sc.Scan() {
+				line := strings.TrimSpace(sc.Text())
+				if line == "" {
+					continue
+				}
+				stop, err := control(relay, line)
+				if err != nil {
+					logf("consigne de relais refusée : %v", err)
+				}
+				if stop {
+					break
+				}
+			}
+			cancel()
+		}()
+	}
 
 	// La clé du nœud n'est jamais écrite en clair (voir etat.go).
 	store, err := openStateStore(*dir)
