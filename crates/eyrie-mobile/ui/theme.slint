@@ -14,8 +14,9 @@ export global Theme {
     out property <color> pressed: dark ? #30343d : #dce2ea;
     out property <color> border: dark ? #343842 : #d6dce5;
     out property <color> text: dark ? #e3e5ea : #1b1d22;
-    out property <color> text-dim: dark ? #9aa0ac : #5c6370;
-    out property <color> text-faint: dark ? #6f7582 : #8a919d;
+    // Contraste d'au moins 4,5:1 sur le fond et les cartes, dans les deux thèmes (texte pâle compris).
+    out property <color> text-dim: dark ? #a7adb8 : #4f5562;
+    out property <color> text-faint: dark ? #8a909c : #646b77;
     out property <color> accent: dark ? #5b8def : #0067c0;
     out property <color> on-accent: #ffffff;
     out property <color> accent-soft: dark ? #5b8def33 : #0067c01f;

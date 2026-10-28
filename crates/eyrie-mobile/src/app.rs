@@ -1727,6 +1727,12 @@ fn wire(ui: &AppWindow) {
     });
     ui.on_rename_device(|name| {
         with(|c| {
+            // Entrée puis la sortie du champ, ou rien de changé : une seule fois, ou rien.
+            let prefs = &c.store.prefs.device_name;
+            let current = if prefs.is_empty() { platform::device_name() } else { prefs.clone() };
+            if current == name.trim() {
+                return;
+            }
             c.store.prefs.device_name = name.trim().to_string();
             c.store.save();
             c.toast("Nom enregistré : il servira aux prochains appairages.", 2);

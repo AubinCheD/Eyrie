@@ -601,13 +601,17 @@ component Segmented inherits Rectangle {
     in property <[string]> options;
     in property <int> current;
     callback selected(int);
-    height: 40px;
-    border-radius: 20px;
+    height: 44px;
+    border-radius: 22px;
     background: Theme.surface-2;
     HorizontalLayout {
         padding: 3px;
         for o[i] in root.options: Rectangle {
-            border-radius: 17px;
+            border-radius: 19px;
+            accessible-role: tab;
+            accessible-label: o;
+            accessible-item-selected: i == root.current;
+            accessible-action-default => { root.selected(i); }
             background: i == root.current ? Theme.surface : transparent;
             drop-shadow-blur: i == root.current ? 4px : 0;
             drop-shadow-color: #00000022;
@@ -764,6 +768,7 @@ export component SettingsPage inherits Rectangle {
                             font-size: 15px;
                             vertical-alignment: center;
                         }
+                        // Enregistré par Entrée, ou en quittant le champ.
                         name-input := TextInput {
                             text <=> root.device-name;
                             color: Theme.text-dim;
@@ -771,7 +776,21 @@ export component SettingsPage inherits Rectangle {
                             horizontal-alignment: right;
                             vertical-alignment: center;
                             single-line: true;
+                            accessible-label: "Nom de cet appareil";
                             accepted => { root.rename-device(self.text); }
+                            changed has-focus => {
+                                if !self.has-focus {
+                                    root.rename-device(self.text);
+                                }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            Icon {
+                                kind: "edit";
+                                tint: Theme.text-faint;
+                                size: 18px;
+                            }
                         }
                     }
                 }
