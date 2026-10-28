@@ -417,6 +417,10 @@ pub struct Controller {
     ui: slint::Weak<AppWindow>,
     store: Store,
     link: Option<Link>,
+    /// Le numéro de la liaison en cours, et le PC qu'elle joint : un événement d'une liaison d'avant (PC changé,
+    /// oublié), déjà en route vers l'interface, n'est pas suivi ; un accueil s'écrit dans le PC de sa liaison.
+    link_gen: u64,
+    link_pc: String,
     online: bool,
     rights: Rights,
     pc_name: String,
@@ -573,6 +577,8 @@ impl Controller {
             ui: ui.as_weak(),
             store,
             link: None,
+            link_gen: 0,
+            link_pc: String::new(),
             online: false,
             rights: Rights::default(),
             pc_name: String::new(),
@@ -664,7 +670,7 @@ impl Controller {
     }
 
     fn connect(&mut self, pc: &Pc) {
-        self.link = None;
+        self.drop_link();
         self.online = false;
         self.away = Away::default();
         self.start = Start::Idle;
@@ -672,10 +678,24 @@ impl Controller {
         let Some(key) = pc.key_bytes() else { return };
         let (device, model) = self.device();
         let wake = pc.wake.as_ref().and_then(Wake::key);
-        self.link = Some(Link::start(pc.addresses(), key, self.store.identity.clone(), device, model, wake, |ev| {
-            post(move |c| c.on_net(ev));
-        }));
+        let this = self.link_gen;
+        self.link_pc = pc.id.clone();
+        self.link =
+            Some(Link::start(pc.addresses(), key, self.store.identity.clone(), device, model, wake, move |ev| {
+                post(move |c| {
+                    if c.link_gen == this {
+                        c.on_net(ev);
+                    }
+                });
+            }));
         self.set_link(0, &format!("Connexion à {}…", pc.name));
+    }
+
+    /// La liaison en cours est abandonnée : rien de ce qu'elle a déjà envoyé n'est plus suivi.
+    fn drop_link(&mut self) {
+        self.link = None;
+        self.link_gen += 1;
+        self.link_pc.clear();
     }
 
     fn send(&self, m: ToPc) {
@@ -768,9 +788,8 @@ impl Controller {
                 // Une preuve refusée : la clé gardée ne sert plus (appareil appairé de nouveau, clé du veilleur
                 // changée). Retirée, « Démarrer » n'est plus proposé, même après un redémarrage de l'application, avant
                 // la clé du prochain accueil : pas de preuves fausses en série, que le veilleur finit par bloquer.
-                if reason == veilleur::PROOF_REFUSED
-                    && let Some(id) = self.store.prefs.current.clone()
-                {
+                if reason == veilleur::PROOF_REFUSED {
+                    let id = self.link_pc.clone();
                     self.store.set_wake(&id, None);
                 }
                 self.start = Start::Refused(reason);
@@ -935,8 +954,7 @@ impl Controller {
         self.pc_name = w.pc;
         self.eyrie = w.eyrie;
         let wake = w.wake.as_ref().map(Wake::from_key);
-        if let Some(pc) = self.store.prefs.current.clone()
-            && let Some(p) = self.store.pcs.iter_mut().find(|p| p.id == pc)
+        if let Some(p) = self.store.pcs.iter_mut().find(|p| p.id == self.link_pc)
             && (p.name != self.pc_name || p.wake != wake)
         {
             p.name = self.pc_name.clone();
@@ -2279,7 +2297,7 @@ impl Controller {
 
     fn forget_pc(&mut self) {
         let Some(id) = self.store.prefs.current.clone() else { return };
-        self.link = None;
+        self.drop_link();
         self.store.forget(&id);
         self.reset_session();
         self.pc_name.clear();

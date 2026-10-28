@@ -1,7 +1,7 @@
 //! La liaison avec le PC, dans son propre fil : connexion, salut, lecture, envoi, `Ping` toutes les 15 s (45 s sans
 //! rien du PC : coupée), et reconnexion avec un délai croissant (1 s, 2 s… 30 s), immédiate quand l'application
 //! revient au premier plan ou que le téléphone se reconnecte à Tailscale (`kick`). Un refus du PC (appareil retiré,
-//! autre compte Tailscale) n'est pas réessayé en boucle.
+//! autre compte Tailscale) n'est pas réessayé en boucle. Abandonnée (PC changé ou oublié), plus rien n'en sort.
 //!
 //! Coupée, la liaison dit ce qu'elle sait du PC (voir [`crate::veilleur`]) : après une connexion ratée, le nœud du
 //! téléphone (hors ligne ? PC hors du tailnet ?), puis le veilleur du PC (Eyrie fermée, en démarrage, accès coupé), au
@@ -14,6 +14,7 @@
 
 use std::io;
 use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use suite_mobile::channel::Keypair;
@@ -60,6 +61,34 @@ enum Cmd {
 
 pub struct Link {
     tx: mpsc::Sender<Cmd>,
+    gone: Gone,
+}
+
+/// Une liaison abandonnée (PC changé ou oublié) : son fil peut finir ce qu'il faisait (une connexion, une sonde), mais
+/// plus rien n'en sort vers l'interface, et un « Démarrer Eyrie » demandé juste avant ne part plus.
+#[derive(Clone, Default)]
+struct Gone(Arc<Mutex<bool>>);
+
+impl Gone {
+    fn lock(&self) -> MutexGuard<'_, bool> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn set(&self) {
+        *self.lock() = true;
+    }
+
+    fn is(&self) -> bool {
+        *self.lock()
+    }
+
+    /// `f`, si la liaison n'est pas abandonnée : une fois [`Gone::set`] rendu, plus jamais.
+    fn unless(&self, f: impl FnOnce()) {
+        let gone = self.lock();
+        if !*gone {
+            f();
+        }
+    }
 }
 
 impl Link {
@@ -80,8 +109,13 @@ impl Link {
     fn start_with(pc: Peer, tuning: Tuning, on: impl Fn(NetEvent) + Send + 'static) -> Link {
         let (tx, rx) = mpsc::channel::<Cmd>();
         let back = tx.clone();
-        let _ = std::thread::Builder::new().name("eyrie-liaison".into()).spawn(move || run(pc, tuning, rx, back, on));
-        Link { tx }
+        let gone = Gone::default();
+        let (quiet, stop) = (gone.clone(), gone.clone());
+        let on = move |ev: NetEvent| quiet.unless(|| on(ev));
+        let _ = std::thread::Builder::new()
+            .name("eyrie-liaison".into())
+            .spawn(move || run(pc, tuning, rx, back, &stop, on));
+        Link { tx, gone }
     }
 
     pub fn send(&self, m: ToPc) {
@@ -101,6 +135,7 @@ impl Link {
 
 impl Drop for Link {
     fn drop(&mut self) {
+        self.gone.set();
         let _ = self.tx.send(Cmd::Stop);
     }
 }
@@ -169,7 +204,14 @@ enum Ended {
     Closing(String),
 }
 
-fn run(mut pc: Peer, tuning: Tuning, rx: mpsc::Receiver<Cmd>, back: mpsc::Sender<Cmd>, on: impl Fn(NetEvent)) {
+fn run(
+    mut pc: Peer,
+    tuning: Tuning,
+    rx: mpsc::Receiver<Cmd>,
+    back: mpsc::Sender<Cmd>,
+    gone: &Gone,
+    on: impl Fn(NetEvent),
+) {
     let mut watch = Watch::new(tuning.pace);
     loop {
         on(NetEvent::Connecting);
@@ -220,6 +262,8 @@ fn run(mut pc: Peer, tuning: Tuning, rx: mpsc::Receiver<Cmd>, back: mpsc::Sender
             match wait(&rx, delay) {
                 Woken::Stop => return,
                 Woken::Go => break,
+                // Demandé juste avant l'abandon (l'arrêt attend derrière) : rien ne part.
+                Woken::Start if gone.is() => return,
                 Woken::Start => {
                     let answer = match &pc.wake {
                         Some(w) => veilleur::ask_start(&veilleur::standby_addrs(&pc.addrs, w.port), w, &tailnet::dial),
@@ -442,6 +486,40 @@ mod tests {
             }
         }
         drop(link);
+        server.join().unwrap();
+    }
+
+    /// Une liaison abandonnée pendant son salut (PC changé ou oublié) : son fil finit la connexion, mais rien n'en sort
+    /// plus vers l'interface (l'accueil du PC d'avant n'irait pas au PC choisi ensuite).
+    #[test]
+    fn a_dropped_link_says_nothing_more() {
+        let pc = Keypair::generate();
+        let pc_key = pc.public;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let (hello_tx, hello_rx) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let (t, _) = channel::accept(&mut s, &pc).unwrap();
+            let (mut r, mut w) = t.split(s.try_clone().unwrap(), s);
+            let _hello: ToPc = r.recv().unwrap();
+            hello_tx.send(()).unwrap();
+            // L'accueil arrive après l'abandon.
+            std::thread::sleep(Duration::from_millis(300));
+            let _ = w.send(&welcome(Some(WakeKey { port: 4748, secret: vec![1; 32], device: "a".into() })));
+            std::thread::sleep(Duration::from_millis(500));
+        });
+        let (tx, rx) = mpsc::channel();
+        let tuning = Tuning { silence: SILENCE, pace: QUICK };
+        let link = Link::start_with(peer(addr, pc_key, Keypair::generate()), tuning, move |ev| {
+            let _ = tx.send(ev);
+        });
+        hello_rx.recv_timeout(Duration::from_secs(5)).expect("le salut du téléphone");
+        drop(link);
+        let before: Vec<NetEvent> = rx.try_iter().collect();
+        assert!(before.iter().all(|ev| matches!(ev, NetEvent::Connecting)), "{before:?}");
+        let late: Vec<NetEvent> = std::iter::from_fn(|| rx.recv_timeout(Duration::from_millis(1200)).ok()).collect();
+        assert!(late.is_empty(), "rien après l'abandon : {late:?}");
         server.join().unwrap();
     }
 
