@@ -717,6 +717,8 @@ component TapPill inherits Rectangle {
 // (en pastille), sinon ouvre son menu ; l'appui long ou ⋯ ouvre le menu ; un bouton visible peut être à droite.
 export component RowView inherits Rectangle {
     in property <UiRow> item;
+    // Le séparateur sous la ligne (sauf la dernière de sa carte) ; sans, quand ce qui suit lui appartient.
+    in property <bool> separator: true;
     callback tapped();
     callback menu();
     callback trailing();
@@ -872,7 +874,7 @@ export component RowView inherits Rectangle {
             tint: item.tone >= 3 ? Theme.tone(item.tone) : Theme.accent;
         }
         // Séparateur sous la ligne, sauf la dernière de la section.
-        if !item.last: Rectangle {
+        if !item.last && root.separator: Rectangle {
             x: 62px;
             y: parent.height - 1px;
             height: 1px;

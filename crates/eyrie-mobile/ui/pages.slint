@@ -186,12 +186,14 @@ export component ScreenPage inherits Rectangle {
     }
 }
 
-// Une notification : elle mène à son écran (chevron), sinon se déplie pour montrer son texte entier.
+// Une notification : elle mène à son écran (chevron), sinon se déplie pour montrer son texte entier. Dépliée, son
+// texte fait partie de la ligne : le liseré du ton le longe, et le séparateur passe dessous.
 component NoteRow inherits VerticalLayout {
     in property <NoteItem> note;
     in property <bool> first;
     in property <bool> last;
     callback tapped();
+    property <int> tone: root.note.read ? 0 : root.note.tone;
     RowView {
         item: {
             kind: 1,
@@ -199,11 +201,12 @@ component NoteRow inherits VerticalLayout {
             subtitle: root.note.module-name + (root.note.body != "" && !root.note.expanded ? " · " + root.note.body : ""),
             detail: root.note.when,
             glyph: root.note.read ? "·" : "●",
-            tone: root.note.read ? 0 : root.note.tone,
+            tone: root.tone,
             opens: root.note.has-path,
             first: root.first,
             last: root.last && !root.note.expanded,
         };
+        separator: !root.note.expanded;
         tapped => { root.tapped(); }
     }
     if root.note.expanded: Rectangle {
@@ -214,14 +217,28 @@ component NoteRow inherits VerticalLayout {
             background: Theme.surface;
             border-bottom-left-radius: root.last ? Theme.radius : 0;
             border-bottom-right-radius: root.last ? Theme.radius : 0;
+            clip: true;
+            if root.tone >= 3: Rectangle {
+                x: 0;
+                width: 3px;
+                background: Theme.tone(root.tone);
+            }
+            // Aligné sur le titre (14 + 34 + 12 px dans la ligne).
             body := Text {
-                x: 62px;
+                x: 60px;
                 y: 0;
-                width: parent.width - 62px - 16px;
+                width: parent.width - 60px - 16px;
                 text: root.note.body;
                 color: Theme.text-dim;
                 font-size: 13.5px;
                 wrap: word-wrap;
+            }
+            if !root.last: Rectangle {
+                x: 62px;
+                y: parent.height - 1px;
+                height: 1px;
+                width: parent.width - 62px;
+                background: Theme.border;
             }
         }
     }
