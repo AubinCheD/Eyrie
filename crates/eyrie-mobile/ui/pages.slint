@@ -297,6 +297,13 @@ export component OverviewPage inherits Rectangle {
     // Ce qui attend a été reçu du PC (sinon : on l'attend) ; hors ligne, de quand datent les données.
     in property <bool> waiting-known;
     in property <string> data-age;
+    // Hors ligne, ce que l'on sait du PC : 0 rien de plus, 1 injoignable, 2 Eyrie fermée, 3 Eyrie démarre, 4 accès coupé.
+    in property <int> away;
+    in property <string> away-title;
+    in property <string> away-text;
+    in property <string> away-error;
+    in property <bool> can-start;
+    callback start-eyrie();
     callback open-module(string);
     callback open-wait(string, string);
     callback open-note(NoteItem);
@@ -305,6 +312,9 @@ export component OverviewPage inherits Rectangle {
     // Rien reçu encore du PC : ne pas dire « rien ne vous attend ». L'indicateur ne tourne que pendant la connexion
     // (il redessine l'écran sans cesse) ; injoignable ou refusé, un état fixe le dit.
     property <bool> trying: root.link-state == 0 || root.link-state == 1;
+    // La carte de l'état du PC tient lieu de « ce qui attend » tant que rien n'en est connu.
+    property <bool> away-card: root.away != 0 && root.link-state != 1;
+    property <bool> waiting-box: root.waiting.length == 0 && (root.waiting-known || !root.away-card);
     Flickable {
         content-height: col.preferred-height;
         col := VerticalLayout {
@@ -368,11 +378,72 @@ export component OverviewPage inherits Rectangle {
                     }
                 }
             }
-            SectionHeader {
+            // Le PC sans Eyrie (ou hors de portée) : pourquoi, et « Démarrer Eyrie » quand c'est possible.
+            if root.away-card: Rectangle {
+                height: away-col.preferred-height + 8px;
+                Rectangle {
+                    x: Theme.pad;
+                    y: 4px;
+                    width: parent.width - 2 * Theme.pad;
+                    height: away-col.preferred-height;
+                    border-radius: Theme.radius;
+                    background: Theme.surface;
+                    away-col := VerticalLayout {
+                        padding: 14px;
+                        spacing: 12px;
+                        HorizontalLayout {
+                            spacing: 14px;
+                            Rectangle {
+                                width: 44px;
+                                height: 44px;
+                                border-radius: 12px;
+                                background: root.away == 4 ? Theme.danger.with-alpha(0.14)
+                                    : root.away == 1 ? Theme.surface-2 : Theme.accent-soft;
+                                if root.away == 3: Busy {
+                                    size: 24px;
+                                }
+                                if root.away != 3: Icon {
+                                    kind: root.away == 2 ? "power" : root.away == 4 ? "lock" : "cloud-off";
+                                    tint: root.away == 4 ? Theme.danger : root.away == 1 ? Theme.text-dim : Theme.accent;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 4px;
+                                Text {
+                                    text: root.away-title;
+                                    color: Theme.text;
+                                    font-size: 16px;
+                                    font-weight: 700;
+                                    wrap: word-wrap;
+                                }
+                                if root.away-text != "": Text {
+                                    text: root.away-text;
+                                    color: Theme.text-dim;
+                                    font-size: 13.5px;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+                        if root.away-error != "": Text {
+                            text: root.away-error;
+                            color: Theme.danger;
+                            font-size: 13.5px;
+                            wrap: word-wrap;
+                        }
+                        if root.can-start: ActButton {
+                            text: "Démarrer Eyrie";
+                            style: 1;
+                            clicked => { root.start-eyrie(); }
+                        }
+                    }
+                }
+            }
+            if root.waiting.length > 0 || root.waiting-box: SectionHeader {
                 title: "CE QUI ATTEND";
                 aside: root.waiting.length > 0 ? "\{root.waiting.length}" : "";
             }
-            if root.waiting.length == 0: Rectangle {
+            if root.waiting-box: Rectangle {
                 height: 56px;
                 Rectangle {
                     x: Theme.pad;
@@ -425,7 +496,7 @@ export component OverviewPage inherits Rectangle {
                 };
                 tapped => { root.open-wait(w.module, w.path); }
             }
-            SectionHeader {
+            if root.modules.length > 0: SectionHeader {
                 title: "MODULES";
             }
             Rectangle {

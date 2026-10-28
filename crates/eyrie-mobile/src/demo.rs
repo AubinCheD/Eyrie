@@ -4,8 +4,10 @@
 //! `commandes`, `accueil-tailscale`, `code`, `appairage`, `hors-ligne`, `lien` (l'écran d'un autre module) ; le
 //! sélecteur de dossiers du PC : `dossiers` (un dossier quelconque, une page sur plusieurs), `dossiers-racine`,
 //! `dossiers-depot` (un dépôt existant), `dossiers-clone` et `dossiers-clone-pris` (où cloner), `dossiers-erreur`,
-//! `dossiers-attente`, `dossiers-silence`, `dossiers-texte` (un PC qui ne liste pas). Suffixe `+clair` ou `+sombre` :
-//! le thème (sinon celui du système).
+//! `dossiers-attente`, `dossiers-silence`, `dossiers-texte` (un PC qui ne liste pas) ; le PC sans Eyrie (voir
+//! `veilleur.rs`) : `fermee` (« Démarrer Eyrie »), `fermee-par-pc` (elle vient de se fermer), `fermee-sans-cle`,
+//! `demarrage`, `acces-coupe`, `refus-demarrage`, `preuve-refusee`, `injoignable`, `telephone-hors-ligne`. Suffixe
+//! `+clair` ou `+sombre` : le thème (sinon celui du système).
 
 use slint::ComponentHandle;
 use suite_mobile::msg::{
@@ -21,6 +23,7 @@ use suite_mobile::ui::{
 
 use crate::app::with;
 use crate::tailnet::Tailnet;
+use crate::veilleur::{Away, Eyrie, Reach, Start};
 use crate::{AppWindow, NoteItem, Theme, UiAct};
 
 /// L'état d'un nœud Tailscale, à l'écran (le bureau n'en a pas).
@@ -607,6 +610,10 @@ fn terminal() -> TermView {
     }
 }
 
+/// Un refus du veilleur, tel qu'il le dit (`compagnon/veille.go`).
+const UNSAFE_EYRIE: &str =
+    "Eyrie n'est pas à l'abri sur le PC (modifiable par un autre compte) : voir le journal du PC";
+
 pub fn play(ui: &AppWindow, scene: &str) {
     let (scene, theme) = match scene.rsplit_once('+') {
         Some((s, "clair")) => (s, Some(1)),
@@ -619,12 +626,21 @@ pub fn play(ui: &AppWindow, scene: &str) {
     // Avant toute donnée du PC : la vue d'ensemble l'attend pendant la connexion, sinon dit pourquoi rien n'arrive.
     let link = match scene {
         "attente" => Some((0, "Connexion à PORTABLE-AUBIN…")),
-        "injoignable" => Some((2, "Hors ligne (PC injoignable) · nouvel essai dans 4 s")),
         "refus" => Some((3, "Ce téléphone n'est plus autorisé sur ce PC.")),
         _ => None,
     };
     if let Some((state, text)) = link {
         with(|c| c.demo_link("PORTABLE-AUBIN", state, text));
+        return;
+    }
+    // Le PC hors de portée dès l'ouverture de l'application : rien reçu de lui.
+    let reach = match scene {
+        "injoignable" => Some(Reach::PcAway { seen: now() as i64 - 2 * 3600 }),
+        "telephone-hors-ligne" => Some(Reach::PhoneOffline),
+        _ => None,
+    };
+    if let Some(reach) = reach {
+        with(|c| c.demo_away("PORTABLE-AUBIN", Away { reach, ..Away::default() }, Start::Idle, true, 0));
         return;
     }
     let feed = |m: ToPhone| {
@@ -789,6 +805,28 @@ pub fn play(ui: &AppWindow, scene: &str) {
         }
         "hors-ligne" => {
             with(|c| c.demo_offline());
+        }
+        // Eyrie fermée sur le PC, son veilleur la garde joignable : les données d'avant restent.
+        "fermee" | "fermee-par-pc" | "fermee-sans-cle" | "demarrage" | "acces-coupe" | "refus-demarrage"
+        | "preuve-refusee" => {
+            let fermee = Away { reach: Reach::Standby(Eyrie::Fermee), ..Away::default() };
+            let (away, start, wake, age) = match scene {
+                "fermee-par-pc" => (Away { closed: true, ..Away::default() }, Start::Idle, true, 5),
+                "fermee-sans-cle" => (fermee, Start::Idle, false, 600),
+                "demarrage" => (
+                    Away { reach: Reach::Standby(Eyrie::Demarrage), closed: false, starting: true },
+                    Start::Idle,
+                    true,
+                    300,
+                ),
+                "acces-coupe" => {
+                    (Away { reach: Reach::Standby(Eyrie::AccesCoupe), ..Away::default() }, Start::Idle, true, 90)
+                }
+                "refus-demarrage" => (fermee, Start::Refused(UNSAFE_EYRIE.into()), true, 300),
+                "preuve-refusee" => (fermee, Start::Refused(crate::veilleur::PROOF_REFUSED.into()), true, 300),
+                _ => (fermee, Start::Idle, true, 240),
+            };
+            with(|c| c.demo_away("PORTABLE-AUBIN", away, start, wake, age));
         }
         s if s.starts_with("dossiers") => folders(s, &feed),
         // Un lien de Grimoire vers Gringotts : l'écran de Gringotts s'ouvre sur le téléphone, rien n'est envoyé au PC.

@@ -18,6 +18,7 @@ use crate::picker::{Answer, Picker};
 use crate::store::{self, Pc, Store, Wake};
 use crate::tailnet::{self, Tailnet};
 use crate::termbuf::{self, TermBuf};
+use crate::veilleur::{self, Away, Shown, Start};
 use crate::{
     AppWindow, CommandItem, ModuleItem, NavItem, NoteItem, PcItem, PickCrumb, PickRow, PickerState, TabItem, TermRow,
     TermSeg, Theme, UiAct, UiRow, WaitItem, platform, view,
@@ -34,6 +35,8 @@ const ANSWER_WITHIN: Duration = Duration::from_secs(15);
 const FILTER_AFTER: Duration = Duration::from_millis(350);
 /// Le temps qu'un bandeau garde son pliage après une action de son menu (et après son résultat).
 const HOLD_FOLD: Duration = Duration::from_secs(6);
+/// « Démarrer Eyrie » sans réponse de la liaison passé ce délai (elle se connectait, ou sondait) : on le dit.
+const START_WITHIN: Duration = Duration::from_secs(30);
 
 fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
@@ -449,6 +452,14 @@ pub struct Controller {
     /// Le nœud Tailscale de l'application, au dernier relevé ; relevé chaque seconde (sauf sur le bureau, sans nœud).
     tailnet: Tailnet,
     tailnet_timer: slint::Timer,
+    /// La liaison coupée : ce que l'on sait du PC (Eyrie fermée…), la raison de la coupure et le prochain essai.
+    away: Away,
+    offline_text: String,
+    /// « Démarrer Eyrie » demandé d'ici, et sa réponse ; le numéro de la demande (son délai).
+    start: Start,
+    start_seq: u32,
+    /// Démonstration : ce téléphone a une clé de démarrage (sans PC appairé dans les données de démonstration).
+    demo_wake: bool,
 }
 
 /// Les modèles des listes de l'interface.
@@ -577,6 +588,11 @@ impl Controller {
             goto: None,
             tailnet: tn,
             tailnet_timer: slint::Timer::default(),
+            away: Away::default(),
+            offline_text: String::new(),
+            start: Start::Idle,
+            start_seq: 0,
+            demo_wake: false,
         };
         CTRL.with(|cell| *cell.borrow_mut() = Some(c));
         wire(ui);
@@ -624,10 +640,13 @@ impl Controller {
     fn connect(&mut self, pc: &Pc) {
         self.link = None;
         self.online = false;
+        self.away = Away::default();
+        self.start = Start::Idle;
         self.signalled = Signalled { notes_until: (pc.notes_seen > 0).then_some(pc.notes_seen), waiting: None };
         let Some(key) = pc.key_bytes() else { return };
         let (device, model) = self.device();
-        self.link = Some(Link::start(pc.addresses(), key, self.store.identity.clone(), device, model, |ev| {
+        let wake = pc.wake.as_ref().and_then(Wake::key);
+        self.link = Some(Link::start(pc.addresses(), key, self.store.identity.clone(), device, model, wake, |ev| {
             post(move |c| c.on_net(ev));
         }));
         self.set_link(0, &format!("Connexion à {}…", pc.name));
@@ -646,6 +665,85 @@ impl Controller {
             ui.set_pc_name(self.pc_name.as_str().into());
         }
         self.refresh_age();
+        self.refresh_away();
+    }
+
+    // --- Le PC quand la liaison est coupée, et « Démarrer Eyrie » ---
+
+    /// Ce téléphone a-t-il une clé de démarrage pour le PC courant ?
+    fn has_wake(&self) -> bool {
+        self.demo_wake || self.store.current().and_then(|p| p.wake.as_ref()).and_then(Wake::key).is_some()
+    }
+
+    /// Ce que l'interface montre de la liaison coupée (rien de plus, en ligne).
+    fn away_shown(&self) -> Shown {
+        if self.online { Shown::default() } else { veilleur::shown(&self.away, &self.start, self.has_wake(), now()) }
+    }
+
+    fn refresh_away(&self) {
+        let Some(ui) = self.ui() else { return };
+        let s = self.away_shown();
+        ui.set_away(s.kind);
+        ui.set_away_title(s.title.into());
+        ui.set_away_text(s.text.into());
+        ui.set_away_error(s.error.into());
+        ui.set_can_start(s.can_start);
+    }
+
+    /// Hors ligne : l'état du PC s'il est connu (Eyrie fermée, injoignable…), sinon la raison de la coupure.
+    fn show_offline(&self) {
+        let s = self.away_shown();
+        self.set_link(2, if s.kind != 0 { &s.line } else { &self.offline_text });
+    }
+
+    /// « Démarrer Eyrie » (après confirmation) : la liaison fait l'échange avec le veilleur du PC.
+    fn start_eyrie(&mut self) {
+        if self.online || !self.away_shown().can_start {
+            return;
+        }
+        self.start = Start::Asked;
+        self.start_seq += 1;
+        let seq = self.start_seq;
+        if let Some(l) = &self.link {
+            l.start_eyrie();
+        }
+        slint::Timer::single_shot(START_WITHIN, move || {
+            with(|c| {
+                if c.start_seq == seq && c.start == Start::Asked {
+                    c.start = Start::Failed("pas de réponse".into());
+                    c.show_offline();
+                }
+            });
+        });
+        self.show_offline();
+    }
+
+    /// La réponse du veilleur : un refus est dit tel quel ; accepté, la liaison réessaie souvent.
+    fn on_started(&mut self, answer: Result<veilleur::Answer, String>) {
+        match answer {
+            Ok(veilleur::Answer::Starting) => {
+                self.start = Start::Idle;
+                self.away.starting = true;
+                platform::haptic();
+            }
+            Ok(veilleur::Answer::NotClosed(e)) => {
+                self.start = Start::Idle;
+                self.away.reach = veilleur::Reach::Standby(e);
+            }
+            Ok(veilleur::Answer::Refused(reason)) => {
+                self.toast(&format!("Démarrage refusé : {reason}"), 4);
+                haptic_error();
+                self.start = Start::Refused(reason);
+            }
+            Err(e) => {
+                self.toast(&format!("Le veilleur du PC n'a pas répondu ({e})."), 4);
+                haptic_error();
+                self.start = Start::Failed(e);
+            }
+        }
+        if !self.online {
+            self.show_offline();
+        }
     }
 
     /// Hors ligne, de quand datent les données montrées.
@@ -746,7 +844,8 @@ impl Controller {
     fn on_net(&mut self, ev: NetEvent) {
         match ev {
             NetEvent::Connecting => {
-                if !self.online {
+                // L'état connu du PC (Eyrie fermée…) reste à l'écran pendant les essais suivants.
+                if !self.online && self.away_shown().kind == 0 {
                     self.set_link(0, &format!("Connexion à {}…", self.pc_label()));
                 }
             }
@@ -755,6 +854,8 @@ impl Controller {
                 self.rights = w.rights;
                 self.pc_name = w.pc;
                 self.eyrie = w.eyrie;
+                self.away = Away::default();
+                self.start = Start::Idle;
                 // La clé de démarrage : remplacée (ou retirée) à chaque accueil.
                 let wake = w.wake.as_ref().map(Wake::from_key);
                 if let Some(pc) = self.store.prefs.current.clone()
@@ -775,17 +876,26 @@ impl Controller {
                 }
                 self.refresh_all();
             }
-            NetEvent::Offline { reason, retry_in } => {
+            NetEvent::Offline { reason, retry_in, away } => {
                 self.online = false;
+                // « Eyrie se ferme » : une demande de démarrage d'avant ne compte plus.
+                if away.closed && !self.away.closed {
+                    self.start = Start::Idle;
+                }
+                self.away = away;
                 let secs = retry_in.as_secs().max(1);
-                self.set_link(2, &format!("Hors ligne ({reason}) · nouvel essai dans {secs} s"));
+                self.offline_text = format!("Hors ligne ({reason}) · nouvel essai dans {secs} s");
+                self.show_offline();
                 self.picker_offline();
             }
             NetEvent::Refused(reason) => {
                 self.online = false;
+                self.away = Away::default();
+                self.start = Start::Idle;
                 self.set_link(3, &reason);
                 self.picker_offline();
             }
+            NetEvent::Started(answer) => self.on_started(answer),
             NetEvent::Message(m) => self.on_message(*m),
         }
     }
@@ -2064,6 +2174,21 @@ impl Controller {
         self.set_link(2, "Hors ligne (PC injoignable) · nouvel essai dans 4 s");
     }
 
+    /// Démonstration : la liaison coupée, avec ce que l'on sait du PC et la demande « Démarrer Eyrie » ; `wake` : ce
+    /// téléphone a une clé de démarrage ; `age` : l'âge des données montrées (secondes).
+    pub(crate) fn demo_away(&mut self, pc: &str, away: Away, start: Start, wake: bool, age: u64) {
+        self.online = false;
+        self.pc_name = pc.to_string();
+        self.away = away;
+        self.start = start;
+        self.demo_wake = wake;
+        if age > 0 {
+            self.data_at = Some(now().saturating_sub(age));
+        }
+        self.offline_text = "Hors ligne (connexion refusée) · nouvel essai dans 10 s".into();
+        self.show_offline();
+    }
+
     /// Démonstration : la liaison à ce PC dans cet état (0 connexion en cours, 2 hors ligne, 3 refusée), avant toute
     /// donnée.
     pub(crate) fn demo_link(&mut self, pc: &str, state: i32, text: &str) {
@@ -2244,6 +2369,9 @@ fn wire(ui: &AppWindow) {
                 l.kick();
             }
         });
+    });
+    ui.on_start_eyrie(|| {
+        with(|c| c.start_eyrie());
     });
     ui.on_tailnet_login(|| {
         with(|c| c.tailnet_login());

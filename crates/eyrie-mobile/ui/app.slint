@@ -5,7 +5,7 @@ import "fonts/Hack-Regular.ttf";
 import { Theme } from "theme.slint";
 import {
     UiAct, UiRow, UiChip, GraphSeg, TabItem, ModuleItem, WaitItem, NoteItem, CommandItem, PcItem, NavItem, TopBar,
-    BottomNav, ActionSheet, ConfirmDialog, Toast, ActButton, Icon
+    BottomNav, ActionSheet, ConfirmDialog, Toast, ActButton, Icon, Busy
 } from "widgets.slint";
 import { ScreenPage, OverviewPage, MorePage, NotesPage, CommandsPage, SettingsPage } from "pages.slint";
 import { TermView, TermRow } from "term.slint";
@@ -42,6 +42,13 @@ export component AppWindow inherits Window {
     in property <int> link-state;
     in property <string> link-text;
     in property <string> pc-name;
+    // Hors ligne, ce que l'on sait du PC (voir `veilleur.rs`) : 0 rien de plus que `link-text`, 1 PC injoignable,
+    // 2 Eyrie fermée, 3 Eyrie démarre, 4 accès coupé sur le PC ; « Démarrer Eyrie » possible (avec confirmation).
+    in property <int> away;
+    in property <string> away-title;
+    in property <string> away-text;
+    in property <string> away-error;
+    in property <bool> can-start;
 
     // --- Données ---
     in property <[NavItem]> nav;
@@ -149,6 +156,7 @@ export component AppWindow inherits Window {
     callback pair-another();
     callback forget-pc();
     callback retry-link();
+    callback start-eyrie();
     callback tailnet-login();
     callback tailnet-logout();
     callback start-scan();
@@ -210,6 +218,7 @@ export component AppWindow inherits Window {
     property <bool> confirm-visible;
     property <bool> forget-visible;
     property <bool> logout-visible;
+    property <bool> start-visible;
     property <bool> input-visible;
     property <string> input-text;
     // Le champ de texte tient lieu de sélecteur de dossiers : la confirmation vient après, et `input-note` dit pourquoi.
@@ -280,13 +289,14 @@ export component AppWindow inherits Window {
     focus := FocusScope {
         key-pressed(e) => {
             if e.text == Key.Back || e.text == Key.Escape {
-                if root.sheet-visible || root.confirm-visible || root.input-visible || root.forget-visible || root.logout-visible {
+                if root.sheet-visible || root.confirm-visible || root.input-visible || root.forget-visible || root.logout-visible || root.start-visible {
                     root.sheet-visible = false;
                     root.confirm-visible = false;
                     root.has-chosen = false;
                     root.cancel-input();
                     root.forget-visible = false;
                     root.logout-visible = false;
+                    root.start-visible = false;
                     return accept;
                 }
                 // Le sélecteur de dossiers se ferme (on remonte d'un dossier par le fil d'Ariane).
@@ -358,7 +368,8 @@ export component AppWindow inherits Window {
                     act(a) => { root.start-act(a); }
                     more => { root.show-sheet(root.screen-title, root.screen-acts); }
                 }
-                // Hors ligne : les dernières données restent, un bandeau le dit.
+                // Hors ligne : les dernières données restent, un bandeau le dit (Eyrie fermée : « Démarrer » ; elle
+                // démarre : l'indicateur, la liaison réessaie d'elle-même).
                 if root.link-state != 1: Rectangle {
                     height: 48px;
                     background: root.link-state == 3 ? Theme.danger.with-alpha(0.16) : Theme.warn.with-alpha(0.16);
@@ -374,12 +385,19 @@ export component AppWindow inherits Window {
                             overflow: elide;
                             horizontal-stretch: 1;
                         }
+                        if root.away == 3: VerticalLayout {
+                            padding-right: 12px;
+                            alignment: center;
+                            Busy {
+                                size: 18px;
+                            }
+                        }
                         // Toute la hauteur du bandeau se touche.
-                        if root.link-state != 0: Rectangle {
+                        if root.link-state != 0 && root.away != 3: Rectangle {
                             width: retry-label.preferred-width + 24px;
                             accessible-role: button;
-                            accessible-label: "Réessayer";
-                            accessible-action-default => { root.retry-link(); }
+                            accessible-label: retry-label.text;
+                            accessible-action-default => { retry-ta.clicked(); }
                             Rectangle {
                                 y: 6px;
                                 height: parent.height - 12px;
@@ -387,7 +405,7 @@ export component AppWindow inherits Window {
                                 background: retry-ta.pressed ? Theme.pressed : transparent;
                             }
                             retry-label := Text {
-                                text: "Réessayer";
+                                text: root.can-start ? "Démarrer" : "Réessayer";
                                 color: Theme.accent;
                                 font-size: 13.5px;
                                 font-weight: 700;
@@ -395,7 +413,13 @@ export component AppWindow inherits Window {
                                 vertical-alignment: center;
                             }
                             retry-ta := TouchArea {
-                                clicked => { root.retry-link(); }
+                                clicked => {
+                                    if root.can-start {
+                                        root.start-visible = true;
+                                    } else {
+                                        root.retry-link();
+                                    }
+                                }
                             }
                         }
                     }
@@ -413,6 +437,12 @@ export component AppWindow inherits Window {
                         unread: root.unread;
                         waiting-known: root.waiting-known;
                         data-age: root.data-age;
+                        away: root.away;
+                        away-title: root.away-title;
+                        away-text: root.away-text;
+                        away-error: root.away-error;
+                        can-start: root.can-start;
+                        start-eyrie => { root.start-visible = true; }
                         open-module(id) => { root.nav-select(id); }
                         open-wait(id, path) => { root.open-module-path(id, path); }
                         open-note(n) => { root.open-note(n); }
@@ -585,6 +615,17 @@ export component AppWindow inherits Window {
             root.forget-visible = false;
             if yes {
                 root.forget-pc();
+            }
+        }
+    }
+    if root.start-visible: ConfirmDialog {
+        text: "Démarrer Eyrie sur « " + root.pc-name + " » ?\n\nElle s'ouvrira réduite sur le PC ; ce téléphone s'y connecte dès qu'elle est prête.";
+        ok-text: "Démarrer";
+        answered(yes) => {
+            root.start-visible = false;
+            if yes {
+                root.haptic();
+                root.start-eyrie();
             }
         }
     }

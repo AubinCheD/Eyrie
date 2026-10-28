@@ -2,6 +2,7 @@
 //!
 //! - [`app`] : le contrôleur (état, navigation, gestes, messages du PC) ;
 //! - [`net`] : la liaison avec le PC (reconnexion) et l'appairage ;
+//! - [`veilleur`] : le PC quand la liaison est coupée (Eyrie fermée…) et « Démarrer Eyrie » ;
 //! - [`tailnet`] : le nœud Tailscale de l'application, par où passent les connexions (Android) ;
 //! - [`termbuf`], [`view`] : ce que le PC envoie, prêt à dessiner ;
 //! - [`picker`] : le sélecteur de dossiers du PC (une action qui demande un dossier) ;
@@ -21,6 +22,7 @@ pub mod platform;
 pub mod store;
 pub mod tailnet;
 pub mod termbuf;
+pub mod veilleur;
 pub mod view;
 
 #[path = "../../eyrie/src/nest.rs"]
