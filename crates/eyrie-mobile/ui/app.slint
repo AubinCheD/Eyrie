@@ -30,6 +30,8 @@ export component AppWindow inherits Window {
     in property <string> screen-title: "Ensemble";
     in property <string> subtitle;
     in property <bool> can-back;
+    // Les actions de l'écran : celles de la barre (icônes, ou une seule en clair), celles du menu ⋯.
+    in property <[UiAct]> bar-acts;
     in property <[UiAct]> screen-acts;
     in property <bool> show-pc;
     in property <bool> terminal-mode;
@@ -153,6 +155,11 @@ export component AppWindow inherits Window {
         term.scroll-to-end();
     }
 
+    // Le menu ⋯ de l'écran (démonstration, captures).
+    public function open-screen-menu() {
+        root.show-sheet(root.screen-title, root.screen-acts);
+    }
+
     // --- Ce qui passe par-dessus ---
     property <bool> sheet-visible;
     property <string> sheet-title;
@@ -265,6 +272,7 @@ export component AppWindow inherits Window {
                     title: root.screen-title;
                     subtitle: root.subtitle;
                     can-back: root.can-back;
+                    bar: root.bar-acts;
                     acts: root.screen-acts;
                     show-pc: root.show-pc;
                     pc => {
@@ -432,7 +440,7 @@ export component AppWindow inherits Window {
     }
     if root.confirm-visible: ConfirmDialog {
         text: root.pending.confirm;
-        ok-text: root.pending.style == 2 ? root.pending.label : "Confirmer";
+        ok-text: root.pending.label != "" ? root.pending.label : "Confirmer";
         danger: root.pending.style == 2;
         answered(yes) => {
             root.confirm-visible = false;

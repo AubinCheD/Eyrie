@@ -82,6 +82,27 @@ fn acts(list: &[Act], local: &Local) -> ModelRc<UiAct> {
     ModelRc::new(VecModel::from(list.iter().map(|a| act_in(a, local)).collect::<Vec<_>>()))
 }
 
+/// Les actions d'un menu, les dangereuses à la fin (la feuille les sépare des autres).
+pub fn menu<'a>(list: impl IntoIterator<Item = &'a Act>) -> Vec<&'a Act> {
+    let (danger, safe): (Vec<&Act>, Vec<&Act>) = list.into_iter().partition(|a| a.style == ActStyle::Danger);
+    safe.into_iter().chain(danger).collect()
+}
+
+fn menu_acts(list: &[Act], local: &Local) -> ModelRc<UiAct> {
+    ModelRc::new(VecModel::from(menu(list).into_iter().map(|a| act_in(a, local)).collect::<Vec<_>>()))
+}
+
+/// Les actions de la barre du haut : une seule, en clair ; sinon jusqu'à deux en icônes (celles qui ont un glyphe), les
+/// autres dans le menu ⋯ avec celles du téléphone (`local`, « Tout replier »…). Rend (barre, menu).
+pub fn bar<'a>(acts: &'a [Act], local: &'a [Act]) -> (Vec<&'a Act>, Vec<&'a Act>) {
+    if acts.len() == 1 && local.is_empty() {
+        return (acts.iter().collect(), Vec::new());
+    }
+    let icons: Vec<&Act> = acts.iter().filter(|a| !a.glyph.is_empty()).take(2).collect();
+    let rest = acts.iter().filter(|a| !icons.iter().any(|i| std::ptr::eq(*i, *a)));
+    (icons.clone(), menu(rest.chain(local)))
+}
+
 /// Une ligne de la liste avant d'être dessinée : sa clé, son empreinte, et ce qui la dessine.
 pub struct Item<'a> {
     pub key: String,
@@ -414,7 +435,7 @@ fn row(r: &Row, first: bool, last: bool, local: &Local) -> UiRow {
         has_tap: r.tap.is_some(),
         trailing: r.trailing.as_ref().map(|a| act_in(a, local)).unwrap_or_default(),
         has_trailing: r.trailing.is_some(),
-        acts: acts(&r.acts, local),
+        acts: menu_acts(&r.acts, local),
         value: 0.0,
         mono: false,
         first,
@@ -450,7 +471,7 @@ fn section(b: &Block, open: Option<bool>, local: &Local) -> UiRow {
         has_color: color.is_some(),
         badge: badge.as_str().into(),
         tone: tone(*t),
-        acts: acts(list, local),
+        acts: menu_acts(list, local),
         fold: match open {
             None => 0,
             Some(true) => 1,
@@ -910,6 +931,27 @@ mod tests {
         assert!(r[0].has_trailing && r[0].trailing.busy && r[0].trailing.style == 1);
         assert!(!r[0].busy, "le bouton visible porte son indicateur ; la ligne reste touchable");
         assert_eq!(r[0].acts.row_data(0).map(|a| a.open.to_string()), Some("tache/build".into()));
+    }
+
+    /// La barre du haut : une action seule en clair ; sinon deux icônes au plus, le reste au menu ⋯, les actions
+    /// dangereuses à la fin du menu.
+    #[test]
+    fn the_top_bar_keeps_two_icons_and_the_menu_the_rest() {
+        let labels = |l: &[&Act]| l.iter().map(|a| a.label.clone()).collect::<Vec<_>>();
+        let one = [Act::new("lu", "Tout marquer lu")];
+        assert_eq!(labels(&bar(&one, &[]).0), ["Tout marquer lu"]);
+        let acts = [
+            Act::new("tout", "Tout arrêter").danger().glyph("⏹"),
+            Act::new("pause", "Pause"),
+            Act::new("actualiser", "Actualiser").glyph("↻"),
+            Act::new("nouveau", "Nouveau").glyph("+"),
+        ];
+        let local = [Act::new("@replier", "Tout replier")];
+        let (icons, more) = bar(&acts, &local);
+        assert_eq!(labels(&icons), ["Tout arrêter", "Actualiser"]);
+        assert_eq!(labels(&more), ["Pause", "Nouveau", "Tout replier"]);
+        let sheet = [Act::new("x", "Supprimer").danger(), Act::new("y", "Basculer")];
+        assert_eq!(labels(&menu(&sheet)), ["Basculer", "Supprimer"]);
     }
 
     #[test]

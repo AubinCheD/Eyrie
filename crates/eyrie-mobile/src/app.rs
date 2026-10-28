@@ -147,6 +147,7 @@ pub struct Controller {
 struct Models {
     rows: Rc<VecModel<UiRow>>,
     acts: Rc<VecModel<UiAct>>,
+    bar: Rc<VecModel<UiAct>>,
     tabs: Rc<VecModel<TabItem>>,
     nav: Rc<VecModel<NavItem>>,
     modules: Rc<VecModel<ModuleItem>>,
@@ -161,6 +162,7 @@ impl Models {
         let m = Models {
             rows: Rc::default(),
             acts: Rc::default(),
+            bar: Rc::default(),
             tabs: Rc::default(),
             nav: Rc::default(),
             modules: Rc::default(),
@@ -171,6 +173,7 @@ impl Models {
         };
         ui.set_rows(ModelRc::from(m.rows.clone()));
         ui.set_screen_acts(ModelRc::from(m.acts.clone()));
+        ui.set_bar_acts(ModelRc::from(m.bar.clone()));
         ui.set_tabs(ModelRc::from(m.tabs.clone()));
         ui.set_nav(ModelRc::from(m.nav.clone()));
         ui.set_modules(ModelRc::from(m.modules.clone()));
@@ -911,12 +914,15 @@ impl Controller {
         ui.set_can_back(can_back);
         ui.set_show_pc(acts.iter().any(|a| a.id == "@pc"));
         let local = screen_follow.as_ref().map(|k| self.local(k)).unwrap_or_default();
-        let mut acts: Vec<Act> = acts.into_iter().filter(|a| a.id != "@pc").collect();
+        let acts: Vec<Act> = acts.into_iter().filter(|a| a.id != "@pc").collect();
+        let mut mine = Vec::new();
         if screen_follow.as_ref().is_some_and(|k| bands(self.screens.get(k)).len() >= 2) {
-            acts.push(Act::new("@replier", "Tout replier").glyph("▸"));
-            acts.push(Act::new("@deplier", "Tout déplier").glyph("▾"));
+            mine.push(Act::new("@replier", "Tout replier").glyph("▸"));
+            mine.push(Act::new("@deplier", "Tout déplier").glyph("▾"));
         }
-        view::sync(&self.models.acts, acts.iter().map(|a| view::act_in(a, &local)).collect());
+        let (icons, more) = view::bar(&acts, &mine);
+        view::sync(&self.models.bar, icons.into_iter().map(|a| view::act_in(a, &local)).collect());
+        view::sync(&self.models.acts, more.into_iter().map(|a| view::act_in(a, &local)).collect());
         self.refresh_rows(screen_follow.as_ref().filter(|_| term_follow.is_none()));
         let terminal_mode = term_follow.is_some();
         if terminal_mode && !self.term.is(&term_follow.as_ref().unwrap().0, &term_follow.as_ref().unwrap().1) {

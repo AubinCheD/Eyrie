@@ -1,7 +1,7 @@
 //! Démonstration sans PC (`EYRIE_MOBILE_DEMO=<scène>`), pour les captures et la mise au point de l'interface :
-//! `ensemble`, `fawkes`, `recherche`, `terminal`, `patronus`, `depot`, `historique`, `diff`, `diff-retour`, `plus`,
-//! `notes`, `reglages`, `attente`, `accueil`, `commandes`, `accueil-tailscale`, `code`, `appairage`, `hors-ligne`. Suffixe
-//! `+clair` ou `+sombre` : le thème (sinon celui du système).
+//! `ensemble`, `fawkes`, `recherche`, `terminal`, `patronus`, `depot`, `menu`, `historique`, `diff`, `diff-retour`,
+//! `plus`, `notes`, `reglages`, `attente`, `accueil`, `commandes`, `accueil-tailscale`, `code`, `appairage`,
+//! `hors-ligne`. Suffixe `+clair` ou `+sombre` : le thème (sinon celui du système).
 
 use slint::ComponentHandle;
 use suite_mobile::msg::{Badge, CommandCard, ModuleCard, Note, ToPhone, Waiting};
@@ -160,7 +160,15 @@ fn depot(title: &str) -> Screen {
     Screen::new(title)
         .subtitle("mobile-ergonomie · ↑2 ↓1")
         .act(Act::new("@pc", "Montrer sur le PC"))
-        .act(Act::new("actualiser", "Actualiser").glyph("↻"))
+        .act(Act::new("actualiser", "Actualiser").glyph("🔄"))
+        .act(Act::new("terminal", "Terminal dans ce dépôt").glyph("›_"))
+        .act(Act::new("explorer", "Ouvrir dans l'explorateur"))
+        .act(
+            Act::new("retirer", "Retirer de DragonTree")
+                .glyph("×")
+                .danger()
+                .confirm("Retirer ce dépôt de DragonTree ?"),
+        )
         .tab("État", "depot/eyrie")
         .tab("Historique", "depot/eyrie/historique")
         .tab("Branches", "depot/eyrie/branches")
@@ -427,6 +435,11 @@ pub fn play(ui: &AppWindow, scene: &str) {
                 c.open_module_path("dragontree", "depot/eyrie");
                 c.run_act(&UiAct { id: "fetch".into(), ..Default::default() }, "");
             });
+        }
+        // Le menu ⋯ de l'écran d'un dépôt, ouvert.
+        "menu" => {
+            with(|c| c.open_module_path("dragontree", "depot/eyrie"));
+            ui.invoke_open_screen_menu();
         }
         "diff" | "diff-retour" => {
             with(|c| {
