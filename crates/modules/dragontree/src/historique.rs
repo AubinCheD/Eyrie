@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use dragontree_git::graph::UNKNOWN_ROW;
-use dragontree_git::{Commit, GraphBuilder, GraphLayout, Oid, RefKind, RefLabel, RefsSnapshot};
+use dragontree_git::{Commit, GraphBuilder, GraphLayout, HeadState, Oid, RefKind, RefLabel, RefsSnapshot};
 use suite_sdk::mobile::ui::{
     Act, Chip, GRAPH_BOTTOM, GRAPH_THROUGH, GRAPH_TOP, GraphCell, LANE_COLORS, NODE_COMMIT, NODE_HEAD, NODE_LOST,
     NODE_MERGE, NODE_STASH, Row, Screen, Tone,
@@ -237,9 +237,11 @@ pub fn fill(s: &mut Screen, base: &str, log: Option<&Result<LogView, String>>, s
 /// L'onglet Historique : celui de la branche courante, avec son graphe ; « Toutes les branches » mène au graphe de
 /// DragonTree.
 pub fn current(base: &str, v: &RepoView, now: i64) -> Screen {
-    let subtitle = match v.current_branch() {
-        Some(b) => format!("Branche courante : {b}"),
-        None => "HEAD détachée".into(),
+    // HEAD d'après les branches lues par DragonTree, sinon son état ; rien tant qu'il n'a lu ni l'un ni l'autre.
+    let subtitle = match (v.refs.as_deref().map(|r| &r.head), v.current_branch().as_ref()) {
+        (Some(HeadState::Branch(b) | HeadState::Unborn(b)), _) | (None, Some(b)) => format!("Branche courante : {b}"),
+        (Some(HeadState::Detached(o)), _) => format!("HEAD détachée ({})", o.short()),
+        (None, None) => String::new(),
     };
     let s = Screen::new("Historique").subtitle(subtitle).search("Chercher un commit (titre, auteur, identifiant)");
     let mut s = depot::with_tabs(s, base, &format!("{base}/historique"), v);

@@ -29,11 +29,13 @@ use dragontree_app::repo::{Refresh, RemoteOp, RepoTab};
 use dragontree_app::settings::{Settings, path_key};
 use dragontree_git::discovery::{FoundRepo, repo_head};
 use dragontree_git::{
-    CancelToken, CommitInfo, DiffOptions, FileChange, FileState, Git, GraphLayout, HeadState, LogOptions, LogOrder,
-    LogScope, Oid, RefsSnapshot, Repo, StatusEntry, StatusSnapshot,
+    CancelToken, Commit, CommitInfo, DiffOptions, FileChange, FileState, Git, GraphLayout, HeadState, LogOptions,
+    LogOrder, LogScope, Oid, RefsSnapshot, Repo, StatusEntry, StatusSnapshot,
 };
+use suite_sdk::mobile::msg::OPEN_PREFIX;
 use suite_sdk::mobile::ui::{Act, Block, GraphCell, PROGRESS_UNKNOWN, Screen, Tone};
 
+use crate::branches;
 use crate::depot::{self, RepoView, file_key};
 use crate::historique::{self, LogPage, LogView, Marks};
 use crate::liste::{self, Entry, JOB_SHOWN, Job, Listed, RepoState, repo_key};
@@ -182,6 +184,10 @@ struct Reads {
     diffs: HashMap<String, Result<Vec<(u8, String)>, String>>,
     /// Historique d'une révision (`HEAD`, `refs/heads/x`) → combien de commits ont été demandés, et ce qui a été lu.
     logs: HashMap<String, (usize, Result<LogPage, String>)>,
+    /// Les commits pointés par les branches et les étiquettes (leur date, leur titre).
+    tips: Option<Result<Arc<HashMap<Oid, Commit>>, String>>,
+    /// Branche locale (`refs/heads/x`) → ses commits à pousser et à tirer.
+    pending: HashMap<String, branches::Pending>,
     /// Lecture → quand elle a été faite ; en cours : absente de `loaded`, présente dans `loading`.
     loaded: HashMap<String, Instant>,
     loading: HashSet<String>,
@@ -210,6 +216,13 @@ enum Load {
         count: usize,
         topo: bool,
     },
+    /// Les commits pointés par les branches et les étiquettes.
+    Tips(Vec<Oid>),
+    /// Ce qu'une branche locale a à pousser vers sa branche suivie, et à en tirer.
+    Pending {
+        local: String,
+        upstream: String,
+    },
 }
 
 impl Load {
@@ -220,6 +233,8 @@ impl Load {
             Load::WorkDiff(f, _) => format!("w:{f}"),
             Load::CommitDiff(id, f) => format!("c:{id}:{f}"),
             Load::Log { rev, count, .. } => format!("log:{rev}:{count}"),
+            Load::Tips(_) => "tips".into(),
+            Load::Pending { local, .. } => format!("pending:{local}"),
         }
     }
 
@@ -227,7 +242,12 @@ impl Load {
         match self {
             Load::WorkDiff(..) => Some(DIFF_EVERY),
             // Relus quand l'état ou les branches lus par DragonTree changent ; un commit ne change pas.
-            Load::LastMessage | Load::Commit(_) | Load::CommitDiff(..) | Load::Log { .. } => None,
+            Load::LastMessage
+            | Load::Commit(_)
+            | Load::CommitDiff(..)
+            | Load::Log { .. }
+            | Load::Tips(_)
+            | Load::Pending { .. } => None,
         }
     }
 }
@@ -293,6 +313,23 @@ fn read(repo: &Repo, what: &Load, known: Option<&(CommitInfo, Vec<FileChange>)>,
             };
             let res = repo.log(&opts, &CancelToken::new()).map(LogPage::of).map_err(|e| e.to_string());
             r.logs.insert(rev.clone(), (*count, res));
+        }
+        Load::Tips(oids) => {
+            let res = repo.commits_of(oids, &CancelToken::new()).map_err(|e| e.to_string());
+            r.tips = Some(res.map(|list| Arc::new(list.into_iter().map(|c| (c.id, c)).collect())));
+        }
+        Load::Pending { local, upstream } => {
+            // Des noms complets lus par DragonTree (`refs/…`) : jamais une option de git.
+            let log = |from: &str, not: &str| {
+                let opts = LogOptions {
+                    scope: LogScope::Revs(vec![from.to_string(), format!("^{not}")]),
+                    max_count: Some(branches::PENDING_SHOWN),
+                    ..Default::default()
+                };
+                repo.log(&opts, &CancelToken::new())
+            };
+            let res = log(local, upstream).and_then(|push| Ok((push, log(upstream, local)?)));
+            r.pending.insert(local.clone(), res.map_err(|e| e.to_string()));
         }
     }
 }
@@ -592,6 +629,10 @@ impl Phone {
             r.commits.extend(fresh.commits);
             r.diffs.extend(fresh.diffs);
             r.logs.extend(fresh.logs);
+            r.pending.extend(fresh.pending);
+            if fresh.tips.is_some() {
+                r.tips = fresh.tips;
+            }
         });
     }
 
@@ -607,7 +648,7 @@ impl Phone {
         }
         if !r.refs_seen.as_ref().is_some_and(|seen| t.refs.as_ref().is_some_and(|now| Arc::ptr_eq(seen, now))) {
             r.refs_seen = t.refs.clone();
-            r.loaded.retain(|k, _| !k.starts_with("log:"));
+            r.loaded.retain(|k, _| !k.starts_with("log:") && k != "tips" && !k.starts_with("pending:"));
         }
     }
 
@@ -639,7 +680,9 @@ impl Phone {
             (_, Err(e)) => return Some(Err(e)),
         };
         let cells = self.cells(path, &page.graph, page.commits.len());
-        let rows = historique::rows(&page, &cells, t.refs.as_deref(), &Marks::default());
+        // Le premier commit de l'historique de HEAD est HEAD, même avant que DragonTree ait lu les branches.
+        let head = if rev == "HEAD" { page.commits.first().map(|c| c.id) } else { None };
+        let rows = historique::rows(&page, &cells, t.refs.as_deref(), &Marks { head, ..Default::default() });
         // Autant de commits que demandé : il y en a peut-être d'autres ; moins (une lecture plus longue en cours) :
         // la suite arrive.
         let more = page.commits.len() >= asked.min(count) && page.commits.len() < depot::PAGE_MAX;
@@ -697,6 +740,9 @@ impl Phone {
         let all = lock(&self.reads);
         let Some(r) = all.get(key) else { return v };
         v.last_message = r.last_message.clone().unwrap_or_default();
+        if let Some(Ok(tips)) = &r.tips {
+            v.tips = tips.clone();
+        }
         let mut keep = |k: String| {
             if let Some(d) = r.diffs.get(&k) {
                 v.diffs.insert(k, d.clone());
@@ -748,11 +794,35 @@ impl Phone {
                 }
                 _ => {}
             }
+            // Les dates des pointes : pour ranger les branches et les étiquettes.
+            if let (["branches", ..] | ["branche", _] | ["plus"] | ["etiquettes"], Some(refs)) =
+                (parts.as_slice(), &t.refs)
+            {
+                self.want(key, handle, Load::Tips(branches::tip_oids(refs)));
+            }
+            if let (["branche", b], Some(refs)) = (parts.as_slice(), &t.refs)
+                && let Some(branch) = branches::find(refs, b)
+            {
+                let topo = self.settings.topological_order;
+                self.want(key, handle, Load::Log { rev: branch.full(), count, topo });
+                if let branches::Branch::Local(l) = branch
+                    && (l.ahead > 0 || l.behind > 0)
+                    && let Some(upstream) = branches::upstream_ref(refs, l)
+                {
+                    self.want(key, handle, Load::Pending { local: branch.full(), upstream });
+                }
+            }
         }
         let mut view = self.view(key, t, &parts, path);
         match parts.as_slice() {
             ["historique"] => view.log = self.log_view(key, path, "HEAD", count, t),
             ["historique", "tout"] => view.log = self.graph_view(path, count, t),
+            ["branche", b] => {
+                if let Some(full) = t.refs.as_deref().and_then(|r| branches::find(r, b)).map(|b| b.full()) {
+                    view.log = self.log_view(key, path, &full, count, t);
+                    view.pending = lock(&self.reads).get(key).and_then(|r| r.pending.get(&full).cloned());
+                }
+            }
             _ => {}
         }
         let job = self.job(key, Some(t));
@@ -768,7 +838,9 @@ impl Phone {
             ["historique", "tout"] => historique::all(&base, &view, now),
             ["commit", id] => depot::commit(&base, &view, id, now, busy),
             ["commit", id, f] => depot::commit_file(&view, id, f)?,
-            ["branches"] => depot::branches(&base, &view, busy),
+            ["branches"] => branches::list(&base, &view, now, busy),
+            ["branches", "g", g] => branches::group(&base, &view, g, now, busy)?,
+            ["branche", b] => branches::detail(&base, &view, b, now, busy),
             ["plus"] => depot::more(&base, &view, now, busy),
             ["etiquettes"] => depot::tags(&base, &view, now, busy),
             _ => return None,
@@ -861,6 +933,14 @@ impl Phone {
             return Ok((format!("{label} : ouverture de {name} dans DragonTree…"), false));
         }
         app.queue_operation(&repo, op)?;
+        // Renommée depuis son détail : le téléphone ouvre celui du nouveau nom (il se remplit quand DragonTree a relu
+        // les branches).
+        if let (Some(("renommer", _)), Some(new)) = (verb.split_once(':'), input.map(str::trim))
+            && path.contains("/branche/")
+        {
+            let renamed = branches::branch_key(&format!("refs/heads/{new}"));
+            return Ok((format!("{OPEN_PREFIX}depot/{key}/branche/{renamed}"), false));
+        }
         Ok((format!("{label} : lancé dans DragonTree"), false))
     }
 
@@ -1155,7 +1235,7 @@ mod tests {
         wait_screen(&mut h, &mut phone, &base, "Non indexé");
         let seen = walk(&mut h, &mut phone, "", 80);
         let has = |p: &str| seen.iter().any(|s| s.starts_with(&format!("{base}/{p}")));
-        for p in ["modifs", "fichier/", "historique", "commit/", "branches", "plus", "etiquettes"] {
+        for p in ["modifs", "fichier/", "historique", "commit/", "branches", "branche/", "plus", "etiquettes"] {
             assert!(has(p), "{p} visité : {seen:?}");
         }
         assert!(
@@ -1198,7 +1278,8 @@ mod tests {
         let mut phone = phone_for(&profile, &repo);
         let mut h = dragontree(&profile);
         let base = format!("depot/{}", repo_key(&repo));
-        let s = wait_screen(&mut h, &mut phone, &format!("{base}/historique"), "Second commit");
+        // Les étiquettes viennent des branches lues par DragonTree, qui peuvent arriver après l'historique.
+        let s = wait_screen(&mut h, &mut phone, &format!("{base}/historique"), "\"v1\"");
         let text = format!("{s:?}");
         assert!(text.contains("Premier commit") && !text.contains("Sur une autre branche"), "HEAD seulement : {text}");
         assert_eq!(s.subtitle, "Branche courante : main");
@@ -1223,6 +1304,23 @@ mod tests {
         );
         let lanes = rows(&all).iter().filter_map(|r| r.graph.as_ref()).map(|g| g.lanes).max();
         assert_eq!(lanes, Some(2), "deux branches, deux voies : {all:?}");
+
+        // Toucher une branche ouvre son détail : son historique à elle, et la bascule en premier bouton.
+        let list = wait_screen(&mut h, &mut phone, &format!("{base}/branches"), "autre");
+        let other = branches::branch_key("refs/heads/autre");
+        let row = rows(&list).into_iter().find(|r| r.title == "autre").expect("autre");
+        assert_eq!(row.open, Some(format!("{base}/branche/{other}")));
+        assert!(row.tap.is_none(), "pas de bascule d'un toucher");
+        let d = wait_screen(&mut h, &mut phone, &format!("{base}/branche/{other}"), "Premier commit");
+        assert!(format!("{d:?}").contains("Premier commit") && !format!("{d:?}").contains("Second commit"), "{d:?}");
+        assert!(d.action_ids().contains("basculer:autre"));
+        // Renommée depuis son détail : le téléphone ouvre le détail du nouveau nom.
+        let (open, _) =
+            phone.action(h.state_mut(), &format!("{base}/branche/{other}"), "renommer:autre", Some("autre2")).unwrap();
+        let renamed = format!("{base}/branche/{}", branches::branch_key("refs/heads/autre2"));
+        assert_eq!(open, format!("{OPEN_PREFIX}{renamed}"));
+        let d = wait_screen(&mut h, &mut phone, &renamed, "Premier commit");
+        assert_eq!(d.title, "autre2", "{d:?}");
         drop(h);
         let _ = std::fs::remove_dir_all(&dir);
     }

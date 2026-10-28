@@ -15,6 +15,7 @@
 //! - **téléphone** (`mobile`) : ses dépôts et un client git presque complet, menés par DragonTree lui-même (ses
 //!   onglets, sa file d'opérations, ses comptes, ses notifications et son bandeau de conflits sur le PC).
 
+pub mod branches;
 pub mod depot;
 pub mod historique;
 pub mod liste;

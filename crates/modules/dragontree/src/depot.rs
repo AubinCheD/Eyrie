@@ -6,8 +6,8 @@
 //!   fetch, pull, push, et les modifications (conflits, indexé, non indexé ; les 30 premières, puis « Tout voir ») ;
 //! - **Historique** (`historique`, `historique/tout` : `historique.rs`) : celui de la branche courante, ou le graphe
 //!   de DragonTree, avec le graphe des commits ;
-//! - **Branches** (`branches`) : basculer, fusionner, rebaser, pousser, renommer, supprimer, nouvelle branche, suivre
-//!   une branche distante ;
+//! - **Branches** (`branches`, et le détail d'une branche `branche/<b>` : `branches.rs`) : la courante, les locales
+//!   par date et par dossier, les distantes par remote ;
 //! - **Plus** (`plus`) : remises (appliquer, appliquer et retirer, jeter), étiquettes (les plus récentes ; toutes dans
 //!   `etiquettes`, par pages), worktrees (supprimer, élaguer), remotes et leurs URL, afficher sur le PC.
 //!
@@ -28,11 +28,12 @@ use std::sync::Arc;
 
 use dragontree_app::repo::RemoteOp;
 use dragontree_git::{
-    ChangeKind, CommitInfo, FileChange, FileDiff, FileState, LineKind, Oid, OpState, RefsSnapshot, Remote, ResetMode,
-    StashEntry, StatusEntry, StatusSnapshot, TagRef, Worktree,
+    ChangeKind, Commit, CommitInfo, FileChange, FileDiff, FileState, LineKind, Oid, OpState, RefsSnapshot, Remote,
+    ResetMode, StashEntry, StatusEntry, StatusSnapshot, TagRef, Worktree,
 };
 use suite_sdk::mobile::ui::{Act, Band, DIFF_ADDED, DIFF_CONTEXT, DIFF_HEADER, DIFF_REMOVED, Row, Screen, Tab, Tone};
 
+use crate::branches::{Pending, branch_key};
 use crate::historique::LogView;
 
 /// Une liste par pages (étiquettes, historique, branches) : sa première page, et ce que « plus » ajoute.
@@ -84,8 +85,10 @@ pub struct RepoView {
     pub slow: bool,
     /// L'historique montré (`None` : pas encore lu).
     pub log: Option<Result<LogView, String>>,
-    /// Date (secondes) des commits pointés par les branches et les étiquettes, lue à part.
-    pub tips: Arc<HashMap<Oid, i64>>,
+    /// Les commits pointés par les branches et les étiquettes (date, titre), lus à part.
+    pub tips: Arc<HashMap<Oid, Commit>>,
+    /// Ce qu'une branche a à pousser et à tirer (lu à part).
+    pub pending: Option<Pending>,
     /// Lignes demandées de la liste par pages de l'écran.
     pub count: usize,
     /// Commit (identifiant complet) → ses informations et ses fichiers.
@@ -121,7 +124,7 @@ impl RepoView {
     pub fn tags_by_date(&self) -> Vec<&TagRef> {
         let Some(refs) = &self.refs else { return Vec::new() };
         let mut tags: Vec<&TagRef> = refs.tags.iter().rev().collect();
-        tags.sort_by_key(|t| std::cmp::Reverse(self.tips.get(&t.oid).copied().unwrap_or(i64::MIN)));
+        tags.sort_by_key(|t| std::cmp::Reverse(self.tips.get(&t.oid).map_or(i64::MIN, |c| c.committer_time)));
         tags
     }
 }
@@ -399,8 +402,16 @@ pub fn overview(base: &str, name: &str, path: &str, v: &RepoView, busy: bool) ->
         }
     }
     op_block(&mut s, base, v);
-    let branch = st.branch.clone().unwrap_or_else(|| "HEAD détachée".into());
-    s.row(Row::new("Branche").detail(branch).glyph("🌿").open(format!("{base}/branches")));
+    match &st.branch {
+        Some(b) => s.row(
+            Row::new("Branche")
+                .detail(b)
+                .glyph("🌿")
+                .key("branche")
+                .open(format!("{base}/branche/{}", branch_key(&format!("refs/heads/{b}")))),
+        ),
+        None => s.row(Row::new("Branche").detail("HEAD détachée").glyph("📍").key("branche")),
+    };
     let upstream = st.upstream.clone().unwrap_or_else(|| "aucune".into());
     let tone = if st.ahead > 0 && st.behind > 0 { Tone::Warn } else { Tone::Ok };
     s.row(Row::new("Suivi").subtitle(upstream).detail(sync(st.ahead, st.behind)).glyph("🔁").tone(tone));
@@ -697,112 +708,6 @@ pub fn commit_file(v: &RepoView, id: &str, key: &str) -> Option<Screen> {
     Some(s)
 }
 
-/// Les branches locales et distantes.
-pub fn branches(base: &str, v: &RepoView, busy: bool) -> Screen {
-    let mut s = with_tabs(Screen::new("Branches"), base, &format!("{base}/historique"), v);
-    let Some(refs) = &v.refs else {
-        reading(&mut s, "Lecture des branches…", v.slow);
-        return s;
-    };
-    let current = refs.current_branch().map(str::to_string);
-    if let Some(c) = &current {
-        s.subtitle = format!("Courante : {c}");
-    }
-    if !busy {
-        s.acts.push(
-            Act::new("nouvelle-branche", "Nouvelle branche…")
-                .glyph("🌿")
-                .input("Nom (créée depuis HEAD et sortie)", "feature/…"),
-        );
-    }
-    s.section("Locales", refs.locals.len().to_string());
-    for b in &refs.locals {
-        let head = current.as_deref() == Some(b.name.as_str());
-        let mut sub = match (&b.upstream, b.upstream_gone) {
-            (Some(u), true) => format!("{u} (supprimée)"),
-            (Some(u), false) => format!("{u} · {}", sync(b.ahead, b.behind)),
-            (None, _) => "non publiée".into(),
-        };
-        if head {
-            sub = format!("courante · {sub}");
-        }
-        let mut row = Row::new(&b.name).subtitle(sub).glyph("🌿");
-        if head {
-            row = row.badge("courante").tone(Tone::Ok);
-        }
-        if !busy {
-            let n = &b.name;
-            if !head {
-                row = row.tap(
-                    Act::new(format!("basculer:{n}"), format!("Basculer sur {n}"))
-                        .confirm(format!("Basculer sur {n} ?")),
-                );
-                row = row.act(Act::new(format!("basculer:{n}"), "Basculer").glyph("↪️"));
-                if let Some(c) = &current {
-                    row = row
-                        .act(
-                            Act::new(format!("fusionner:{n}"), format!("Fusionner dans {c}"))
-                                .glyph("🔀")
-                                .confirm(format!("Fusionner {n} dans {c} ?")),
-                        )
-                        .act(
-                            Act::new(format!("rebaser:{n}"), format!("Rebaser {c} sur {n}"))
-                                .glyph("⤴️")
-                                .confirm(format!("Rejouer les commits de {c} sur {n} ?")),
-                        );
-                }
-            }
-            row = row.act(Act::new(format!("publier:{n}"), "Pousser").glyph("⬆️")).act(
-                Act::new(format!("renommer:{n}"), "Renommer…").glyph("✏️").input("Nouveau nom", "").input_value(n),
-            );
-            if !head {
-                row = row
-                    .act(
-                        Act::new(format!("supprimer-branche:{n}"), "Supprimer")
-                            .glyph("🗑️")
-                            .danger()
-                            .confirm(format!("Supprimer la branche {n} ? (refusé si elle n'est pas fusionnée)")),
-                    )
-                    .act(
-                        Act::new(format!("supprimer-branche-force:{n}"), "Supprimer même non fusionnée")
-                            .glyph("⚠️")
-                            .danger()
-                            .confirm(format!("Supprimer {n} et perdre ses commits non fusionnés ?")),
-                    );
-            }
-        }
-        s.row(row);
-    }
-    let remotes: Vec<_> = refs.remotes.iter().filter(|r| !r.is_symbolic).collect();
-    if !remotes.is_empty() {
-        s.section("Distantes", remotes.len().to_string());
-        for r in remotes {
-            let full = format!("{}/{}", r.remote, r.name);
-            let mut row = Row::new(&full).glyph("☁️");
-            if !busy {
-                let tracked = refs.locals.iter().any(|b| b.upstream.as_deref() == Some(full.as_str()));
-                if !tracked {
-                    row = row.act(
-                        Act::new(format!("suivre:{full}"), "Créer une branche locale qui la suit")
-                            .glyph("🌿")
-                            .input("Nom de la branche locale", "")
-                            .input_value(&r.name),
-                    );
-                }
-                if let Some(c) = &current {
-                    row = row.act(
-                        Act::new(format!("fusionner:{full}"), format!("Fusionner dans {c}"))
-                            .glyph("🔀")
-                            .confirm(format!("Fusionner {full} dans {c} ?")),
-                    );
-                }
-            }
-            s.row(row);
-        }
-    }
-    s
-}
-
 fn stash_row(st: &StashEntry, now: i64, busy: bool) -> Row {
     let id = st.oid.to_hex();
     let mut row = Row::new(&st.message).subtitle(ago(st.time, now)).glyph("📦").key(format!("s:{id}"));
@@ -830,8 +735,8 @@ fn tag_row(base: &str, t: &TagRef, v: &RepoView, now: i64, busy: bool) -> Row {
     if t.annotated {
         sub.push("annotée".to_string());
     }
-    if let Some(at) = v.tips.get(&t.oid) {
-        sub.push(ago(*at, now));
+    if let Some(c) = v.tips.get(&t.oid) {
+        sub.push(ago(c.committer_time, now));
     }
     row = row.subtitle(sub.join(" · "));
     if !busy {
@@ -1244,18 +1149,6 @@ mod tests {
             s.entries.retain(|e| e.index == FileState::Unmodified);
         }
         assert!(parse(&clean, "valider", Some("x")).is_err(), "rien d'indexé");
-    }
-
-    #[test]
-    fn branches_offer_switch_merge_rebase_and_tracking() {
-        let v = view();
-        let s = branches("depot/k", &v, false);
-        let ids = s.action_ids();
-        for id in ["basculer:feature/x", "fusionner:feature/x", "rebaser:feature/x", "supprimer-branche:feature/x"] {
-            assert!(ids.contains(id), "{id}");
-        }
-        assert!(!ids.contains("basculer:main") && !ids.contains("supprimer-branche:main"), "pas la courante");
-        assert!(ids.contains("suivre:origin/autre") && ids.contains("nouvelle-branche"));
     }
 
     #[test]
