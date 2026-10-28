@@ -10,8 +10,10 @@ import {
 import { ScreenPage, OverviewPage, MorePage, NotesPage, CommandsPage, SettingsPage } from "pages.slint";
 import { TermView, TermRow } from "term.slint";
 import { Onboarding, CodeEntry, Pairing, Scanner } from "onboarding.slint";
+import { FolderPicker, PickRow, PickCrumb, PickerState } from "picker.slint";
 
 export { Theme, UiAct, UiRow, UiChip, GraphSeg, TabItem, ModuleItem, WaitItem, NoteItem, CommandItem, PcItem, NavItem, TermRow }
+export { PickRow, PickCrumb, PickerState }
 export { TermSeg } from "term.slint";
 
 export component AppWindow inherits Window {
@@ -114,6 +116,13 @@ export component AppWindow inherits Window {
     in property <bool> toast-visible;
     in property <bool> toast-expanded;
 
+    // --- Le sélecteur de dossiers du PC (une action qui demande un dossier) ---
+    in property <bool> picker-visible;
+    in property <PickerState> picker;
+    in property <[PickCrumb]> picker-crumbs;
+    in property <[PickRow]> picker-rows;
+    in-out property <string> picker-filter;
+
     // --- Vers le code ---
     callback nav-select(string);
     callback open-module-path(string, string);
@@ -153,6 +162,15 @@ export component AppWindow inherits Window {
     callback term-key(string);
     callback term-reply(int);
     callback term-zoom-by(float);
+    callback open-folder(UiAct);
+    callback picker-go(string);
+    callback picker-pick(string);
+    callback picker-choose();
+    callback picker-more();
+    callback picker-retry();
+    callback picker-hidden();
+    callback picker-filter-edited(string);
+    callback picker-close();
 
     public function term-scroll-to-end() {
         term.scroll-to-end();
@@ -161,6 +179,27 @@ export component AppWindow inherits Window {
     // Le menu ⋯ de l'écran (démonstration, captures).
     public function open-screen-menu() {
         root.show-sheet(root.screen-title, root.screen-acts);
+    }
+
+    // Une saisie de dossier en champ de texte, quand le PC ne liste pas ses dossiers : `note` dit pourquoi.
+    public function ask-input(a: UiAct, note: string) {
+        root.pending = a;
+        root.input-note = note;
+        root.input-text = a.input-value;
+        root.folder-input = true;
+        root.input-visible = true;
+    }
+
+    // Le dossier est choisi : la confirmation de l'action s'il y en a une (avec le chemin), puis l'envoi.
+    public function finish-act(a: UiAct, input: string) {
+        if a.confirm != "" {
+            root.pending = a;
+            root.chosen = input;
+            root.has-chosen = true;
+            root.confirm-visible = true;
+            return;
+        }
+        root.run-act(a, input);
     }
 
     // --- Ce qui passe par-dessus ---
@@ -173,6 +212,12 @@ export component AppWindow inherits Window {
     property <bool> logout-visible;
     property <bool> input-visible;
     property <string> input-text;
+    // Le champ de texte tient lieu de sélecteur de dossiers : la confirmation vient après, et `input-note` dit pourquoi.
+    property <bool> folder-input;
+    property <string> input-note;
+    // La saisie déjà faite (un dossier choisi), envoyée avec l'action une fois confirmée.
+    property <string> chosen;
+    property <bool> has-chosen;
 
     property <bool> kb-visible: root.virtual-keyboard-size.width > 0px && root.virtual-keyboard-size.height > 0px;
     property <length> bottom-inset: root.kb-visible ? max(root.safe-area-insets.bottom, root.height - root.virtual-keyboard-position.y) : root.safe-area-insets.bottom;
@@ -192,6 +237,11 @@ export component AppWindow inherits Window {
             return;
         }
         root.pending = a;
+        // Un dossier du PC : le sélecteur d'abord, la confirmation (s'il y en a une) une fois le dossier choisi.
+        if a.has-input && a.folder {
+            root.open-folder(a);
+            return;
+        }
         if a.confirm != "" {
             root.confirm-visible = true;
             return;
@@ -202,6 +252,22 @@ export component AppWindow inherits Window {
             return;
         }
         root.run-act(a, "");
+    }
+
+    // La saisie est faite (champ de texte) : l'action part, ou, si le champ tenait lieu de sélecteur, sa confirmation.
+    function submit-input() {
+        root.input-visible = false;
+        if root.folder-input {
+            root.folder-input = false;
+            root.finish-act(root.pending, root.input-text);
+            return;
+        }
+        root.run-act(root.pending, root.input-text);
+    }
+
+    function cancel-input() {
+        root.input-visible = false;
+        root.folder-input = false;
     }
 
     function show-sheet(title: string, acts: [UiAct]) {
@@ -217,9 +283,15 @@ export component AppWindow inherits Window {
                 if root.sheet-visible || root.confirm-visible || root.input-visible || root.forget-visible || root.logout-visible {
                     root.sheet-visible = false;
                     root.confirm-visible = false;
-                    root.input-visible = false;
+                    root.has-chosen = false;
+                    root.cancel-input();
                     root.forget-visible = false;
                     root.logout-visible = false;
+                    return accept;
+                }
+                // Le sélecteur de dossiers se ferme (on remonte d'un dossier par le fil d'Ariane).
+                if root.picker-visible {
+                    root.picker-close();
                     return accept;
                 }
                 if root.back-requested() {
@@ -443,6 +515,28 @@ export component AppWindow inherits Window {
                     }
                 }
             }
+            // Par-dessus l'écran, sous les dialogues : les mises à jour du PC ne le ferment pas.
+            if root.picker-visible && root.page == 4: FolderPicker {
+                state: root.picker;
+                crumbs: root.picker-crumbs;
+                rows: root.picker-rows;
+                filter <=> root.picker-filter;
+                go(p) => { root.picker-go(p); }
+                pick(p) => {
+                    root.haptic();
+                    root.picker-pick(p);
+                }
+                choose => {
+                    root.haptic();
+                    root.picker-choose();
+                }
+                more => { root.picker-more(); }
+                retry => { root.picker-retry(); }
+                toggle-hidden => { root.picker-hidden(); }
+                filter-edited(t) => { root.picker-filter-edited(t); }
+                close => { root.picker-close(); }
+                haptic => { root.haptic(); }
+            }
         }
     }
 
@@ -457,12 +551,18 @@ export component AppWindow inherits Window {
         dismissed => { root.sheet-visible = false; }
     }
     if root.confirm-visible: ConfirmDialog {
-        text: root.pending.confirm;
+        text: root.has-chosen ? root.pending.confirm + "\n\n" + root.chosen : root.pending.confirm;
         ok-text: root.pending.label != "" ? root.pending.label : "Confirmer";
         danger: root.pending.style == 2;
         answered(yes) => {
             root.confirm-visible = false;
             if !yes {
+                root.has-chosen = false;
+                return;
+            }
+            if root.has-chosen {
+                root.has-chosen = false;
+                root.run-act(root.pending, root.chosen);
                 return;
             }
             if root.tab == "commandes" {
@@ -502,7 +602,7 @@ export component AppWindow inherits Window {
     if root.input-visible: Rectangle {
         background: Theme.scrim;
         TouchArea {
-            clicked => { root.input-visible = false; }
+            clicked => { root.cancel-input(); }
         }
         Rectangle {
             y: max(24px, (parent.height - root.bottom-inset - self.height) / 2);
@@ -519,6 +619,12 @@ export component AppWindow inherits Window {
                     color: Theme.text;
                     font-size: 17px;
                     font-weight: 600;
+                    wrap: word-wrap;
+                }
+                if root.input-note != "" && root.folder-input: Text {
+                    text: root.input-note;
+                    color: Theme.text-dim;
+                    font-size: 14px;
                     wrap: word-wrap;
                 }
                 Rectangle {
@@ -538,10 +644,7 @@ export component AppWindow inherits Window {
                         vertical-alignment: root.pending.multiline ? TextVerticalAlignment.top : TextVerticalAlignment.center;
                         single-line: !root.pending.multiline;
                         wrap: root.pending.multiline ? TextWrap.word-wrap : TextWrap.no-wrap;
-                        accepted => {
-                            root.input-visible = false;
-                            root.run-act(root.pending, root.input-text);
-                        }
+                        accepted => { root.submit-input(); }
                         init => { self.focus(); }
                     }
                     if root.input-text == "": Text {
@@ -559,15 +662,12 @@ export component AppWindow inherits Window {
                     alignment: end;
                     ActButton {
                         text: "Annuler";
-                        clicked => { root.input-visible = false; }
+                        clicked => { root.cancel-input(); }
                     }
                     ActButton {
                         text: root.pending.label;
                         style: 1;
-                        clicked => {
-                            root.input-visible = false;
-                            root.run-act(root.pending, root.input-text);
-                        }
+                        clicked => { root.submit-input(); }
                     }
                 }
             }

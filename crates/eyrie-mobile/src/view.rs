@@ -75,6 +75,7 @@ pub fn act_in(a: &Act, local: &Local) -> UiAct {
         url: a.url.clone().unwrap_or_default().into(),
         open: a.open.clone().unwrap_or_default().into(),
         busy: local.busy(a),
+        folder: input.folder.is_some(),
     }
 }
 

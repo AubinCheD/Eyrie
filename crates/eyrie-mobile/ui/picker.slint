@@ -1,0 +1,554 @@
+// Le sélecteur de dossiers du PC : un écran plein, par-dessus l'application, pour une action qui demande un dossier.
+// Le PC liste un dossier à la fois (des dossiers seulement) ; le chemin choisi part comme la saisie de l'action.
+
+import { ListView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Icon, IconButton, ActButton, Busy, ThinProgress, SearchField, SectionHeader } from "widgets.slint";
+
+// Un niveau du fil d'Ariane ; `path` vide : la racine (raccourcis, lecteurs).
+export struct PickCrumb {
+    label: string,
+    path: string,
+}
+
+// Une ligne du sélecteur. `kind` : 0 titre d'un groupe, 1 dossier, 2 « N de plus », 3 note (`tone` : 0 neutre,
+// 3 attention, 4 erreur), 4 dossiers cachés (les montrer ou les masquer). Un dossier : son icône dessinée, ou le glyphe
+// d'un raccourci du module ; `tone` : la teinte de l'icône (0 neutre, 1 accent, 2 ok) ; `enabled` faux : accès refusé ;
+// `dim` : caché, ou déjà connu du module ; `pick` : un dépôt qui se choisit d'un toucher, sans l'ouvrir ; `first` et
+// `last` : sa carte.
+export struct PickRow {
+    kind: int,
+    key: string,
+    title: string,
+    subtitle: string,
+    icon: string,
+    glyph: string,
+    tone: int,
+    path: string,
+    enabled: bool,
+    dim: bool,
+    pick: bool,
+    first: bool,
+    last: bool,
+}
+
+// Ce que montre le sélecteur, hors listes.
+export struct PickerState {
+    title: string,
+    subtitle: string,
+    // Le dossier montré (vide : la racine).
+    dir: string,
+    // Une demande au PC est en cours ; `first-load` : rien n'est encore arrivé.
+    loading: bool,
+    first-load: bool,
+    // Pas de réponse, hors ligne : dit en tête, avec « Réessayer ».
+    trouble: string,
+    choose-label: string,
+    can-choose: bool,
+    // Pourquoi ce dossier ne peut pas être choisi, ou que faire.
+    hint: string,
+    // Ce que donnera le choix (« C:\DEV\Ozmo : sera créé »), et son ton.
+    target: string,
+    target-tone: int,
+    filterable: bool,
+}
+
+// Un dossier de la liste : le toucher l'ouvre ; un dépôt peut avoir « Choisir » à droite.
+component PickEntry inherits Rectangle {
+    in property <PickRow> item;
+    callback open();
+    callback pick();
+    // Refusé : estompé (inactif) ; caché ou déjà connu : son icône seulement (le texte garde son contraste).
+    property <float> fade: !item.enabled ? 0.55 : item.dim ? 0.6 : 1;
+    property <float> text-fade: !item.enabled ? 0.55 : 1;
+    height: max(60px, content.preferred-height);
+    accessible-role: list-item;
+    accessible-label: item.title + (item.subtitle != "" ? ", " + item.subtitle : "");
+    accessible-enabled: item.enabled;
+    accessible-description: item.enabled ? "Ouvre le dossier" : "";
+    accessible-action-default => {
+        if item.enabled {
+            root.open();
+        }
+    }
+    Rectangle {
+        x: Theme.pad;
+        width: parent.width - 2 * Theme.pad;
+        background: ta.pressed ? Theme.pressed : Theme.surface;
+        animate background { duration: 90ms; }
+        border-top-left-radius: item.first ? Theme.radius : 0;
+        border-top-right-radius: item.first ? Theme.radius : 0;
+        border-bottom-left-radius: item.last ? Theme.radius : 0;
+        border-bottom-right-radius: item.last ? Theme.radius : 0;
+        clip: true;
+        ta := TouchArea {
+            enabled: item.enabled;
+            clicked => { root.open(); }
+        }
+        content := HorizontalLayout {
+            padding-left: 14px;
+            padding-right: 6px;
+            padding-top: item.pick ? 6px : 8px;
+            padding-bottom: item.pick ? 6px : 8px;
+            spacing: 12px;
+            Rectangle {
+                width: 34px;
+                height: 34px;
+                opacity: root.fade;
+                border-radius: 10px;
+                background: Theme.surface-2;
+                if item.glyph != "": Text {
+                    text: item.glyph;
+                    font-size: 16px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                if item.glyph == "": Icon {
+                    kind: item.icon;
+                    size: 20px;
+                    tint: !item.enabled ? Theme.text-faint : item.tone == 2 ? Theme.ok : item.tone == 1 ? Theme.accent : Theme.text-dim;
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                spacing: 2px;
+                horizontal-stretch: 1;
+                Text {
+                    text: item.title;
+                    color: Theme.text;
+                    opacity: root.text-fade;
+                    font-size: Theme.font-body;
+                    font-weight: 500;
+                    overflow: elide;
+                }
+                if item.subtitle != "": Text {
+                    text: item.subtitle;
+                    color: Theme.text-dim;
+                    opacity: root.text-fade;
+                    font-size: Theme.font-small;
+                    overflow: elide;
+                }
+            }
+            if item.pick: VerticalLayout {
+                alignment: center;
+                horizontal-stretch: 0;
+                ActButton {
+                    text: "Choisir";
+                    pad: 14px;
+                    min-width: self.preferred-width;
+                    max-width: self.preferred-width;
+                    accessible-label: "Choisir « " + item.title + " »";
+                    clicked => { root.pick(); }
+                }
+            }
+            if item.enabled: VerticalLayout {
+                alignment: center;
+                Icon {
+                    kind: "chevron";
+                    tint: Theme.text-faint;
+                    size: 22px;
+                }
+            }
+        }
+        if !item.last: Rectangle {
+            x: 62px;
+            y: parent.height - 1px;
+            height: 1px;
+            width: parent.width - 62px;
+            background: Theme.border;
+        }
+    }
+}
+
+// Une ligne de texte touchable, en accent, au centre (« 120 de plus », « Afficher les dossiers cachés »).
+component LinkRow inherits Rectangle {
+    in property <string> text;
+    in property <bool> busy;
+    in property <string> icon;
+    callback clicked();
+    height: 56px;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-action-default => { root.clicked(); }
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: 6px;
+        height: parent.height - 12px;
+        width: inner.preferred-width;
+        border-radius: self.height / 2;
+        background: ta.pressed ? Theme.pressed : transparent;
+        inner := HorizontalLayout {
+            padding-left: 18px;
+            padding-right: 18px;
+            spacing: 8px;
+            alignment: center;
+            if root.busy: VerticalLayout {
+                alignment: center;
+                Busy {
+                    size: 18px;
+                }
+            }
+            if !root.busy && root.icon != "": VerticalLayout {
+                alignment: center;
+                Icon {
+                    kind: root.icon;
+                    size: 20px;
+                    tint: Theme.accent;
+                }
+            }
+            Text {
+                text: root.text;
+                color: Theme.accent;
+                font-size: 14.5px;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+        }
+        ta := TouchArea {
+            enabled: !root.busy;
+            clicked => { root.clicked(); }
+        }
+    }
+}
+
+export component FolderPicker inherits Rectangle {
+    in property <PickerState> state;
+    in property <[PickCrumb]> crumbs;
+    in property <[PickRow]> rows;
+    in-out property <string> filter;
+    // Ouvrir un dossier (vide : la racine) ; choisir un dépôt de la liste ; choisir le dossier montré.
+    callback go(string);
+    callback pick(string);
+    callback choose();
+    callback more();
+    callback retry();
+    callback toggle-hidden();
+    callback filter-edited(string);
+    callback close();
+    callback haptic();
+
+    // Le chemin saisi à la main, à la place du fil d'Ariane.
+    property <bool> editing;
+    property <string> typed;
+    property <string> dir: root.state.dir;
+
+    function go-typed() {
+        root.editing = false;
+        root.go(root.typed);
+    }
+
+    // Un autre dossier : la liste repart du haut, le fil d'Ariane montre sa fin.
+    changed dir => {
+        list.content-y = 0;
+        crumb-flick.content-x = min(0px, crumb-flick.width - strip.preferred-width);
+    }
+
+    background: Theme.bg;
+    // Les touchers ne passent pas à l'écran dessous.
+    TouchArea { }
+    VerticalLayout {
+        // Fermer, le titre, saisir un chemin.
+        Rectangle {
+            height: 60px;
+            HorizontalLayout {
+                padding-left: 4px;
+                padding-right: 4px;
+                spacing: 4px;
+                IconButton {
+                    icon: "close";
+                    label: "Fermer le sélecteur";
+                    clicked => { root.close(); }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    Text {
+                        text: root.state.title;
+                        color: Theme.text;
+                        font-size: root.state.subtitle == "" ? 22px : 18px;
+                        font-weight: 700;
+                        overflow: elide;
+                    }
+                    if root.state.subtitle != "": Text {
+                        text: root.state.subtitle;
+                        color: Theme.text-dim;
+                        font-size: Theme.font-small;
+                        overflow: elide;
+                    }
+                }
+                IconButton {
+                    icon: "edit";
+                    label: root.editing ? "Revenir au fil des dossiers" : "Saisir un chemin";
+                    tint: root.editing ? Theme.accent : Theme.text-dim;
+                    clicked => {
+                        root.typed = root.state.dir;
+                        root.editing = !root.editing;
+                    }
+                }
+            }
+        }
+        // Le fil d'Ariane (un toucher remonte), ou le chemin saisi.
+        Rectangle {
+            height: 52px;
+            crumb-flick := Flickable {
+                visible: !root.editing;
+                content-width: max(self.width, strip.preferred-width);
+                strip := HorizontalLayout {
+                    padding-left: Theme.pad - 8px;
+                    padding-right: Theme.pad - 8px;
+                    alignment: start;
+                    for c[i] in root.crumbs: HorizontalLayout {
+                        if i > 0: VerticalLayout {
+                            alignment: center;
+                            Icon {
+                                kind: "chevron";
+                                size: 18px;
+                                tint: Theme.text-faint;
+                            }
+                        }
+                        Rectangle {
+                            width: crumb.preferred-width;
+                            accessible-role: button;
+                            accessible-label: c.path == "" ? "Racine : raccourcis et lecteurs" : c.label;
+                            accessible-action-default => { root.go(c.path); }
+                            Rectangle {
+                                y: 6px;
+                                height: parent.height - 12px;
+                                border-radius: self.height / 2;
+                                background: cta.pressed ? Theme.pressed : i == root.crumbs.length - 1 ? Theme.accent-soft : transparent;
+                            }
+                            crumb := HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 6px;
+                                if c.path == "": VerticalLayout {
+                                    alignment: center;
+                                    Icon {
+                                        kind: "pc";
+                                        size: 20px;
+                                        tint: i == root.crumbs.length - 1 ? Theme.accent : Theme.text-dim;
+                                    }
+                                }
+                                Text {
+                                    text: c.label;
+                                    color: i == root.crumbs.length - 1 ? Theme.accent : Theme.text-dim;
+                                    font-size: 14px;
+                                    font-weight: i == root.crumbs.length - 1 ? 700 : 500;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            cta := TouchArea {
+                                clicked => {
+                                    root.haptic();
+                                    root.go(c.path);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if root.editing: HorizontalLayout {
+                padding-left: Theme.pad;
+                padding-right: 4px;
+                padding-top: 4px;
+                padding-bottom: 4px;
+                spacing: 4px;
+                Rectangle {
+                    horizontal-stretch: 1;
+                    border-radius: 12px;
+                    background: Theme.surface;
+                    border-width: path-input.has-focus ? 2px : 0;
+                    border-color: Theme.accent;
+                    path-input := TextInput {
+                        x: 12px;
+                        width: parent.width - 24px;
+                        height: parent.height;
+                        text <=> root.typed;
+                        color: Theme.text;
+                        font-size: 15px;
+                        single-line: true;
+                        vertical-alignment: center;
+                        accessible-placeholder-text: "Chemin d'un dossier du PC";
+                        accepted => { root.go-typed(); }
+                        init => { self.focus(); }
+                    }
+                    if root.typed == "": Text {
+                        x: 12px;
+                        height: parent.height;
+                        text: "C:\\…";
+                        color: Theme.text-faint;
+                        font-size: 15px;
+                        vertical-alignment: center;
+                    }
+                }
+                IconButton {
+                    icon: "send";
+                    label: "Ouvrir ce dossier";
+                    tint: Theme.accent;
+                    clicked => { root.go-typed(); }
+                }
+            }
+        }
+        if root.state.filterable: SearchField {
+            hint: "Filtrer ce dossier";
+            text <=> root.filter;
+            edited(t) => { root.filter-edited(t); }
+        }
+        // Une demande en cours : une barre fine, sans déplacer la liste.
+        Rectangle {
+            height: 4px;
+            if root.state.loading && !root.state.first-load: ThinProgress {
+                indeterminate: true;
+                border-radius: 0;
+            }
+        }
+        if root.state.trouble != "": Rectangle {
+            height: 48px;
+            background: Theme.warn.with-alpha(0.16);
+            HorizontalLayout {
+                padding-left: Theme.pad;
+                padding-right: 4px;
+                spacing: 4px;
+                Text {
+                    text: root.state.trouble;
+                    color: Theme.text;
+                    font-size: 13.5px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                Rectangle {
+                    width: retry-label.preferred-width + 24px;
+                    accessible-role: button;
+                    accessible-label: "Réessayer";
+                    accessible-action-default => { root.retry(); }
+                    Rectangle {
+                        y: 6px;
+                        height: parent.height - 12px;
+                        border-radius: self.height / 2;
+                        background: retry-ta.pressed ? Theme.pressed : transparent;
+                    }
+                    retry-label := Text {
+                        text: "Réessayer";
+                        color: Theme.accent;
+                        font-size: 13.5px;
+                        font-weight: 700;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    retry-ta := TouchArea {
+                        clicked => { root.retry(); }
+                    }
+                }
+            }
+        }
+        Rectangle {
+            vertical-stretch: 1;
+            list := ListView {
+                for r in root.rows: VerticalLayout {
+                    if r.kind == 0: SectionHeader {
+                        title: r.title;
+                    }
+                    if r.kind == 1: PickEntry {
+                        item: r;
+                        open => {
+                            root.haptic();
+                            root.go(r.path);
+                        }
+                        pick => { root.pick(r.path); }
+                    }
+                    if r.kind == 2: LinkRow {
+                        text: r.title;
+                        busy: root.state.loading;
+                        clicked => { root.more(); }
+                    }
+                    if r.kind == 3: Rectangle {
+                        height: note.preferred-height + 20px;
+                        note := Text {
+                            x: Theme.pad + 4px;
+                            y: 10px;
+                            width: parent.width - 2 * Theme.pad - 8px;
+                            text: r.title;
+                            color: r.tone == 4 ? Theme.danger : r.tone == 3 ? Theme.warn : Theme.text-faint;
+                            font-size: 14px;
+                            horizontal-alignment: r.tone == 0 ? center : left;
+                            wrap: word-wrap;
+                        }
+                    }
+                    if r.kind == 4: LinkRow {
+                        text: r.title;
+                        icon: "eye";
+                        clicked => {
+                            root.haptic();
+                            root.toggle-hidden();
+                        }
+                    }
+                }
+            }
+            if root.state.first-load && root.state.trouble == "": HorizontalLayout {
+                alignment: center;
+                spacing: 10px;
+                VerticalLayout {
+                    alignment: center;
+                    Busy { }
+                }
+                Text {
+                    text: "Lecture des dossiers du PC…";
+                    color: Theme.text-faint;
+                    font-size: 15px;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        // Le choix : ce qu'il donnera, ou pourquoi il n'est pas possible, puis le bouton.
+        Rectangle {
+            background: Theme.surface;
+            height: choice.preferred-height;
+            Rectangle {
+                y: 0;
+                height: 1px;
+                background: Theme.border;
+            }
+            choice := VerticalLayout {
+                padding-left: Theme.pad;
+                padding-right: Theme.pad;
+                padding-top: 10px;
+                padding-bottom: 12px;
+                spacing: 8px;
+                // Une largeur donnée au texte : sa hauteur suit ses lignes (le bouton n'est pas poussé hors de l'écran).
+                if root.state.target != "": Rectangle {
+                    height: max(18px, target-text.preferred-height);
+                    Rectangle {
+                        x: 0;
+                        y: 5px;
+                        width: 8px;
+                        height: 8px;
+                        border-radius: 4px;
+                        background: Theme.tone(root.state.target-tone);
+                    }
+                    target-text := Text {
+                        x: 16px;
+                        y: 0;
+                        width: parent.width - 16px;
+                        text: root.state.target;
+                        color: root.state.target-tone >= 3 ? Theme.tone(root.state.target-tone) : Theme.text;
+                        font-size: 13.5px;
+                        wrap: word-wrap;
+                    }
+                }
+                if root.state.target == "" && root.state.hint != "": Text {
+                    text: root.state.hint;
+                    color: Theme.text-dim;
+                    font-size: 13.5px;
+                    wrap: word-wrap;
+                }
+                ActButton {
+                    text: root.state.choose-label;
+                    style: 1;
+                    enabled: root.state.can-choose;
+                    clicked => { root.choose(); }
+                }
+            }
+        }
+    }
+}

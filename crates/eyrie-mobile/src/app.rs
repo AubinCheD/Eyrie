@@ -8,18 +8,19 @@ use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
-use suite_mobile::msg::{CommandCard, ModuleCard, Note, Rights, ToPc, ToPhone, Waiting, module_target};
+use suite_mobile::msg::{CommandCard, Listing, ModuleCard, Note, Rights, ToPc, ToPhone, Waiting, module_target};
 use suite_mobile::pairing::{self, Ticket};
 use suite_mobile::term::{Key, TermInput};
 use suite_mobile::ui::{Act, Block, Fold, Screen, Tab, Tone};
 
 use crate::net::{Link, NetEvent, PairEvent};
+use crate::picker::{Answer, Picker};
 use crate::store::{self, Pc, Store};
 use crate::tailnet::{self, Tailnet};
 use crate::termbuf::{self, TermBuf};
 use crate::{
-    AppWindow, CommandItem, ModuleItem, NavItem, NoteItem, PcItem, TabItem, TermRow, TermSeg, Theme, UiAct, UiRow,
-    WaitItem, platform, view,
+    AppWindow, CommandItem, ModuleItem, NavItem, NoteItem, PcItem, PickCrumb, PickRow, PickerState, TabItem, TermRow,
+    TermSeg, Theme, UiAct, UiRow, WaitItem, platform, view,
 };
 
 /// Les modules proposés dans la barre du bas tant que l'utilisateur n'a rien choisi.
@@ -29,6 +30,8 @@ const EXTRAS: [&str; 3] = ["notes", "commandes", "reglages"];
 const TEXT_SIZES: [f32; 3] = [1.0, 1.35, 1.7];
 /// Une action sans résultat du PC passé ce délai : « Le PC n'a pas répondu ».
 const ANSWER_WITHIN: Duration = Duration::from_secs(15);
+/// Le filtre du sélecteur de dossiers part au PC quand la saisie s'arrête ce temps.
+const FILTER_AFTER: Duration = Duration::from_millis(350);
 /// Le temps qu'un bandeau garde son pliage après une action de son menu (et après son résultat).
 const HOLD_FOLD: Duration = Duration::from_secs(6);
 
@@ -432,6 +435,9 @@ pub struct Controller {
     pendings: Pendings,
     /// Les bandeaux dont le menu vient de servir, qui gardent leur pliage un moment.
     holds: Holds,
+    /// Le sélecteur de dossiers ouvert, et l'action qui l'a demandé ; le filtre part au PC quand la saisie s'arrête.
+    picker: Option<(Picker, UiAct)>,
+    filter_timer: slint::Timer,
     target: Option<Target>,
     /// Ce qui a déjà été signalé (bulle ou notification du système) : rien deux fois, et rien à la première connexion
     /// à un PC (l'état initial n'est pas une nouveauté). Après une coupure, ou un arrêt de l'application par Android,
@@ -457,6 +463,8 @@ struct Models {
     notes: Rc<VecModel<NoteItem>>,
     recent_notes: Rc<VecModel<NoteItem>>,
     commands: Rc<VecModel<CommandItem>>,
+    picker_rows: Rc<VecModel<PickRow>>,
+    picker_crumbs: Rc<VecModel<PickCrumb>>,
 }
 
 impl Models {
@@ -472,6 +480,8 @@ impl Models {
             notes: Rc::default(),
             recent_notes: Rc::default(),
             commands: Rc::default(),
+            picker_rows: Rc::default(),
+            picker_crumbs: Rc::default(),
         };
         ui.set_rows(ModelRc::from(m.rows.clone()));
         ui.set_screen_acts(ModelRc::from(m.acts.clone()));
@@ -483,6 +493,8 @@ impl Models {
         ui.set_notes(ModelRc::from(m.notes.clone()));
         ui.set_recent_notes(ModelRc::from(m.recent_notes.clone()));
         ui.set_commands(ModelRc::from(m.commands.clone()));
+        ui.set_picker_rows(ModelRc::from(m.picker_rows.clone()));
+        ui.set_picker_crumbs(ModelRc::from(m.picker_crumbs.clone()));
         m
     }
 }
@@ -557,6 +569,8 @@ impl Controller {
             last_tabs: None,
             pendings: Pendings::default(),
             holds: Holds::default(),
+            picker: None,
+            filter_timer: slint::Timer::default(),
             target: None,
             signalled: Signalled::default(),
             demo,
@@ -762,10 +776,12 @@ impl Controller {
                 self.online = false;
                 let secs = retry_in.as_secs().max(1);
                 self.set_link(2, &format!("Hors ligne ({reason}) · nouvel essai dans {secs} s"));
+                self.picker_offline();
             }
             NetEvent::Refused(reason) => {
                 self.online = false;
                 self.set_link(3, &reason);
+                self.picker_offline();
             }
             NetEvent::Message(m) => self.on_message(*m),
         }
@@ -822,6 +838,7 @@ impl Controller {
                 // Un écran qui n'est pas affiché (envoyé avant un changement d'écran) ne touche pas à la liste.
                 if shown {
                     self.refresh_screen();
+                    self.picker_resume();
                 }
             }
             ToPhone::NoScreen { module, path, reason } => {
@@ -870,11 +887,11 @@ impl Controller {
             ToPhone::Open { module, path } => self.open_module_path(&module, &path),
             ToPhone::Toast { text, tone } => self.toast(&text, view::tone(Some(tone))),
             ToPhone::Bye { reason, .. } => self.set_link(2, &reason),
+            ToPhone::Folder { req, listing } => self.on_folder(req, listing),
             ToPhone::Welcome { .. }
             | ToPhone::PairPending { .. }
             | ToPhone::Paired { .. }
             | ToPhone::Refused { .. }
-            | ToPhone::Folder { .. }
             | ToPhone::Pong => {}
         }
     }
@@ -1261,6 +1278,10 @@ impl Controller {
                 self.send(ToPc::Follow { screen: follow.0, terminal: follow.1 });
             }
         }
+        // Le sélecteur sert une action de l'écran affiché : un autre écran le ferme (les mises à jour, non).
+        if self.picker.as_ref().is_some_and(|(p, _)| !self.nav.is_shown(&(p.module.clone(), p.path.clone()))) {
+            self.close_picker();
+        }
     }
 
     /// Les lignes de l'écran affiché (`None` : pas d'écran de module en liste), mises à jour sur place.
@@ -1527,6 +1548,217 @@ impl Controller {
         });
     }
 
+    // --- Le sélecteur de dossiers du PC ---
+
+    /// Une action qui demande un dossier du PC : le sélecteur, ouvert là où le module le veut ; le champ de texte si
+    /// ce téléphone n'a pas le droit de parcourir les dossiers du PC.
+    pub(crate) fn open_folder(&mut self, a: &UiAct) {
+        if !self.nav.is_module_tab() || a.busy {
+            return;
+        }
+        let key = self.nav.key();
+        let spec =
+            self.screens.get(&key).and_then(|s| find_act(s, &a.id)).and_then(|f| f.input.as_ref()?.folder.clone());
+        let Some(spec) = spec else {
+            return self.ask_text(a, "");
+        };
+        if !self.rights.files {
+            return self.ask_text(
+                a,
+                "Ce téléphone n'a pas le droit de parcourir les dossiers du PC (réglage du PC) : saisissez le chemin.",
+            );
+        }
+        if !self.online {
+            self.toast("Hors ligne : les dossiers du PC ne peuvent pas être lus.", 3);
+            return;
+        }
+        let name = self.card(&key.0).map(|c| c.name.clone()).unwrap_or_else(|| key.0.clone());
+        let title = if a.input_label.is_empty() { &a.label } else { &a.input_label };
+        let picker = Picker::new(&key.0, &key.1, &a.id, title, &name, spec);
+        let start = picker.start();
+        self.picker = Some((picker, a.clone()));
+        if let Some(ui) = self.ui() {
+            ui.set_picker_filter(SharedString::new());
+            ui.set_picker_visible(true);
+        }
+        self.picker_ask(|p, req| Some(p.browse(req, start.as_deref())));
+    }
+
+    /// Le champ de texte à la place du sélecteur ; `note` dit pourquoi.
+    fn ask_text(&self, a: &UiAct, note: &str) {
+        if let Some(ui) = self.ui() {
+            ui.invoke_ask_input(a.clone(), note.into());
+        }
+    }
+
+    /// Une demande du sélecteur au PC (`f` la prépare avec un nouveau numéro) ; sans réponse à temps, il le dit. Hors
+    /// ligne, elle attend le retour du PC.
+    fn picker_ask(&mut self, f: impl FnOnce(&mut Picker, u32) -> Option<ToPc>) {
+        let req = self.pendings.next();
+        let online = self.online;
+        let Some((p, _)) = &mut self.picker else { return };
+        let Some(m) = f(p, req) else { return };
+        if online {
+            self.send(m);
+            slint::Timer::single_shot(ANSWER_WITHIN, move || {
+                with(|c| c.picker_timeout(req));
+            });
+        } else {
+            p.offline();
+        }
+        self.refresh_picker();
+    }
+
+    fn on_folder(&mut self, req: u32, listing: Listing) {
+        let Some((p, a)) = &mut self.picker else { return };
+        match p.answer(req, listing) {
+            Answer::Stale => {}
+            Answer::Shown => self.refresh_picker(),
+            Answer::Root => self.picker_ask(|p, req| Some(p.browse(req, None))),
+            Answer::Text(why) => {
+                let a = a.clone();
+                self.close_picker();
+                self.ask_text(&a, &format!("{} : saisissez le chemin.", why.trim_end_matches('.')));
+            }
+        }
+    }
+
+    fn picker_timeout(&mut self, req: u32) {
+        if self.picker.as_mut().is_some_and(|(p, _)| p.timed_out(req)) {
+            self.refresh_picker();
+        }
+    }
+
+    fn picker_offline(&mut self) {
+        if let Some((p, _)) = &mut self.picker {
+            p.offline();
+            self.refresh_picker();
+        }
+    }
+
+    /// L'écran suivi est revenu du PC (après une coupure) : la demande perdue est refaite.
+    fn picker_resume(&mut self) {
+        if !self.online {
+            return;
+        }
+        let Some((p, _)) = &mut self.picker else { return };
+        let had = p.trouble.is_some();
+        if p.back_online() {
+            self.picker_ask(|p, req| Some(p.again(req)));
+        } else if had != p.trouble.is_some() {
+            self.refresh_picker();
+        }
+    }
+
+    pub(crate) fn picker_go(&mut self, dir: &str) {
+        if let Some(ui) = self.ui() {
+            ui.set_picker_filter(SharedString::new());
+        }
+        self.filter_timer.stop();
+        self.picker_ask(|p, req| Some(p.browse(req, Some(dir))));
+    }
+
+    fn picker_more(&mut self) {
+        self.picker_ask(|p, req| p.more(req));
+    }
+
+    fn picker_retry(&mut self) {
+        if !self.online {
+            self.toast("Hors ligne : la liste reprendra au retour du PC.", 3);
+            return;
+        }
+        self.picker_ask(|p, req| Some(p.again(req)));
+    }
+
+    fn picker_hidden(&mut self) {
+        self.picker_ask(|p, req| Some(p.set_hidden(req, !p.hidden)));
+    }
+
+    /// Le filtre change : il part au PC quand la saisie s'arrête.
+    fn picker_filter_edited(&mut self) {
+        self.filter_timer.start(slint::TimerMode::SingleShot, FILTER_AFTER, || {
+            with(|c| {
+                let text = c.ui().map(|u| u.get_picker_filter().to_string()).unwrap_or_default();
+                c.picker_ask(|p, req| (p.filter != text.trim()).then(|| p.set_filter(req, &text)));
+            });
+        });
+    }
+
+    /// Un dépôt de la liste, choisi d'un toucher.
+    fn picker_pick(&mut self, path: &str) {
+        if self.picker.as_ref().is_some_and(|(p, _)| p.pickable(path)) {
+            self.picker_done(path.to_string());
+        }
+    }
+
+    /// « Choisir ce dossier » : le dossier montré.
+    fn picker_choose(&mut self) {
+        if let Some(dir) = self.picker.as_ref().and_then(|(p, _)| p.chosen()) {
+            self.picker_done(dir);
+        }
+    }
+
+    /// Le dossier est choisi : le sélecteur se ferme, l'action suit son chemin habituel (confirmation, puis envoi et
+    /// action en cours) avec ce chemin pour saisie.
+    fn picker_done(&mut self, path: String) {
+        if !self.online {
+            self.toast("Hors ligne : l'action n'est pas partie.", 3);
+            return;
+        }
+        let Some((_, a)) = self.picker.take() else { return };
+        self.close_picker();
+        if a.confirm.is_empty() {
+            return self.run_act(&a, &path);
+        }
+        // La confirmation seulement : son « oui » rappelle le contrôleur plus tard (un rappel tout de suite, pendant
+        // que le contrôleur est tenu, serait perdu).
+        if let Some(ui) = self.ui() {
+            ui.invoke_finish_act(a, path.into());
+        }
+    }
+
+    pub(crate) fn close_picker(&mut self) {
+        self.picker = None;
+        self.filter_timer.stop();
+        if let Some(ui) = self.ui() {
+            ui.set_picker_visible(false);
+        }
+        self.models.picker_rows.set_vec(Vec::new());
+        self.models.picker_crumbs.set_vec(Vec::new());
+    }
+
+    fn refresh_picker(&self) {
+        let (Some(ui), Some((p, _))) = (self.ui(), &self.picker) else { return };
+        let l = p.listing.as_ref();
+        let (choose_label, can_choose, hint) = p.choice();
+        ui.set_picker(PickerState {
+            title: p.title.as_str().into(),
+            subtitle: format!("Dossiers de {}", self.pc_label()).into(),
+            dir: l.map(|l| l.dir.as_str()).unwrap_or_default().into(),
+            loading: p.asked.is_some(),
+            first_load: l.is_none(),
+            trouble: p.trouble.clone().unwrap_or_default().into(),
+            choose_label: choose_label.into(),
+            can_choose,
+            hint: hint.into(),
+            target: l.map(|l| l.target.as_str()).unwrap_or_default().into(),
+            target_tone: l.map(|l| view::tone(Some(l.target_tone))).unwrap_or(0),
+            filterable: p.filterable(),
+        });
+        view::sync(&self.models.picker_rows, p.rows());
+        view::sync(&self.models.picker_crumbs, p.crumbs());
+    }
+
+    /// Démonstration : la réponse du PC à la demande en cours du sélecteur (`None` : son délai passé, sans réponse).
+    pub(crate) fn demo_folder(&mut self, listing: Option<Listing>) {
+        let req = self.picker.as_ref().and_then(|(p, _)| p.asked.as_ref().map(|a| a.req));
+        match (req, listing) {
+            (Some(req), Some(listing)) => self.on_message(ToPhone::Folder { req, listing }),
+            (Some(req), None) => self.picker_timeout(req),
+            (None, _) => {}
+        }
+    }
+
     /// Le PC n'a pas donné le résultat d'une action à temps : elle redevient possible.
     fn no_answer(&mut self, req: u32) {
         let Some(p) = self.pendings.answer(req) else { return };
@@ -1693,6 +1925,7 @@ impl Controller {
         self.nav = Nav::new();
         self.pendings.sent.clear();
         self.holds = Holds::default();
+        self.close_picker();
         self.followed = None;
         self.term = TermBuf::default();
         self.term_model.set_vec(Vec::new());
@@ -1857,6 +2090,19 @@ fn bands(screen: Option<&Screen>) -> Vec<(String, bool, i32)> {
             _ => None,
         })
         .collect()
+}
+
+/// L'action `id` de cet écran, où qu'elle soit : barre du haut, menu d'un bandeau, ligne (toucher, bouton, menu), note,
+/// boutons.
+fn find_act<'a>(screen: &'a Screen, id: &str) -> Option<&'a Act> {
+    let in_blocks = screen.blocks.iter().flat_map(|b| -> Box<dyn Iterator<Item = &'a Act> + 'a> {
+        match b {
+            Block::Section { acts, .. } | Block::Note { acts, .. } | Block::Buttons { acts } => Box::new(acts.iter()),
+            Block::Row(r) => Box::new(r.tap.iter().chain(&r.trailing).chain(&r.acts)),
+            _ => Box::new(std::iter::empty()),
+        }
+    });
+    screen.acts.iter().chain(in_blocks).find(|a| a.id == id)
 }
 
 /// La bulle pour les notifications arrivées (les plus récentes d'abord) : la notification elle-même, ou leur nombre et
@@ -2041,6 +2287,33 @@ fn wire(ui: &AppWindow) {
     });
     ui.on_term_reply(|i| {
         with(|c| c.term_reply(i.max(0) as usize));
+    });
+    ui.on_open_folder(|a| {
+        with(|c| c.open_folder(&a));
+    });
+    ui.on_picker_go(|dir| {
+        with(|c| c.picker_go(&dir));
+    });
+    ui.on_picker_pick(|path| {
+        with(|c| c.picker_pick(&path));
+    });
+    ui.on_picker_choose(|| {
+        with(|c| c.picker_choose());
+    });
+    ui.on_picker_more(|| {
+        with(|c| c.picker_more());
+    });
+    ui.on_picker_retry(|| {
+        with(|c| c.picker_retry());
+    });
+    ui.on_picker_hidden(|| {
+        with(|c| c.picker_hidden());
+    });
+    ui.on_picker_filter_edited(|_| {
+        with(|c| c.picker_filter_edited());
+    });
+    ui.on_picker_close(|| {
+        with(|c| c.close_picker());
     });
     let weak = ui.as_weak();
     ui.on_term_zoom_by(move |f| {
@@ -2230,6 +2503,20 @@ mod tests {
         assert_eq!(h.open("fawkes", "", "g2", t + HOLD_FOLD + Duration::from_secs(1)), Some(true), "prolongée");
         assert_eq!(h.open("fawkes", "", "g2", t + Duration::from_secs(4) + HOLD_FOLD), None, "puis finie");
         assert!(!h.answered("fawkes", "", "veille:g2", t + Duration::from_secs(20)), "oubliée");
+    }
+
+    /// L'action d'un écran, où qu'elle soit (le sélecteur de dossiers y lit la saisie demandée).
+    #[test]
+    fn an_action_is_found_wherever_the_screen_puts_it() {
+        use suite_mobile::ui::{Band, Row};
+        let mut s = Screen::new("x").act(Act::new("haut", "En haut"));
+        s.band(Band::new("g", "G").act(Act::new("bandeau", "Bandeau")));
+        s.row(Row::new("r").tap(Act::new("toucher", "T")).trailing(Act::new("bouton", "B")).act(Act::new("menu", "M")));
+        s.buttons(vec![Act::new("boutons", "Bs")]);
+        for id in ["haut", "bandeau", "toucher", "bouton", "menu", "boutons"] {
+            assert_eq!(find_act(&s, id).map(|a| a.id.as_str()), Some(id));
+        }
+        assert!(find_act(&s, "absente").is_none());
     }
 
     #[test]

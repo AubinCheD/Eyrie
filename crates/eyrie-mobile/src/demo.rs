@@ -1,15 +1,22 @@
 //! Démonstration sans PC (`EYRIE_MOBILE_DEMO=<scène>`), pour les captures et la mise au point de l'interface :
 //! `ensemble`, `fawkes`, `recherche`, `terminal`, `patronus`, `depot`, `menu`, `erreur`, `erreur-lue`, `erreur-longue`,
 //! `historique`, `diff`, `diff-retour`, `plus`, `notes`, `reglages`, `attente`, `injoignable`, `refus`, `accueil`,
-//! `commandes`, `accueil-tailscale`, `code`, `appairage`, `hors-ligne`, `lien` (l'écran d'un autre module). Suffixe
-//! `+clair` ou `+sombre` : le thème (sinon celui du système).
+//! `commandes`, `accueil-tailscale`, `code`, `appairage`, `hors-ligne`, `lien` (l'écran d'un autre module) ; le
+//! sélecteur de dossiers du PC : `dossiers` (un dossier quelconque, une page sur plusieurs), `dossiers-racine`,
+//! `dossiers-depot` (un dépôt existant), `dossiers-clone` et `dossiers-clone-pris` (où cloner), `dossiers-erreur`,
+//! `dossiers-attente`, `dossiers-silence`, `dossiers-texte` (un PC qui ne liste pas). Suffixe `+clair` ou `+sombre` :
+//! le thème (sinon celui du système).
 
 use slint::ComponentHandle;
-use suite_mobile::msg::{Badge, CommandCard, ModuleCard, Note, ToPhone, Waiting};
+use suite_mobile::msg::{
+    Badge, CommandCard, ENTRY_CLOUD, ENTRY_DENIED, ENTRY_DRIVE, ENTRY_HIDDEN, ENTRY_KNOWN, ENTRY_LINK, ENTRY_REPO,
+    FolderEntry, Listing, ModuleCard, Note, PlaceGroup, ToPhone, Waiting,
+};
 use suite_mobile::term::{self, Color, Line, Run, TermFrame, TermView};
 use suite_mobile::ui::{
-    Act, Band, Chip, DIFF_ADDED, DIFF_CONTEXT, DIFF_HEADER, DIFF_REMOVED, GRAPH_BOTTOM as B, GRAPH_THROUGH as T,
-    GRAPH_TOP as H, GraphCell, NODE_COMMIT, NODE_HEAD, NODE_MERGE, Row, Screen, Tone,
+    Act, Band, Chip, DIFF_ADDED, DIFF_CONTEXT, DIFF_HEADER, DIFF_REMOVED, FOLDER_ANY, FOLDER_PARENT, FOLDER_REPO,
+    FolderInput, GRAPH_BOTTOM as B, GRAPH_THROUGH as T, GRAPH_TOP as H, GraphCell, NODE_COMMIT, NODE_HEAD, NODE_MERGE,
+    Place, Row, Screen, Tone,
 };
 
 use crate::app::with;
@@ -281,6 +288,263 @@ fn depot_file() -> Screen {
     s
 }
 
+/// Le dossier de développement du PC de démonstration.
+const DEV: &str = r"C:\Users\aubin\DEV";
+
+/// Les raccourcis que DragonTree donne au sélecteur.
+fn dragontree_places() -> Vec<Place> {
+    vec![
+        Place { label: "Dossier de clonage".into(), path: DEV.into(), glyph: "📥".into() },
+        Place { label: "Dossier analysé : TestAubin".into(), path: format!(r"{DEV}\TestAubin"), glyph: "📁".into() },
+    ]
+}
+
+/// « Ajouter un dépôt existant… » : un dépôt du PC, choisi dans le sélecteur.
+fn add_act() -> Act {
+    let known = vec![format!(r"{DEV}\TestAubin\Eyrie"), format!(r"{DEV}\Ozmo")];
+    let spec = FolderInput { want: FOLDER_REPO, places: dragontree_places(), known, ..Default::default() };
+    Act::new("ajouter", "Ajouter un dépôt existant…")
+        .glyph("➕")
+        .input("Dépôt à ajouter", r"C:\…\mon-depot")
+        .folder("Dépôt à ajouter", spec)
+}
+
+/// « Cloner » : le dossier où créer le clone, confirmé une fois choisi.
+fn clone_act() -> Act {
+    let spec = FolderInput {
+        want: FOLDER_PARENT,
+        start: DEV.into(),
+        child: "Ozmo".into(),
+        places: dragontree_places(),
+        ..Default::default()
+    };
+    Act::new("cloner", "Cloner Ozmo…")
+        .glyph("⬇")
+        .confirm("Cloner Ozmo dans ce dossier ?")
+        .input("Où cloner Ozmo", r"C:\…")
+        .folder("Où cloner Ozmo", spec)
+}
+
+/// La liste des dépôts de DragonTree, avec ses deux actions qui demandent un dossier du PC.
+fn dragontree_home() -> Screen {
+    let mut s = Screen::new("DragonTree").search("Chercher un dépôt").act(add_act()).act(clone_act());
+    s.band(Band::new("ouverts", "Ouverts sur le PC").aside("2"));
+    s.row(Row::new("Eyrie").subtitle("mobile-ergonomie · ↑2 ↓1").glyph("🌳").key("eyrie").open("depot/eyrie"));
+    s.row(Row::new("Ozmo").subtitle("main · à jour").glyph("🌳").key("ozmo").open("depot/ozmo"));
+    s
+}
+
+/// L'écran « Nouveau terminal » de Fawkes : « Autre dossier… » ouvre le sélecteur (un dossier quelconque).
+fn fawkes_new() -> Screen {
+    let spec = FolderInput {
+        want: FOLDER_ANY,
+        places: vec![Place { label: "Eyrie".into(), path: format!(r"{DEV}\TestAubin\Eyrie"), glyph: "📁".into() }],
+        ..Default::default()
+    };
+    let pick = Act::new("shell:saisi", "Ouvrir un shell")
+        .glyph("›_")
+        .input("Dossier sur le PC", r"C:\Users\…\projet")
+        .folder("Dossier sur le PC", spec);
+    let mut s = Screen::new("Nouveau terminal");
+    s.section("Ailleurs", "");
+    s.row(Row::new("Autre dossier…").key("autre").subtitle("Choisir un dossier du PC").glyph("📂").tap(pick));
+    s
+}
+
+fn folder(name: &str, parent: &str, flags: u8, detail: &str) -> FolderEntry {
+    FolderEntry { name: name.into(), path: format!(r"{parent}\{name}"), flags, detail: detail.into() }
+}
+
+/// Le fil d'Ariane de `dir` (sous `C:`).
+fn crumbs(dir: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut path = String::new();
+    for part in dir.split('\\').filter(|p| !p.is_empty()) {
+        path = if path.is_empty() { format!(r"{part}\") } else { format!(r"{}\{part}", path.trim_end_matches('\\')) };
+        out.push((part.to_string(), path.clone()));
+    }
+    out
+}
+
+/// La racine du sélecteur : les raccourcis du PC, par groupe.
+fn root_listing() -> Listing {
+    let drive = |name: &str, detail: &str| FolderEntry {
+        name: name.into(),
+        path: format!(r"{name}\"),
+        flags: ENTRY_DRIVE,
+        detail: detail.into(),
+    };
+    Listing {
+        title: "Ce PC".into(),
+        groups: vec![
+            PlaceGroup {
+                title: "Récents".into(),
+                places: vec![folder("Ozmo2", DEV, ENTRY_REPO, ""), folder("TestAubin", DEV, 0, "")],
+            },
+            PlaceGroup {
+                title: "Accès rapide".into(),
+                places: vec![
+                    folder("aubin", r"C:\Users", 0, "Dossier personnel"),
+                    folder("Documents", r"C:\Users\aubin", ENTRY_CLOUD, "OneDrive"),
+                    folder("DEV", r"C:\Users\aubin", 0, ""),
+                ],
+            },
+            PlaceGroup {
+                title: "Lecteurs".into(),
+                places: vec![drive("C:", "Windows · 212 Go libres"), drive("D:", "Données · 1,4 To libres")],
+            },
+        ],
+        ..Default::default()
+    }
+}
+
+/// Le dossier de développement : des dépôts (dont ceux que DragonTree a déjà), un lien OneDrive, un dossier refusé.
+fn dev_listing(choose: Option<&str>, why_not: &str) -> Listing {
+    let entries = vec![
+        folder("Archives", DEV, 0, ""),
+        folder("DragonTree", DEV, ENTRY_REPO, ""),
+        folder("Fawkes", DEV, ENTRY_REPO, ""),
+        folder("Notes", DEV, ENTRY_LINK | ENTRY_CLOUD, ""),
+        folder("Ozmo", DEV, ENTRY_REPO | ENTRY_KNOWN, "déjà dans DragonTree"),
+        folder("Ozmo2", DEV, ENTRY_REPO, ""),
+        folder("Partage équipe", DEV, ENTRY_DENIED, ""),
+        folder("TestAubin", DEV, 0, "3 dépôts"),
+    ];
+    Listing {
+        dir: DEV.into(),
+        title: "DEV".into(),
+        crumbs: crumbs(DEV),
+        total: entries.len() as u32,
+        entries,
+        hidden: 2,
+        files: 4,
+        choose: choose.map(String::from),
+        why_not: why_not.into(),
+        ..Default::default()
+    }
+}
+
+/// La démonstration du sélecteur de dossiers : l'écran du module, l'action touchée, puis ce que répond le PC.
+fn folders(scene: &str, feed: &dyn Fn(ToPhone)) {
+    feed(ToPhone::Screen { module: "dragontree".into(), path: String::new(), screen: dragontree_home() });
+    feed(ToPhone::Screen { module: "fawkes".into(), path: "nouveau".into(), screen: fawkes_new() });
+    let answer = |l: Listing| {
+        with(|c| c.demo_folder(Some(l)));
+    };
+    let open = |module: &str, path: &str, act: &Act| {
+        with(|c| {
+            c.open_module_path(module, path);
+            c.open_folder(&crate::view::act(act));
+        });
+    };
+    match scene {
+        // Un dossier quelconque (un nouveau terminal) : une page de plus de quarante dossiers, le filtre.
+        "dossiers" => {
+            open("fawkes", "nouveau", &fawkes_new_act().expect("« Autre dossier… »"));
+            // La première page tient à l'écran, avec « N de plus » et les dossiers cachés.
+            let names = ["Archives", "Clients", "DragonTree", "Eyrie-docs", "Fawkes", "Formation", "Notes", "Owlery"];
+            let entries: Vec<FolderEntry> = names
+                .iter()
+                .map(|n| {
+                    let flags = if ["DragonTree", "Fawkes", "Owlery"].contains(n) {
+                        ENTRY_REPO
+                    } else if *n == "Notes" {
+                        ENTRY_LINK
+                    } else {
+                        0
+                    };
+                    folder(n, DEV, flags, "")
+                })
+                .collect();
+            answer(Listing {
+                dir: DEV.into(),
+                title: "DEV".into(),
+                crumbs: crumbs(DEV),
+                total: 64,
+                more: true,
+                entries,
+                hidden: 3,
+                choose: Some("Ouvrir un shell ici".into()),
+                ..Default::default()
+            });
+        }
+        "dossiers-racine" => {
+            open("dragontree", "", &add_act());
+            answer(root_listing());
+        }
+        // Un dépôt existant : « Choisir » à côté de chaque dépôt ; le dossier montré n'en est pas un.
+        "dossiers-depot" => {
+            open("dragontree", "", &add_act());
+            answer(root_listing());
+            with(|c| c.picker_go(DEV));
+            answer(dev_listing(None, "Ce dossier n'est pas un dépôt git : ouvrez un dépôt, ou touchez « Choisir »."));
+            // L'écran suivi, renvoyé par le PC pendant le choix : le sélecteur reste ouvert.
+            feed(ToPhone::Screen { module: "dragontree".into(), path: String::new(), screen: dragontree_home() });
+        }
+        // Où cloner : le dossier de clonage, et ce que donnera le choix.
+        "dossiers-clone" | "dossiers-clone-pris" => {
+            open("dragontree", "", &clone_act());
+            let mut l = dev_listing(Some("Cloner ici"), "");
+            if scene == "dossiers-clone" {
+                l.target = format!(r"{DEV}\Ozmo : sera créé");
+                l.target_tone = Tone::Ok;
+            } else {
+                l.choose = None;
+                l.target = format!(r"{DEV}\Ozmo existe déjà et n'est pas vide : choisissez un autre dossier.");
+                l.target_tone = Tone::Danger;
+            }
+            answer(l);
+        }
+        // La racine de C:, des dossiers refusés, puis un dossier protégé : le PC le dit, le dossier montré reste.
+        "dossiers-erreur" => {
+            open("dragontree", "", &add_act());
+            answer(root_listing());
+            with(|c| c.picker_go(r"C:\"));
+            let c = r"C:";
+            let protected = "zone protégée";
+            answer(Listing {
+                dir: r"C:\".into(),
+                title: "C:".into(),
+                crumbs: crumbs(r"C:\"),
+                entries: vec![
+                    folder("$Recycle.Bin", c, ENTRY_HIDDEN | ENTRY_DENIED, ""),
+                    folder("Program Files", c, ENTRY_DENIED, protected),
+                    folder("ProgramData", c, ENTRY_DENIED | ENTRY_HIDDEN, protected),
+                    folder("Users", c, 0, ""),
+                    folder("Windows", c, ENTRY_DENIED, protected),
+                ],
+                total: 5,
+                why_not: "Ce dossier n'est pas un dépôt git.".into(),
+                ..Default::default()
+            });
+            with(|c| c.picker_go(r"C:\Users\aubin\AppData"));
+            answer(Listing {
+                error: r"C:\Users\aubin\AppData : zone protégée, elle ne se parcourt pas depuis le téléphone.".into(),
+                ..Default::default()
+            });
+        }
+        "dossiers-attente" => open("dragontree", "", &add_act()),
+        "dossiers-silence" => {
+            open("dragontree", "", &add_act());
+            with(|c| c.demo_folder(None));
+        }
+        // Un PC qui ne sait pas lister ses dossiers : le champ de texte, avec son message.
+        "dossiers-texte" => {
+            open("dragontree", "", &add_act());
+            answer(Listing { error: "Ce PC ne sait pas encore lister ses dossiers.".into(), ..Default::default() });
+        }
+        _ => {}
+    }
+}
+
+/// L'action « Autre dossier… » de l'écran « Nouveau terminal » de Fawkes.
+fn fawkes_new_act() -> Option<Act> {
+    fawkes_new().blocks.into_iter().find_map(|b| match b {
+        suite_mobile::ui::Block::Row(r) => r.tap,
+        _ => None,
+    })
+}
+
 fn run(col: u16, text: &str, fg: Color, flags: u8) -> Run {
     Run { col, text: text.into(), fg, bg: Color::Default, flags }
 }
@@ -526,6 +790,7 @@ pub fn play(ui: &AppWindow, scene: &str) {
         "hors-ligne" => {
             with(|c| c.demo_offline());
         }
+        s if s.starts_with("dossiers") => folders(s, &feed),
         // Un lien de Grimoire vers Gringotts : l'écran de Gringotts s'ouvre sur le téléphone, rien n'est envoyé au PC.
         "lien" => {
             let mut grimoire = Screen::new("Grimoire");

@@ -4,6 +4,7 @@
 //! - [`net`] : la liaison avec le PC (reconnexion) et l'appairage ;
 //! - [`tailnet`] : le nœud Tailscale de l'application, par où passent les connexions (Android) ;
 //! - [`termbuf`], [`view`] : ce que le PC envoie, prêt à dessiner ;
+//! - [`picker`] : le sélecteur de dossiers du PC (une action qui demande un dossier) ;
 //! - [`store`] : identité, PC appairés, préférences ;
 //! - [`platform`] : ce qui dépend du système (Android, ou le bureau pour le développement) ;
 //! - `ui/*.slint` : l'interface.
@@ -15,6 +16,7 @@ mod android;
 pub mod app;
 mod demo;
 pub mod net;
+pub mod picker;
 pub mod platform;
 pub mod store;
 pub mod tailnet;
