@@ -25,6 +25,8 @@ pub struct PageState {
     ticket_error: Option<String>,
     /// `veille-echec.json`, relu toutes les deux secondes au plus.
     standby_failure: Option<(Instant, Option<veille::Failure>)>,
+    /// La valeur Run désactivée dans le Gestionnaire des tâches, relu toutes les deux secondes au plus.
+    run_disabled: Option<(Instant, bool)>,
 }
 
 fn ago(secs: u64) -> String {
@@ -362,7 +364,21 @@ fn standby(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui) {
     if let Some(e) = &tailnet.veille.error {
         line(ui, e, p.warn);
     } else if tailnet.veille.problem.is_none() && tailnet.veille.run.is_some() {
-        line(ui, tr("Lancé à chaque ouverture de session Windows."), p.text_dim);
+        let page = &mut suite.core.mobile.page;
+        if page.run_disabled.is_none_or(|(at, _)| at.elapsed() >= Duration::from_secs(2)) {
+            page.run_disabled = Some((Instant::now(), tailnet.os.run_disabled()));
+        }
+        if page.run_disabled.is_some_and(|(_, off)| off) {
+            line(
+                ui,
+                tr(
+                    "Désactivé dans le Gestionnaire des tâches (onglet Démarrage) : le veilleur ne démarrera pas à l'ouverture de session. Réactivez-le là-bas.",
+                ),
+                p.warn,
+            );
+        } else {
+            line(ui, tr("Lancé à chaque ouverture de session Windows."), p.text_dim);
+        }
     }
     let node = tailnet.node_path().map(Path::to_path_buf);
     if !attached && let Some(f) = standby_failure(&mut suite.core.mobile.page, node.as_deref()) {

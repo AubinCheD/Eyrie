@@ -635,3 +635,35 @@ fn eyrie_started_from_a_phone_says_so() {
     assert!(s.core.journal.lines.iter().any(|l| l.text == text), "journal");
     assert!(s.core.notes.toasts.iter().any(|(n, _)| n.title.ends_with(&text)), "bulle");
 }
+
+/// Le veilleur inscrit à l'ouverture de session mais désactivé dans le Gestionnaire des tâches (onglet Démarrage) :
+/// la page Téléphones le dit, au lieu de « Lancé à chaque ouverture de session Windows. ». Réactivé, elle le voit.
+#[test]
+fn the_phones_page_tells_a_standby_disabled_in_the_task_manager() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = suite();
+    let fake = Arc::new(crate::veille::fake::Fake::default());
+    let exe = tempfile::tempdir().unwrap();
+    *fake.companion.lock().unwrap() = Some(exe.path().join(crate::tailnet::COMPANION));
+    *fake.eyrie.lock().unwrap() = Some(exe.path().join("eyrie.exe"));
+    *fake.run_disabled.lock().unwrap() = true;
+    {
+        let s = h.state_mut();
+        s.core.tailnet.os = fake.clone();
+        s.core.tailnet.main = true;
+        s.core.st.tailnet.enabled = true;
+        s.core.st.mobile.wake = true;
+        s.core.act(crate::app::Action::OpenSettings(crate::settings::Page::Phones));
+    }
+    h.run_steps(3);
+    assert!(fake.run.lock().unwrap().is_some(), "inscrit à l'ouverture de session");
+    let disabled = "Désactivé dans le Gestionnaire des tâches (onglet Démarrage)";
+    assert!(h.query_by_label_contains(disabled).is_some());
+    assert!(h.query_by_label("Lancé à chaque ouverture de session Windows.").is_none());
+    *fake.run_disabled.lock().unwrap() = false;
+    // Relu toutes les deux secondes au plus.
+    std::thread::sleep(Duration::from_millis(2100));
+    h.run_steps(2);
+    assert!(h.query_by_label("Lancé à chaque ouverture de session Windows.").is_some());
+    assert!(h.query_by_label_contains(disabled).is_none());
+}

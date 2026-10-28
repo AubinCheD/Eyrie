@@ -313,6 +313,7 @@
   "Le veilleur ne tourne pas :": "The standby is not running:",
   "Le veilleur démarre…": "The standby is starting…",
   "Lancé à chaque ouverture de session Windows.": "Started at each Windows sign-in.",
+  "Désactivé dans le Gestionnaire des tâches (onglet Démarrage) : le veilleur ne démarrera pas à l'ouverture de session. Réactivez-le là-bas.": "Disabled in Task Manager (Startup apps tab): the standby will not start at sign-in. Turn it back on there.",
   "Dernier échec du veilleur": "Last standby failure",
   "Eyrie démarrée depuis": "Eyrie started from",
   "Le veilleur du PC l'a démarrée à la demande du téléphone.": "The PC's standby started it at the phone's request."

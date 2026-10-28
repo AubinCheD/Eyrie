@@ -24,6 +24,9 @@ use suite_sdk::instance::dir_key;
 pub const RUN_VALUE: &str = "EyrieVeille";
 #[cfg(windows)]
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+/// Où le Gestionnaire des tâches (onglet Démarrage) garde les valeurs Run désactivées.
+#[cfg(windows)]
+const APPROVED_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
 /// Le réglage du veilleur, dans le dossier du pont mobile.
 pub const CONFIG: &str = "veille.dpapi";
 /// Pourquoi le veilleur n'a pas démarré la dernière fois, dans le dossier du nœud (écrit par lui).
@@ -136,6 +139,12 @@ pub struct Failure {
     /// Secondes Unix.
     pub at: u64,
     pub message: String,
+}
+
+/// Une valeur de `StartupApproved\Run` désactive la valeur Run du même nom quand son premier octet est impair (`03`,
+/// `07` : désactivée dans le Gestionnaire des tâches ; `02`, `06` : activée).
+pub fn startup_disabled(approved: &[u8]) -> bool {
+    approved.first().is_some_and(|b| b & 1 == 1)
 }
 
 pub fn read_failure(node: &Path) -> Option<Failure> {
@@ -362,6 +371,8 @@ pub trait Os: Send + Sync {
     fn run_value(&self) -> Option<String>;
     /// L'inscrit, ou la retire (`None`).
     fn set_run_value(&self, line: Option<&str>) -> Result<(), String>;
+    /// L'utilisateur l'a-t-il désactivée dans le Gestionnaire des tâches (onglet Démarrage) ? Eyrie le laisse faire.
+    fn run_disabled(&self) -> bool;
     /// Chiffre pour le compte de l'utilisateur sur ce poste (DPAPI, entropie [`ENTROPY`]).
     fn seal(&self, plain: &[u8]) -> Result<Vec<u8>, String>;
     fn unseal(&self, sealed: &[u8]) -> Result<Vec<u8>, String>;
@@ -499,6 +510,13 @@ impl Os for System {
         }
     }
 
+    fn run_disabled(&self) -> bool {
+        #[cfg(windows)]
+        return win::read_approved().is_some_and(|v| startup_disabled(&v));
+        #[cfg(not(windows))]
+        false
+    }
+
     fn seal(&self, plain: &[u8]) -> Result<Vec<u8>, String> {
         crate::mobile::store::dpapi::protect(plain, ENTROPY)
     }
@@ -536,14 +554,14 @@ mod win {
     use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle};
     use windows_sys::Win32::System::Pipes::{GetNamedPipeServerProcessId, PeekNamedPipe};
     use windows_sys::Win32::System::Registry::{
-        HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW,
+        HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_BINARY, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW,
     };
     use windows_sys::Win32::System::Threading::{
         GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
         QueryFullProcessImageNameW,
     };
 
-    use super::{RUN_KEY, RUN_VALUE};
+    use super::{APPROVED_KEY, RUN_KEY, RUN_VALUE};
 
     fn wide(s: &str) -> Vec<u16> {
         s.encode_utf16().chain([0]).collect()
@@ -705,6 +723,26 @@ mod win {
         }
     }
 
+    /// La valeur `EyrieVeille` de `StartupApproved\Run` (le Gestionnaire des tâches l'écrit), si elle existe.
+    pub fn read_approved() -> Option<Vec<u8>> {
+        let (key, name) = (wide(APPROVED_KEY), wide(RUN_VALUE));
+        let mut buf = [0u8; 64];
+        let mut len = buf.len() as u32;
+        // SAFETY : chaînes terminées par un zéro ; le tampon a la taille annoncée.
+        let r = unsafe {
+            RegGetValueW(
+                HKEY_CURRENT_USER,
+                key.as_ptr(),
+                name.as_ptr(),
+                RRF_RT_REG_BINARY,
+                std::ptr::null_mut(),
+                buf.as_mut_ptr().cast(),
+                &mut len,
+            )
+        };
+        (r == ERROR_SUCCESS).then(|| buf[..(len as usize).min(buf.len())].to_vec())
+    }
+
     pub fn read_run() -> Option<String> {
         let (key, name) = (wide(RUN_KEY), wide(RUN_VALUE));
         let mut len = 0u32;
@@ -843,6 +881,8 @@ pub mod fake {
         pub foreign: Mutex<Option<String>>,
         pub run: Mutex<Option<String>>,
         pub run_writes: Mutex<u32>,
+        /// La valeur Run est désactivée dans le Gestionnaire des tâches.
+        pub run_disabled: Mutex<bool>,
         /// Le dossier de l'exécutable n'est pas à l'abri.
         pub unsafe_place: Mutex<Option<String>>,
         /// Le veilleur lancé sort aussitôt sans prendre le nœud (son échec est dans veille-echec.json).
@@ -965,6 +1005,10 @@ pub mod fake {
             *self.run.lock().unwrap() = line.map(str::to_string);
             *self.run_writes.lock().unwrap() += 1;
             Ok(())
+        }
+
+        fn run_disabled(&self) -> bool {
+            *self.run_disabled.lock().unwrap()
         }
 
         fn seal(&self, plain: &[u8]) -> Result<Vec<u8>, String> {
@@ -1164,6 +1208,16 @@ mod tests {
     fn a_restart_does_not_open_minimized_again() {
         let args = ["--reduite", "--apres=12", "lancer"].map(String::from);
         assert_eq!(crate::restart_args(args.into_iter(), 34), ["lancer", "--apres=34"]);
+    }
+
+    /// Les octets que le Gestionnaire des tâches écrit pour une valeur Run activée ou désactivée.
+    #[test]
+    fn a_run_value_disabled_in_the_task_manager_is_seen() {
+        assert!(startup_disabled(&[3, 0, 0, 0, 0x5c, 0x1a, 0x4e, 0x7d, 0x31, 0x2f, 0xdb, 0x01]));
+        assert!(startup_disabled(&[7, 0, 0, 0]));
+        assert!(!startup_disabled(&[2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]));
+        assert!(!startup_disabled(&[6, 0, 0, 0]));
+        assert!(!startup_disabled(&[]));
     }
 
     #[test]
