@@ -6,7 +6,8 @@ import { Theme } from "theme.slint";
 import { TailnetStatus } from "onboarding.slint";
 import {
     UiAct, UiRow, TabItem, ScreenTabs, ModuleItem, WaitItem, NoteItem, CommandItem, PcItem, Icon, IconButton, ModuleAvatar, Pill,
-    SectionHeader, RowView, CommitRowView, NoteView, MeterView, TextBlock, ActButton, EmptyView, DiffLineView, BandHeader, SearchField
+    SectionHeader, RowView, CommitRowView, NoteView, MeterView, TextBlock, ActButton, EmptyView, DiffLineView,
+    DiffBarView, BandHeader, SearchField
 } from "widgets.slint";
 
 // L'écran d'un module : les blocs décrits par le PC.
@@ -28,6 +29,7 @@ export component ScreenPage inherits Rectangle {
     callback act(UiAct);
     callback menu(UiRow);
     callback fold(string);
+    callback toggle-wrap();
     callback haptic();
 
     // Toucher une ligne : son écran, sinon son action, sinon son menu.
@@ -132,11 +134,12 @@ export component ScreenPage inherits Rectangle {
                 if r.kind == 5: EmptyView {
                     text: r.title;
                 }
+                if r.kind == 9: DiffBarView {
+                    item: r;
+                    toggle-wrap => { root.toggle-wrap(); }
+                }
                 if r.kind == 7: DiffLineView {
-                    text: r.title;
-                    kind: r.tone;
-                    first: r.first;
-                    last: r.last;
+                    item: r;
                 }
                 // Les boutons passent à la ligne quand ils ne tiennent pas dans la largeur (donnée explicitement : dans
                 // une ligne de liste, la mise en page ne la transmet pas et la hauteur serait devinée).

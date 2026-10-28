@@ -10,8 +10,8 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 
 use slint::{Color, Model, ModelRc, SharedString, VecModel};
 use suite_mobile::ui::{
-    Act, ActStyle, Block, Chip, Fold, GRAPH_BOTTOM, GRAPH_TOP, GraphCell, NODE_NONE, PROGRESS_UNKNOWN, Row, Screen,
-    Tone,
+    Act, ActStyle, Block, Chip, DIFF_ADDED, DIFF_REMOVED, Fold, GRAPH_BOTTOM, GRAPH_TOP, GraphCell, NODE_NONE,
+    PROGRESS_UNKNOWN, Row, Screen, Tone,
 };
 
 use crate::{GraphSeg, UiAct, UiChip, UiRow};
@@ -40,6 +40,8 @@ pub struct Local {
     pub open: HashMap<String, bool>,
     /// Le texte cherché dans l'écran (vide : pas de recherche).
     pub search: String,
+    /// Les lignes des diffs passent à la ligne (sinon elles sont coupées, à chasse fixe et de hauteur égale).
+    pub wrap: bool,
 }
 
 impl Local {
@@ -100,10 +102,18 @@ enum What<'a> {
     },
     /// Note, jauge, texte, liste vide, boutons.
     Block(&'a Block),
+    /// L'en-tête d'un diff : ses ajouts et retraits, le choix du retour à la ligne.
+    DiffBar {
+        added: usize,
+        removed: usize,
+        empty: bool,
+    },
+    /// `numbers` : ancien et nouveau numéro (0 : sans) ; `gutter` : chiffres de la gouttière (0 : pas de numéros).
     DiffLine {
         kind: u8,
         text: &'a str,
-        first: bool,
+        numbers: (u32, u32),
+        gutter: usize,
         last: bool,
     },
     /// Rien ne correspond à la recherche.
@@ -270,16 +280,24 @@ pub fn items<'a>(s: &'a Screen, local: &Local) -> Vec<Item<'a>> {
             Block::Text { .. } => ("t".into(), What::Block(b)),
             Block::Empty { .. } => ("e".into(), What::Block(b)),
             Block::Buttons { .. } => ("b".into(), What::Block(b)),
-            Block::Diff { lines, .. } => {
+            Block::Diff { lines, numbers } => {
                 let diff = keys.unique("d".into());
+                let count = |k: u8| lines.iter().filter(|(kind, _)| *kind == k).count();
+                let (added, removed, empty) = (count(DIFF_ADDED), count(DIFF_REMOVED), lines.is_empty());
+                let mut h = DefaultHasher::new();
+                (added, removed, empty, local.wrap).hash(&mut h);
+                out.push(Item { key: diff.clone(), sig: h.finish(), what: What::DiffBar { added, removed, empty } });
+                let widest = numbers.iter().map(|&(a, b)| a.max(b)).max().unwrap_or(0);
+                let gutter = if numbers.len() == lines.len() && widest > 0 { widest.to_string().len() } else { 0 };
                 for (n, (kind, text)) in lines.iter().enumerate() {
-                    let (first, last) = (n == 0, n + 1 == lines.len());
+                    let last = n + 1 == lines.len();
+                    let numbers = if gutter > 0 { numbers[n] } else { (0, 0) };
                     let mut h = DefaultHasher::new();
-                    (kind, text, first, last).hash(&mut h);
+                    (kind, text, numbers, gutter, last, local.wrap).hash(&mut h);
                     out.push(Item {
                         key: format!("{diff}:{n}"),
                         sig: h.finish(),
-                        what: What::DiffLine { kind: *kind, text, first, last },
+                        what: What::DiffLine { kind: *kind, text, numbers, gutter, last },
                     });
                 }
                 continue;
@@ -459,8 +477,24 @@ pub fn ui_row(item: &Item, local: &Local) -> UiRow {
         What::Block(Block::Text { text, mono }) => UiRow { mono: *mono, ..empty(4, text) },
         What::Block(Block::Empty { text }) => empty(5, text),
         What::Block(Block::Buttons { acts: list }) => UiRow { acts: acts(list, local), ..empty(6, "") },
-        What::DiffLine { kind, text, first, last } => {
-            UiRow { tone: *kind as i32, first: *first, last: *last, ..empty(7, text) }
+        What::DiffBar { added, removed, empty: no_lines } => UiRow {
+            title: format!("+{added}  −{removed}").into(),
+            first: true,
+            last: *no_lines,
+            wrap: local.wrap,
+            ..empty(9, "")
+        },
+        What::DiffLine { kind, text, numbers: (old, new), gutter, last } => {
+            let number = |n: &u32| if *n == 0 { SharedString::new() } else { n.to_string().into() };
+            UiRow {
+                tone: i32::from(*kind),
+                subtitle: number(old),
+                detail: number(new),
+                gutter: *gutter as i32,
+                last: *last,
+                wrap: local.wrap,
+                ..empty(7, text)
+            }
         }
         What::NoMatch(text) => empty(5, text),
         What::Block(_) => empty(5, ""),
@@ -551,7 +585,7 @@ pub fn ago(at: u64, now: u64) -> String {
 mod tests {
     use std::cell::Cell;
 
-    use suite_mobile::ui::{Band, GRAPH_THROUGH, NODE_HEAD};
+    use suite_mobile::ui::{Band, DIFF_CONTEXT, DIFF_HEADER, GRAPH_THROUGH, NODE_HEAD};
 
     use super::*;
 
@@ -577,8 +611,30 @@ mod tests {
         let mut s = Screen::new("x");
         s.diff(vec![(3, "@@ -1 +1 @@".into()), (2, "-a".into()), (1, "+b".into())]);
         let r = rows(&s, &Local::default());
-        assert_eq!(r.iter().map(|r| (r.kind, r.tone)).collect::<Vec<_>>(), [(7, 3), (7, 2), (7, 1)]);
-        assert!(r[0].first && r[2].last);
+        let kinds = r.iter().map(|r| (r.kind, r.tone)).collect::<Vec<_>>();
+        assert_eq!(kinds, [(9, 0), (7, 3), (7, 2), (7, 1)], "l'en-tête du diff, puis ses lignes");
+        assert_eq!(r[0].title, "+1  −1");
+        assert!(r[0].first && !r[0].last && r[3].last);
+        assert_eq!(r[1].gutter, 0, "pas de numéros");
+    }
+
+    /// Les numéros de ligne prennent la largeur du plus grand ; 0 : pas de numéro ; le retour à la ligne, choisi sur
+    /// le téléphone, redessine les lignes du diff.
+    #[test]
+    fn diff_lines_carry_their_numbers_and_the_wrap_choice() {
+        let mut s = Screen::new("x");
+        let lines =
+            vec![(DIFF_HEADER, "@@ -98,2 +98,3 @@".into()), (DIFF_CONTEXT, " a".into()), (DIFF_ADDED, "+b".into())];
+        s.diff_numbered(lines, vec![(0, 0), (99, 99), (0, 100)]);
+        let flat = Local::default();
+        let r = rows(&s, &flat);
+        assert_eq!(r[2].gutter, 3);
+        assert_eq!((r[2].subtitle.as_str(), r[2].detail.as_str()), ("99", "99"));
+        assert_eq!((r[3].subtitle.as_str(), r[3].detail.as_str()), ("", "100"));
+        assert!(!r[3].wrap);
+        let wrapped = Local { wrap: true, ..Default::default() };
+        let sigs = |l: &Local| items(&s, l).into_iter().map(|i| i.sig).collect::<Vec<_>>();
+        assert!(sigs(&flat).iter().zip(sigs(&wrapped)).all(|(a, b)| *a != b), "tout le diff est redessiné");
     }
 
     #[test]
@@ -600,7 +656,7 @@ mod tests {
             .row(Row::new("Claude").key("t/3"))
             .diff(vec![(0, "a".into()), (1, "+b".into())]);
         let keys: Vec<String> = items(&s, &Local::default()).into_iter().map(|i| i.key).collect();
-        assert_eq!(keys, ["s:Ozmo", "r:pwsh\u{1f}›_", "r:pwsh\u{1f}›_#2", "r:t/3", "d:0", "d:1"]);
+        assert_eq!(keys, ["s:Ozmo", "r:pwsh\u{1f}›_", "r:pwsh\u{1f}›_#2", "r:t/3", "d", "d:0", "d:1"]);
     }
 
     fn screen(progress: u8, extra: bool) -> Screen {

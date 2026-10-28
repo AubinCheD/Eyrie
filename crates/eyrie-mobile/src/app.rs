@@ -117,6 +117,8 @@ pub struct Controller {
     scroll_seq: i32,
     /// Le texte cherché dans chaque écran qui a une recherche (filtrée sur le téléphone).
     search: HashMap<(String, String), String>,
+    /// Les lignes des diffs passent à la ligne (le temps de la session).
+    diff_wrap: bool,
     last_tabs: Option<Tabs>,
     req: u32,
     /// Les actions envoyées sans résultat du PC, par numéro de demande : pas de second envoi de la même.
@@ -236,6 +238,7 @@ impl Controller {
             scroll: HashMap::new(),
             scroll_seq: 0,
             search: HashMap::new(),
+            diff_wrap: false,
             last_tabs: None,
             req: 0,
             pending: HashMap::new(),
@@ -720,7 +723,8 @@ impl Controller {
     /// devient plus grave se rouvre (« l'alerte gagne ») : ce nouvel état est retenu.
     fn local(&mut self, key: &(String, String)) -> view::Local {
         let pending = self.pending.values().filter(|p| p.module == key.0 && p.path == key.1);
-        let mut local = view::Local { pending: pending.map(|p| p.act.clone()).collect(), ..Default::default() };
+        let pending = pending.map(|p| p.act.clone()).collect();
+        let mut local = view::Local { pending, wrap: self.diff_wrap, ..Default::default() };
         if self.screens.get(key).is_some_and(|s| !s.search.is_empty()) {
             local.search = self.search.get(key).cloned().unwrap_or_default();
         }
@@ -922,6 +926,12 @@ impl Controller {
         let y = self.scroll.get(&key).copied().unwrap_or(0.0);
         self.shown_for = Some(key);
         self.scroll_to(y);
+    }
+
+    /// Les lignes des diffs passent à la ligne, ou plus.
+    pub(crate) fn toggle_wrap(&mut self) {
+        self.diff_wrap = !self.diff_wrap;
+        self.refresh_screen();
     }
 
     /// Le texte cherché dans l'écran affiché a changé : la liste est filtrée sur le téléphone, depuis son début.
@@ -1529,6 +1539,9 @@ fn wire(ui: &AppWindow) {
     });
     ui.on_fold_band(|band| {
         with(|c| c.fold_bands(Some(&band), false));
+    });
+    ui.on_toggle_wrap(|| {
+        with(|c| c.toggle_wrap());
     });
     ui.on_search_edited(|text| {
         with(|c| c.search_edited(&text));

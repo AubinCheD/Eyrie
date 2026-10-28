@@ -39,7 +39,9 @@ export struct GraphSeg {
 }
 
 // Une ligne d'écran. `kind` : 0 section, 1 ligne, 2 note, 3 jauge, 4 texte, 5 vide, 6 boutons, 7 ligne de diff (`tone` :
-// 0 contexte, 1 ajout, 2 retrait, 3 en-tête), 8 bandeau (`key` : sa clé ; `fold` : 0 ne se plie pas, 1 ouvert, 2 plié).
+// 0 contexte, 1 ajout, 2 retrait, 3 en-tête ; `subtitle` et `detail` : ancien et nouveau numéro ; `gutter` : chiffres
+// de la gouttière, 0 sans numéros), 8 bandeau (`key` : sa clé ; `fold` : 0 ne se plie pas, 1 ouvert, 2 plié), 9 en-tête
+// d'un diff (`title` : ajouts et retraits). `wrap` : les lignes des diffs passent à la ligne.
 export struct UiRow {
     kind: int,
     key: string,
@@ -69,6 +71,8 @@ export struct UiRow {
     // Barre de progression (ligne, note) : `value` de 0 à 1, ou indéterminée.
     has-progress: bool,
     indeterminate: bool,
+    gutter: int,
+    wrap: bool,
     chips: [UiChip],
     // Ligne de commit : largeur de la colonne du graphe, nœud (-1 aucun, 0 commit, 1 fusion, 2 HEAD, 3 perdu,
     // 4 remise), son abscisse et sa voie (couleur), les traits.
@@ -1112,31 +1116,106 @@ export component TextBlock inherits Rectangle {
     }
 }
 
-// Une ligne de diff, dans un bloc à chasse fixe aux coins arrondis.
-export component DiffLineView inherits Rectangle {
-    in property <string> text;
-    in property <int> kind;
-    in property <bool> first;
-    in property <bool> last;
-    height: t.preferred-height + (first ? 8px : 0) + (last ? 8px : 0) + 2px;
+// L'en-tête d'un diff : ses ajouts et retraits, et le retour à la ligne (choisi sur le téléphone).
+export component DiffBarView inherits Rectangle {
+    in property <UiRow> item;
+    callback toggle-wrap();
+    height: 44px;
     Rectangle {
         x: Theme.pad;
         width: parent.width - 2 * Theme.pad;
-        background: root.kind == 1 ? Theme.ok.with-alpha(0.16) : root.kind == 2 ? Theme.danger.with-alpha(0.16) : Theme.term-bg;
-        border-top-left-radius: root.first ? Theme.radius-small : 0;
-        border-top-right-radius: root.first ? Theme.radius-small : 0;
-        border-bottom-left-radius: root.last ? Theme.radius-small : 0;
-        border-bottom-right-radius: root.last ? Theme.radius-small : 0;
+        background: Theme.surface-2;
+        border-top-left-radius: Theme.radius-small;
+        border-top-right-radius: Theme.radius-small;
+        border-bottom-left-radius: item.last ? Theme.radius-small : 0;
+        border-bottom-right-radius: item.last ? Theme.radius-small : 0;
+        HorizontalLayout {
+            padding-left: 12px;
+            padding-right: 4px;
+            spacing: 8px;
+            Text {
+                text: item.title;
+                color: Theme.text-dim;
+                font-family: "Hack";
+                font-size: 12px;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            Rectangle {
+                width: wrap-label.preferred-width + 24px;
+                accessible-role: checkbox;
+                accessible-label: "Retour à la ligne";
+                accessible-checkable: true;
+                accessible-checked: item.wrap;
+                accessible-action-default => { root.toggle-wrap(); }
+                Rectangle {
+                    y: 6px;
+                    height: parent.height - 12px;
+                    border-radius: self.height / 2;
+                    background: item.wrap ? Theme.accent-soft : wrap-ta.pressed ? Theme.pressed : transparent;
+                }
+                wrap-label := Text {
+                    text: "↩ Retour à la ligne";
+                    color: item.wrap ? Theme.accent : Theme.text-dim;
+                    font-size: 12.5px;
+                    font-weight: item.wrap ? 700 : 500;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                wrap-ta := TouchArea {
+                    clicked => { root.toggle-wrap(); }
+                }
+            }
+        }
+    }
+}
+
+// Une ligne de diff, dans un bloc à chasse fixe : numéros (ancien, nouveau) en gouttière ; coupée, ou passant à la
+// ligne si on l'a choisi ; un en-tête (`@@ … @@`) mis en avant.
+export component DiffLineView inherits Rectangle {
+    in property <UiRow> item;
+    property <int> kind: item.tone;
+    property <length> cw: 12px * 0.602;
+    property <length> numbers-w: item.gutter > 0 ? 2 * item.gutter * root.cw + 14px : 0px;
+    height: (item.wrap ? max(18px, t.preferred-height + 2px) : 18px) + (item.last ? 8px : 0);
+    Rectangle {
+        x: Theme.pad;
+        width: parent.width - 2 * Theme.pad;
+        background: root.kind == 1 ? Theme.ok.with-alpha(0.16) : root.kind == 2 ? Theme.danger.with-alpha(0.16) : root.kind == 3 ? Theme.accent-soft : Theme.term-bg;
+        border-bottom-left-radius: item.last ? Theme.radius-small : 0;
+        border-bottom-right-radius: item.last ? Theme.radius-small : 0;
+        clip: true;
+        if item.gutter > 0: Text {
+            x: 4px;
+            y: 1px;
+            width: item.gutter * root.cw;
+            text: item.subtitle;
+            color: Theme.text-faint;
+            font-family: "Hack";
+            font-size: 12px;
+            horizontal-alignment: right;
+        }
+        if item.gutter > 0: Text {
+            x: 8px + item.gutter * root.cw;
+            y: 1px;
+            width: item.gutter * root.cw;
+            text: item.detail;
+            color: Theme.text-faint;
+            font-family: "Hack";
+            font-size: 12px;
+            horizontal-alignment: right;
+        }
         t := Text {
-            x: 10px;
-            y: root.first ? 9px : 1px;
-            width: parent.width - 20px;
-            text: root.text;
+            x: 8px + root.numbers-w;
+            y: 1px;
+            width: parent.width - 16px - root.numbers-w;
+            text: item.title;
             color: root.kind == 1 ? Theme.ok : root.kind == 2 ? Theme.danger : root.kind == 3 ? Theme.accent : Theme.term-fg;
             font-family: "Hack";
             font-size: 12px;
             font-weight: root.kind == 3 ? 700 : 400;
-            wrap: word-wrap;
+            wrap: item.wrap ? TextWrap.char-wrap : TextWrap.no-wrap;
+            overflow: item.wrap ? TextOverflow.clip : TextOverflow.elide;
         }
     }
 }

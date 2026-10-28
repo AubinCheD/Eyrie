@@ -114,6 +114,7 @@ export component AppWindow inherits Window {
     callback back-requested() -> bool;
     callback run-act(UiAct, string);
     callback fold-band(string);
+    callback toggle-wrap();
     callback search-edited(string);
     callback select-tab(string);
     callback open-url(string);
@@ -377,6 +378,7 @@ export component AppWindow inherits Window {
                         act(a) => { root.start-act(a); }
                         menu(r) => { root.show-sheet(r.title, r.acts); }
                         fold(k) => { root.fold-band(k); }
+                        toggle-wrap => { root.toggle-wrap(); }
                         haptic => { root.haptic(); }
                     }
                     term := TermView {

@@ -1,14 +1,14 @@
 //! Démonstration sans PC (`EYRIE_MOBILE_DEMO=<scène>`), pour les captures et la mise au point de l'interface :
-//! `ensemble`, `fawkes`, `recherche`, `terminal`, `patronus`, `depot`, `historique`, `plus`, `notes`, `reglages`,
-//! `accueil`, `commandes`, `accueil-tailscale`, `code`, `appairage`, `hors-ligne`. Suffixe `+clair` ou `+sombre` :
-//! le thème (sinon celui du système).
+//! `ensemble`, `fawkes`, `recherche`, `terminal`, `patronus`, `depot`, `historique`, `diff`, `diff-retour`, `plus`,
+//! `notes`, `reglages`, `accueil`, `commandes`, `accueil-tailscale`, `code`, `appairage`, `hors-ligne`. Suffixe
+//! `+clair` ou `+sombre` : le thème (sinon celui du système).
 
 use slint::ComponentHandle;
 use suite_mobile::msg::{Badge, CommandCard, ModuleCard, Note, ToPhone, Waiting};
 use suite_mobile::term::{self, Color, Line, Run, TermFrame, TermView};
 use suite_mobile::ui::{
-    Act, Band, Chip, GRAPH_BOTTOM as B, GRAPH_THROUGH as T, GRAPH_TOP as H, GraphCell, NODE_COMMIT, NODE_HEAD,
-    NODE_MERGE, Row, Screen, Tone,
+    Act, Band, Chip, DIFF_ADDED, DIFF_CONTEXT, DIFF_HEADER, DIFF_REMOVED, GRAPH_BOTTOM as B, GRAPH_THROUGH as T,
+    GRAPH_TOP as H, GraphCell, NODE_COMMIT, NODE_HEAD, NODE_MERGE, Row, Screen, Tone,
 };
 
 use crate::app::with;
@@ -239,6 +239,27 @@ fn depot_history() -> Screen {
     s
 }
 
+/// Un fichier modifié : son diff, numéroté.
+fn depot_file() -> Screen {
+    let mut s = Screen::new("view.rs").subtitle("crates/eyrie-mobile/src · modifié");
+    s.buttons(vec![
+        Act::new("indexer:view", "Indexer").glyph("+").primary(),
+        Act::new("annuler:view", "Annuler").danger(),
+    ]);
+    let lines = [
+        (DIFF_HEADER, "@@ -98,7 +98,9 @@ pub fn items<'a>(s: &'a Screen, local: &Local) -> Vec<Item<'a>> {"),
+        (DIFF_CONTEXT, "    let needle = plain(local.search.trim());"),
+        (DIFF_CONTEXT, "    let visible = visible(s, local, &needle);"),
+        (DIFF_REMOVED, "    let is_row = |i: usize| matches!(s.blocks.get(i), Some(Block::Row(_)));"),
+        (DIFF_ADDED, "    let is_row = |i: usize| matches!(visible.get(i), Some((Block::Row(_), _)));"),
+        (DIFF_ADDED, "    // Les cartes se forment sur ce qui est montré."),
+        (DIFF_CONTEXT, "    let mut keys = Keys::default();"),
+    ];
+    let numbers = vec![(0, 0), (98, 98), (99, 99), (100, 0), (0, 100), (0, 101), (101, 102)];
+    s.diff_numbered(lines.iter().map(|&(k, t)| (k, t.to_string())).collect(), numbers);
+    s
+}
+
 fn run(col: u16, text: &str, fg: Color, flags: u8) -> Run {
     Run { col, text: text.into(), fg, bg: Color::Default, flags }
 }
@@ -366,6 +387,8 @@ pub fn play(ui: &AppWindow, scene: &str) {
     feed(ToPhone::Screen { module: "dragontree".into(), path: "depot/eyrie".into(), screen: depot_state() });
     let history = depot_history();
     feed(ToPhone::Screen { module: "dragontree".into(), path: "depot/eyrie/historique".into(), screen: history });
+    let file = depot_file();
+    feed(ToPhone::Screen { module: "dragontree".into(), path: "depot/eyrie/fichier/view".into(), screen: file });
     let term_screen = Screen::new("Claude · appli mobile")
         .subtitle("Claude attend une réponse")
         .terminal("3")
@@ -397,6 +420,15 @@ pub fn play(ui: &AppWindow, scene: &str) {
             with(|c| {
                 c.open_module_path("dragontree", "depot/eyrie");
                 c.run_act(&UiAct { id: "fetch".into(), ..Default::default() }, "");
+            });
+        }
+        "diff" | "diff-retour" => {
+            with(|c| {
+                c.open_module_path("dragontree", "depot/eyrie");
+                c.open_path("depot/eyrie/fichier/view");
+                if scene == "diff-retour" {
+                    c.toggle_wrap();
+                }
             });
         }
         "historique" => {
