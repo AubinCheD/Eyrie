@@ -182,7 +182,7 @@ fn run(mut pc: Peer, tuning: Tuning, rx: mpsc::Receiver<Cmd>, back: mpsc::Sender
                 watch.online();
                 pc.wake = welcome.wake.clone();
                 on(NetEvent::Online(welcome));
-                match online(conn, tuning.silence, &rx, &back, &on) {
+                match online(conn, tuning.silence, &rx, &back, &on, &mut pc.wake) {
                     Ended::Stop => return,
                     Ended::Lost(reason) => reason,
                     Ended::Closing(reason) => {
@@ -240,13 +240,15 @@ fn run(mut pc: Peer, tuning: Tuning, rx: mpsc::Receiver<Cmd>, back: mpsc::Sender
     }
 }
 
-/// La connexion établie : la lecture dans un fil (chaque message part vers l'interface), l'envoi et `Ping` ici.
+/// La connexion établie : la lecture dans un fil (chaque message part vers l'interface), l'envoi et `Ping` ici. Un
+/// nouvel accueil du PC (son veilleur activé ou coupé) remplace la clé de démarrage `wake`.
 fn online(
     conn: client::Connection,
     silence: Duration,
     rx: &mpsc::Receiver<Cmd>,
     back: &mpsc::Sender<Cmd>,
     on: &impl Fn(NetEvent),
+    wake: &mut Option<WakeKey>,
 ) -> Ended {
     let client::Connection { rx: mut reader, tx: mut writer, .. } = conn;
     let socket = writer.get_mut().try_clone().ok();
@@ -271,11 +273,14 @@ fn online(
         let _ = dropped.send(Cmd::Dropped);
     });
     // Un message du PC part vers l'interface ; `Bye` ou une erreur terminent la connexion.
-    let take = |r: Result<ToPhone, String>| -> Option<Ended> {
+    let mut take = |r: Result<ToPhone, String>| -> Option<Ended> {
         match r {
             Ok(ToPhone::Bye { reason, closing: true }) => Some(Ended::Closing(reason)),
             Ok(ToPhone::Bye { reason, .. }) => Some(Ended::Lost(reason)),
             Ok(m) => {
+                if let ToPhone::Welcome { wake: w, .. } = &m {
+                    *wake = w.clone();
+                }
                 on(NetEvent::Message(Box::new(m)));
                 None
             }
@@ -454,8 +459,9 @@ mod tests {
     }
 
     /// `expected` : le secret que le veilleur attend (celui de l'appareil, tiré de sa clé publique) ; `given` : celui
-    /// que le PC donne au téléphone.
-    fn closing_pc(expected: [u8; 32], given: [u8; 32]) -> ClosingPc {
+    /// que le PC donne au téléphone. `rekey` : le premier accueil donne une clé d'avant (un port où rien n'écoute),
+    /// puis un second, pendant la connexion, la bonne (le veilleur activé sur le PC).
+    fn closing_pc(expected: [u8; 32], given: [u8; 32], rekey: bool) -> ClosingPc {
         let pc = Keypair::generate();
         let pc_key = pc.public;
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -463,6 +469,8 @@ mod tests {
         let standby = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = standby.local_addr().unwrap().port();
         let wake = WakeKey { port, secret: given.to_vec(), device: "appareil-1".into() };
+        let dead = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let stale = rekey.then(|| WakeKey { port: dead, ..wake.clone() });
         let open = Arc::new(AtomicBool::new(true));
         let (probes, requests) = (Arc::new(AtomicU32::new(0)), Arc::new(AtomicU32::new(0)));
 
@@ -479,6 +487,9 @@ mod tests {
                 let (t, _) = channel::accept(&mut s, &pc).unwrap();
                 let (mut r, mut tx) = t.split(s.try_clone().unwrap(), s);
                 let _hello: ToPc = r.recv().unwrap();
+                if let Some(old) = stale.as_ref().filter(|_| welcomed == 0) {
+                    tx.send(&welcome(Some(old.clone()))).unwrap();
+                }
                 tx.send(&welcome(Some(w.clone()))).unwrap();
                 welcomed += 1;
                 if welcomed > 1 {
@@ -569,7 +580,7 @@ mod tests {
     fn a_closed_eyrie_is_started_from_the_phone() {
         let me = Keypair::generate();
         let secret = veille::device_secret(&[1; 32], &me.public);
-        let pc = closing_pc(secret, secret);
+        let pc = closing_pc(secret, secret, false);
         let (tx, rx) = mpsc::channel();
         let tuning = Tuning { silence: SILENCE, pace: QUICK };
         let link = Link::start_with(peer(pc.addr.clone(), pc.pc_key, me), tuning, move |ev| {
@@ -601,11 +612,43 @@ mod tests {
         assert_eq!(pc.sessions.join().unwrap(), 2);
     }
 
+    /// Le PC active son veilleur pendant la connexion : son nouvel accueil donne la clé de démarrage, qui part vers
+    /// l'interface et que la liaison prend ; Eyrie fermée ensuite, le veilleur est trouvé à son port.
+    #[test]
+    fn a_welcome_during_the_connection_replaces_the_wake_key() {
+        let me = Keypair::generate();
+        let secret = veille::device_secret(&[1; 32], &me.public);
+        let pc = closing_pc(secret, secret, true);
+        let (tx, rx) = mpsc::channel();
+        let tuning = Tuning { silence: SILENCE, pace: QUICK };
+        let link = Link::start_with(peer(pc.addr.clone(), pc.pc_key, me), tuning, move |ev| {
+            let _ = tx.send(ev);
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut told = false;
+        loop {
+            match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(NetEvent::Online(w)) => assert_ne!(w.wake.as_ref(), Some(&pc.wake), "d'abord la clé d'avant"),
+                Ok(NetEvent::Message(m)) => {
+                    if let ToPhone::Welcome { wake, .. } = *m {
+                        assert_eq!(wake.as_ref(), Some(&pc.wake));
+                        told = true;
+                    }
+                }
+                Ok(NetEvent::Offline { away, .. }) if away.reach == Reach::Standby(Eyrie::Fermee) => break,
+                Ok(_) => {}
+                Err(_) => panic!("le veilleur n'est pas trouvé à son nouveau port (accueil reçu : {told})"),
+            }
+        }
+        assert!(told, "l'interface a reçu le nouvel accueil");
+        drop(link);
+    }
+
     /// Une clé que le veilleur ne reconnaît pas : son refus arrive tel quel, et rien n'est redemandé de soi-même.
     #[test]
     fn a_refused_proof_is_reported_and_not_retried() {
         let me = Keypair::generate();
-        let pc = closing_pc(veille::device_secret(&[1; 32], &me.public), [9; 32]);
+        let pc = closing_pc(veille::device_secret(&[1; 32], &me.public), [9; 32], false);
         let (tx, rx) = mpsc::channel();
         let tuning = Tuning { silence: SILENCE, pace: QUICK };
         let link = Link::start_with(peer(pc.addr.clone(), pc.pc_key, me), tuning, move |ev| {

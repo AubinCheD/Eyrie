@@ -8,6 +8,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
+use suite_mobile::client::Welcome;
 use suite_mobile::msg::{CommandCard, Listing, ModuleCard, Note, Rights, ToPc, ToPhone, Waiting, module_target};
 use suite_mobile::pairing::{self, Ticket};
 use suite_mobile::term::TermInput;
@@ -890,21 +891,9 @@ impl Controller {
             }
             NetEvent::Online(w) => {
                 self.online = true;
-                self.rights = w.rights;
-                self.pc_name = w.pc;
-                self.eyrie = w.eyrie;
                 self.away = Away::default();
                 self.start = Start::Idle;
-                // La clé de démarrage : remplacée (ou retirée) à chaque accueil.
-                let wake = w.wake.as_ref().map(Wake::from_key);
-                if let Some(pc) = self.store.prefs.current.clone()
-                    && let Some(p) = self.store.pcs.iter_mut().find(|p| p.id == pc)
-                    && (p.name != self.pc_name || p.wake != wake)
-                {
-                    p.name = self.pc_name.clone();
-                    p.wake = wake;
-                    self.store.save();
-                }
+                self.welcomed(w);
                 self.set_link(1, "Connecté");
                 // Tout est renvoyé par le PC ; l'écran suivi est redemandé. Ce qui a déjà été signalé est gardé : ce
                 // qui est arrivé pendant la coupure le sera.
@@ -936,6 +925,23 @@ impl Controller {
             }
             NetEvent::Started(answer) => self.on_started(answer),
             NetEvent::Message(m) => self.on_message(*m),
+        }
+    }
+
+    /// Un accueil du PC, à la connexion ou pendant (le veilleur activé ou coupé sur le PC, sa clé changée) : ses
+    /// droits, son nom, et la clé de démarrage, remplacée (ou retirée) à chaque fois.
+    fn welcomed(&mut self, w: Welcome) {
+        self.rights = w.rights;
+        self.pc_name = w.pc;
+        self.eyrie = w.eyrie;
+        let wake = w.wake.as_ref().map(Wake::from_key);
+        if let Some(pc) = self.store.prefs.current.clone()
+            && let Some(p) = self.store.pcs.iter_mut().find(|p| p.id == pc)
+            && (p.name != self.pc_name || p.wake != wake)
+        {
+            p.name = self.pc_name.clone();
+            p.wake = wake;
+            self.store.save();
         }
     }
 
@@ -1040,11 +1046,12 @@ impl Controller {
             ToPhone::Toast { text, tone } => self.toast(&text, view::tone(Some(tone))),
             ToPhone::Bye { reason, .. } => self.set_link(2, &reason),
             ToPhone::Folder { req, listing } => self.on_folder(req, listing),
-            ToPhone::Welcome { .. }
-            | ToPhone::PairPending { .. }
-            | ToPhone::Paired { .. }
-            | ToPhone::Refused { .. }
-            | ToPhone::Pong => {}
+            // Un nouvel accueil pendant la connexion : le PC a activé ou coupé son veilleur (la clé de démarrage).
+            ToPhone::Welcome { pc, eyrie, rights, wake, .. } => {
+                self.welcomed(Welcome { pc, eyrie, rights, wake });
+                self.refresh_settings();
+            }
+            ToPhone::PairPending { .. } | ToPhone::Paired { .. } | ToPhone::Refused { .. } | ToPhone::Pong => {}
         }
     }
 
