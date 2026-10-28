@@ -20,6 +20,9 @@ use suite_sdk::mobile::ui::{Act, Band, Row, Screen, Tone};
 /// Entrées montrées par groupe dans l'accueil ; toutes sont sur l'écran du groupe (`groupe/<clé>`).
 const PER_GROUP: usize = 15;
 
+/// Gestes qu'Owlery garde à annuler (son `UNDO_DEPTH`, privé) : au-delà, les plus anciens ne s'annulent plus.
+const UNDO_KEPT: usize = 50;
+
 /// Les reports proposés, comme « Me le rappeler » sur le PC : (action, report, libellé).
 const SNOOZES: [(&str, Snooze, &str); 3] = [
     ("reporter-3h", Snooze::Later, "Reporter de 3 h"),
@@ -129,8 +132,18 @@ fn mute_act(repo: &str) -> Act {
         .confirm(format!("Ne plus rien montrer de {repo} ? (rétabli dans les réglages d'Owlery)"))
 }
 
-fn mark_group_act(key: &str) -> Act {
-    Act::new(format!("tout-lu:{key}"), "Tout marquer lu").glyph("✅")
+/// « Tout marquer lu » sur un groupe de `unread` non lues : chacune s'annule à part (Owlery n'offre pas encore de quoi
+/// les marquer d'un coup), ce que la confirmation dit avant.
+fn mark_group_act(key: &str, unread: usize) -> Act {
+    let act = Act::new(format!("tout-lu:{key}"), "Tout marquer lu").glyph("✅");
+    match unread {
+        0 | 1 => act,
+        n if n > UNDO_KEPT => act.confirm(format!(
+            "Marquer lues les {n} non lues ? « Annuler » les reprend une à une, les {UNDO_KEPT} dernières seulement, \
+             et les gestes d'avant ne s'annuleront plus."
+        )),
+        n => act.confirm(format!("Marquer lues les {n} non lues ? « Annuler » les reprend une à une.")),
+    }
 }
 
 fn undo_act() -> Act {
@@ -146,7 +159,7 @@ fn group_band(g: &Group, key: &str, by: GroupBy) -> Band {
     };
     let mut band = Band::new(key, &g.title).aside(g.entries.len().to_string()).glyph(glyph).open(g.unread > 0);
     if g.unread > 0 {
-        band = band.badge(unread_text(g.unread)).act(mark_group_act(key));
+        band = band.badge(unread_text(g.unread)).act(mark_group_act(key, g.unread));
     }
     if g.entries.iter().any(|(i, _)| i.ci == Some(Ci::Failure)) {
         band = band.tone(Tone::Danger);
@@ -201,7 +214,7 @@ pub fn group(inbox: &Inbox, rules: &Rules, by: GroupBy, key: &str, now: i64) -> 
     };
     let mut s = Screen::new(&g.title).subtitle(subtitle).search("Chercher dans le groupe");
     if g.unread > 0 {
-        s = s.act(mark_group_act(key));
+        s = s.act(mark_group_act(key, g.unread));
     }
     s = s.act(undo_act());
     if by == GroupBy::Repo {
@@ -284,7 +297,7 @@ pub fn item(i: &Item, status: Status, now: i64, claude: bool) -> Screen {
 }
 
 /// « Tout marquer lu » sur un groupe : ses non lues, par `App::mark` comme le reste (chacune s'annule à part : Owlery
-/// n'offre pas encore de quoi les marquer d'un coup).
+/// n'offre pas encore de quoi les marquer d'un coup, la réponse le rappelle).
 fn mark_group_read(app: &mut App, key: &str) -> Result<Option<String>, String> {
     let ids: Vec<String> = {
         let st = app.state();
@@ -299,15 +312,22 @@ fn mark_group_read(app: &mut App, key: &str) -> Result<Option<String>, String> {
     Ok(Some(match ids.len() {
         0 => "Rien à marquer".into(),
         1 => "1 entrée marquée lue".into(),
-        n => format!("{n} entrées marquées lues"),
+        n => format!("{n} entrées marquées lues (« Annuler » les reprend une à une)"),
     }))
 }
 
-/// Défait le dernier geste, comme Ctrl+Z sur le PC (qui le dit d'une bulle) ; dit si quelque chose a changé.
-fn undo(app: &mut App) -> &'static str {
+/// Défait le dernier geste, comme Ctrl+Z sur le PC (qui le dit d'une bulle) ; dit combien d'entrées il a rétablies
+/// (une seule après un « Tout marquer lu » du téléphone, qui s'annule entrée par entrée).
+fn undo(app: &mut App) -> String {
     let before = app.state().inbox.marks.clone();
     app.undo();
-    if app.state().inbox.marks == before { "Rien à annuler" } else { "Dernier geste annulé" }
+    let after = &app.state().inbox.marks;
+    let changed = before.keys().chain(after.keys().filter(|k| !before.contains_key(*k)));
+    match changed.filter(|k| before.get(*k) != after.get(*k)).count() {
+        0 => "Rien à annuler".into(),
+        1 => "Dernier geste annulé (1 entrée)".into(),
+        n => format!("Dernier geste annulé ({n} entrées)"),
+    }
 }
 
 /// Ce que le téléphone garde : le canal des demandes d'Owlery (« Actualiser »).
@@ -351,7 +371,7 @@ impl Phone {
     ) -> Result<Option<String>, String> {
         match action {
             "actualiser" => return self.refresh(),
-            "annuler" => return Ok(Some(undo(app).into())),
+            "annuler" => return Ok(Some(undo(app))),
             _ => {}
         }
         let (verb, id) = match action.split_once(':') {
@@ -516,6 +536,14 @@ mod tests {
             assert!(ids.contains(id), "{id} absent : {ids:?}");
         }
         assert!(!ids.contains("tout-lu:contoso/docs"), "rien à marquer dans un groupe déjà lu");
+        // Plusieurs non lues : la confirmation dit qu'elles s'annuleront une à une ; une seule : rien à confirmer.
+        let confirm = |id: &str| s.all_acts().into_iter().find(|a| a.id == id).and_then(|a| a.confirm.clone());
+        assert_eq!(
+            confirm("tout-lu:contoso/web").as_deref(),
+            Some("Marquer lues les 2 non lues ? « Annuler » les reprend une à une.")
+        );
+        assert_eq!(confirm("tout-lu:contoso/api"), None);
+        assert!(mark_group_act("k", UNDO_KEPT + 1).confirm.is_some_and(|q| q.contains("ne s'annuleront plus")));
         let links: Vec<&str> = first.acts.iter().filter_map(|a| a.url.as_deref()).collect();
         assert_eq!(links, ["https://github.com/contoso/web/pull/13"], "« Ouvrir » sur le téléphone");
     }
@@ -592,7 +620,8 @@ mod tests {
         assert!(matches!(rx.try_recv(), Ok(Incoming::Refresh)));
     }
 
-    /// Les gestes de groupe passent par Owlery : tout un dépôt marqué lu, un report, puis « Annuler » sur le dernier.
+    /// Les gestes de groupe passent par Owlery : tout un dépôt marqué lu, un report, puis « Annuler » sur le dernier,
+    /// et sur chaque entrée du groupe, une à une, jusqu'à ce qu'il n'y ait plus rien à annuler.
     #[test]
     fn group_gestures_and_undo_go_through_owlery() {
         let now = now();
@@ -615,14 +644,22 @@ mod tests {
             st.inbox.status(&st.inbox.items[id], now)
         };
 
-        assert_eq!(phone.action(&mut app, &ctx, "", "tout-lu:contoso/web"), Ok(Some("2 entrées marquées lues".into())));
+        assert_eq!(
+            phone.action(&mut app, &ctx, "", "tout-lu:contoso/web"),
+            Ok(Some("2 entrées marquées lues (« Annuler » les reprend une à une)".into()))
+        );
         assert_eq!((status(&app, "a"), status(&app, "b")), (Status::Read, Status::Read));
         assert!(phone.action(&mut app, &ctx, "", "tout-lu:contoso/parti").is_err());
 
         assert_eq!(phone.action(&mut app, &ctx, "", "reporter-3h:c"), Ok(Some("Reportée de 3 h".into())));
         assert!(matches!(status(&app, "c"), Status::Snoozed { until } if until > now));
-        assert_eq!(phone.action(&mut app, &ctx, "", "annuler"), Ok(Some("Dernier geste annulé".into())));
+        assert_eq!(phone.action(&mut app, &ctx, "", "annuler"), Ok(Some("Dernier geste annulé (1 entrée)".into())));
         assert_eq!(status(&app, "c"), Status::Unread);
+        for _ in 0..2 {
+            assert_eq!(phone.action(&mut app, &ctx, "", "annuler"), Ok(Some("Dernier geste annulé (1 entrée)".into())));
+        }
+        assert_eq!((status(&app, "a"), status(&app, "b")), (Status::Unread, Status::Unread));
+        assert_eq!(phone.action(&mut app, &ctx, "", "annuler"), Ok(Some("Rien à annuler".into())));
 
         assert!(phone.action(&mut app, &ctx, "", "ignorer-depot:inconnu/depot").is_err());
         assert_eq!(
