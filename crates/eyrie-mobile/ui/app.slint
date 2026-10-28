@@ -55,6 +55,9 @@ export component AppWindow inherits Window {
     in-out property <length> screen-scroll;
     in property <length> scroll-want;
     in property <int> scroll-seq;
+    // La recherche de l'écran (filtrée sur le téléphone) : texte d'invite (vide : pas de champ), texte cherché.
+    in property <string> search-hint;
+    in-out property <string> search-text;
 
     // --- Terminal ---
     in property <[TermRow]> term-rows;
@@ -109,6 +112,7 @@ export component AppWindow inherits Window {
     callback back-requested() -> bool;
     callback run-act(UiAct, string);
     callback fold-band(string);
+    callback search-edited(string);
     callback open-url(string);
     callback haptic();
     callback toggle-pin(string);
@@ -354,6 +358,9 @@ export component AppWindow inherits Window {
                         scroll-y <=> root.screen-scroll;
                         want-y: root.scroll-want;
                         want-seq: root.scroll-seq;
+                        search-hint: root.search-hint;
+                        search-text <=> root.search-text;
+                        search-edited(t) => { root.search-edited(t); }
                         open-path(p) => { root.open-path(p); }
                         act(a) => { root.start-act(a); }
                         menu(r) => { root.show-sheet(r.title, r.acts); }

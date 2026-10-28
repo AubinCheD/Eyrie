@@ -6,7 +6,7 @@ import { Theme } from "theme.slint";
 import { TailnetStatus } from "onboarding.slint";
 import {
     UiAct, UiRow, ModuleItem, WaitItem, NoteItem, CommandItem, PcItem, Icon, IconButton, ModuleAvatar, Pill,
-    SectionHeader, RowView, NoteView, MeterView, TextBlock, ActButton, EmptyView, DiffLineView, BandHeader
+    SectionHeader, RowView, NoteView, MeterView, TextBlock, ActButton, EmptyView, DiffLineView, BandHeader, SearchField
 } from "widgets.slint";
 
 // L'écran d'un module : les blocs décrits par le PC.
@@ -18,6 +18,10 @@ export component ScreenPage inherits Rectangle {
     in-out property <length> scroll-y <=> list.content-y;
     in property <length> want-y;
     in property <int> want-seq;
+    // Le texte d'invite de la recherche (vide : pas de champ) et le texte cherché.
+    in property <string> search-hint;
+    in-out property <string> search-text;
+    callback search-edited(string);
     callback open-path(string);
     callback act(UiAct);
     callback menu(UiRow);
@@ -54,78 +58,85 @@ export component ScreenPage inherits Rectangle {
         }
     }
 
-    list := ListView {
-        for r in root.rows: VerticalLayout {
-            if r.kind == 0: SectionHeader {
-                title: r.title;
-                aside: r.detail;
-            }
-            if r.kind == 8: BandHeader {
-                item: r;
-                toggle => {
-                    root.haptic();
-                    root.fold(r.key);
+    VerticalLayout {
+        if root.search-hint != "": SearchField {
+            hint: root.search-hint;
+            text <=> root.search-text;
+            edited(t) => { root.search-edited(t); }
+        }
+        list := ListView {
+            for r in root.rows: VerticalLayout {
+                if r.kind == 0: SectionHeader {
+                    title: r.title;
+                    aside: r.detail;
                 }
-                menu => { root.menu(r); }
-            }
-            if r.kind == 1: RowView {
-                item: r;
-                tapped => {
-                    if r.opens {
-                        root.open-path(r.path);
-                    } else if r.has-tap {
-                        if !r.tap.busy {
-                            root.act(r.tap);
-                        }
-                    } else if r.acts.length > 0 {
-                        root.menu(r);
+                if r.kind == 8: BandHeader {
+                    item: r;
+                    toggle => {
+                        root.haptic();
+                        root.fold(r.key);
                     }
+                    menu => { root.menu(r); }
                 }
-                menu => { root.menu(r); }
-                haptic => { root.haptic(); }
-            }
-            if r.kind == 2: NoteView {
-                text: r.title;
-                tone: r.tone;
-            }
-            if r.kind == 3: MeterView {
-                label: r.title;
-                value-text: r.detail;
-                value: r.value;
-                tone: r.tone;
-            }
-            if r.kind == 4: TextBlock {
-                text: r.title;
-                mono: r.mono;
-            }
-            if r.kind == 5: EmptyView {
-                text: r.title;
-            }
-            if r.kind == 7: DiffLineView {
-                text: r.title;
-                kind: r.tone;
-                first: r.first;
-                last: r.last;
-            }
-            // Les boutons passent à la ligne quand ils ne tiennent pas dans la largeur (donnée explicitement : dans
-            // une ligne de liste, la mise en page ne la transmet pas et la hauteur serait devinée).
-            if r.kind == 6: Rectangle {
-                height: flow.preferred-height;
-                flow := FlexboxLayout {
-                    x: 0;
-                    y: 0;
-                    width: parent.width;
-                    padding-left: Theme.pad;
-                    padding-right: Theme.pad;
-                    padding-top: 8px;
-                    padding-bottom: 8px;
-                    spacing: 8px;
-                    for a in r.acts: ActButton {
-                        text: a.label;
-                        glyph: a.glyph;
-                        style: a.style;
-                        busy: a.busy;
-                        clicked => { root.act(a); }
+                if r.kind == 1: RowView {
+                    item: r;
+                    tapped => {
+                        if r.opens {
+                            root.open-path(r.path);
+                        } else if r.has-tap {
+                            if !r.tap.busy {
+                                root.act(r.tap);
+                            }
+                        } else if r.acts.length > 0 {
+                            root.menu(r);
+                        }
+                    }
+                    menu => { root.menu(r); }
+                    haptic => { root.haptic(); }
+                }
+                if r.kind == 2: NoteView {
+                    text: r.title;
+                    tone: r.tone;
+                }
+                if r.kind == 3: MeterView {
+                    label: r.title;
+                    value-text: r.detail;
+                    value: r.value;
+                    tone: r.tone;
+                }
+                if r.kind == 4: TextBlock {
+                    text: r.title;
+                    mono: r.mono;
+                }
+                if r.kind == 5: EmptyView {
+                    text: r.title;
+                }
+                if r.kind == 7: DiffLineView {
+                    text: r.title;
+                    kind: r.tone;
+                    first: r.first;
+                    last: r.last;
+                }
+                // Les boutons passent à la ligne quand ils ne tiennent pas dans la largeur (donnée explicitement : dans
+                // une ligne de liste, la mise en page ne la transmet pas et la hauteur serait devinée).
+                if r.kind == 6: Rectangle {
+                    height: flow.preferred-height;
+                    flow := FlexboxLayout {
+                        x: 0;
+                        y: 0;
+                        width: parent.width;
+                        padding-left: Theme.pad;
+                        padding-right: Theme.pad;
+                        padding-top: 8px;
+                        padding-bottom: 8px;
+                        spacing: 8px;
+                        for a in r.acts: ActButton {
+                            text: a.label;
+                            glyph: a.glyph;
+                            style: a.style;
+                            busy: a.busy;
+                            clicked => { root.act(a); }
+                        }
                     }
                 }
             }
@@ -476,41 +487,10 @@ export component CommandsPage inherits Rectangle {
     callback run(CommandItem);
     callback filter-edited(string);
     VerticalLayout {
-        Rectangle {
-            height: 60px;
-            Rectangle {
-                x: Theme.pad;
-                y: 8px;
-                width: parent.width - 2 * Theme.pad;
-                height: 44px;
-                border-radius: 22px;
-                background: Theme.surface;
-                HorizontalLayout {
-                    padding-left: 14px;
-                    spacing: 8px;
-                    Icon {
-                        kind: "search";
-                        tint: Theme.text-faint;
-                        size: 20px;
-                    }
-                    TextInput {
-                        text <=> root.filter;
-                        color: Theme.text;
-                        font-size: 15px;
-                        vertical-alignment: center;
-                        single-line: true;
-                        edited => { root.filter-edited(self.text); }
-                    }
-                }
-                if root.filter == "": Text {
-                    x: 46px;
-                    text: "Chercher une commande";
-                    color: Theme.text-faint;
-                    font-size: 15px;
-                    vertical-alignment: center;
-                    height: parent.height;
-                }
-            }
+        SearchField {
+            hint: "Chercher une commande";
+            text <=> root.filter;
+            edited(t) => { root.filter-edited(t); }
         }
         Text {
             text: "Elles s'exécutent dans Eyrie, sur le PC.";

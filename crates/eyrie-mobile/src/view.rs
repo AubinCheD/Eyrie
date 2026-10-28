@@ -35,6 +35,8 @@ pub struct Local {
     /// Les bandeaux que l'utilisateur a pliés (`false`) ou dépliés (`true`), par clé ; les autres gardent l'état de
     /// départ donné par le PC.
     pub open: HashMap<String, bool>,
+    /// Le texte cherché dans l'écran (vide : pas de recherche).
+    pub search: String,
 }
 
 impl Local {
@@ -100,6 +102,8 @@ enum What<'a> {
         first: bool,
         last: bool,
     },
+    /// Rien ne correspond à la recherche.
+    NoMatch(String),
 }
 
 /// Des clés uniques dans l'écran : la deuxième ligne « PowerShell » devient `r:PowerShell…#2`.
@@ -168,19 +172,76 @@ fn fold_of(b: &Block, local: &Local) -> Option<bool> {
     }
 }
 
-/// Les lignes de l'écran, dans l'ordre, avec leur clé et leur empreinte : un bandeau plié cache les blocs qui le
-/// suivent jusqu'à la section suivante, et les cartes (premier et dernier arrondis) se forment sur ce qui reste.
-pub fn items<'a>(s: &'a Screen, local: &Local) -> Vec<Item<'a>> {
-    let mut visible: Vec<(&Block, Option<bool>)> = Vec::with_capacity(s.blocks.len());
-    let mut folded = false;
-    for b in &s.blocks {
-        if matches!(b, Block::Section { .. }) {
-            let open = fold_of(b, local);
-            folded = open == Some(false);
-            visible.push((b, open));
-        } else if !folded {
-            visible.push((b, None));
+/// Pour chercher sans tenir compte de la casse ni des accents : « Œuvre élue » → « oeuvre elue ».
+pub fn plain(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars().flat_map(char::to_lowercase) {
+        match c {
+            'à' | 'â' | 'ä' | 'á' | 'ã' | 'å' => out.push('a'),
+            'ç' => out.push('c'),
+            'é' | 'è' | 'ê' | 'ë' => out.push('e'),
+            'î' | 'ï' | 'í' | 'ì' => out.push('i'),
+            'ô' | 'ö' | 'ó' | 'ò' | 'õ' => out.push('o'),
+            'ù' | 'û' | 'ü' | 'ú' => out.push('u'),
+            'ÿ' | 'ý' => out.push('y'),
+            'ñ' => out.push('n'),
+            'œ' => out.push_str("oe"),
+            'æ' => out.push_str("ae"),
+            c => out.push(c),
         }
+    }
+    out
+}
+
+/// La ligne correspond à la recherche (`needle` passé par [`plain`]) : titre, sous-titre, texte à droite, pastille,
+/// étiquettes.
+fn hit(r: &Row, needle: &str) -> bool {
+    let texts = [&r.title, &r.subtitle, &r.detail, &r.badge].into_iter().chain(r.chips.iter().map(|c| &c.text));
+    texts.into_iter().any(|t| plain(t).contains(needle))
+}
+
+/// Les blocs montrés. Hors recherche : tout, sauf ce qui suit un bandeau plié jusqu'à la section suivante. Pendant une
+/// recherche : les lignes qui correspondent, et les sections qui en ont, dépliées.
+fn visible<'a>(s: &'a Screen, local: &Local, needle: &str) -> Vec<(&'a Block, Option<bool>)> {
+    let mut out: Vec<(&Block, Option<bool>)> = Vec::with_capacity(s.blocks.len());
+    if needle.is_empty() {
+        let mut folded = false;
+        for b in &s.blocks {
+            if matches!(b, Block::Section { .. }) {
+                let open = fold_of(b, local);
+                folded = open == Some(false);
+                out.push((b, open));
+            } else if !folded {
+                out.push((b, None));
+            }
+        }
+        return out;
+    }
+    let mut section = None;
+    for b in &s.blocks {
+        match b {
+            Block::Section { .. } => section = Some((b, fold_of(b, local).map(|_| true))),
+            Block::Row(r) if hit(r, needle) => {
+                out.extend(section.take());
+                out.push((b, None));
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Les lignes de l'écran, dans l'ordre, avec leur clé et leur empreinte : un bandeau plié cache les blocs qui le
+/// suivent jusqu'à la section suivante, une recherche ne garde que les lignes qui y répondent, et les cartes (premier
+/// et dernier arrondis) se forment sur ce qui reste.
+pub fn items<'a>(s: &'a Screen, local: &Local) -> Vec<Item<'a>> {
+    let needle = plain(local.search.trim());
+    let visible = visible(s, local, &needle);
+    if visible.is_empty() && !needle.is_empty() {
+        let text = format!("Aucun résultat pour « {} ».", local.search.trim());
+        let mut h = DefaultHasher::new();
+        text.hash(&mut h);
+        return vec![Item { key: "@vide".into(), sig: h.finish(), what: What::NoMatch(text) }];
     }
     let is_row = |i: usize| matches!(visible.get(i), Some((Block::Row(_), _)));
     let mut keys = Keys::default();
@@ -300,6 +361,7 @@ pub fn ui_row(item: &Item, local: &Local) -> UiRow {
         What::DiffLine { kind, text, first, last } => {
             UiRow { tone: *kind as i32, first: *first, last: *last, ..empty(7, text) }
         }
+        What::NoMatch(text) => empty(5, text),
         What::Block(_) => empty(5, ""),
     }
 }
@@ -388,7 +450,7 @@ pub fn ago(at: u64, now: u64) -> String {
 mod tests {
     use std::cell::Cell;
 
-    use suite_mobile::ui::Band;
+    use suite_mobile::ui::{Band, Chip};
 
     use super::*;
 
@@ -581,6 +643,25 @@ mod tests {
         assert_eq!(band_open(Some((false, 3)), true, 3), (false, false), "replié par l'utilisateur en connaissance");
         assert_eq!(band_open(Some((false, 3)), true, 4), (true, true));
         assert_eq!(band_open(Some((true, 0)), false, 0), (true, false));
+    }
+
+    /// La recherche, sans casse ni accents, garde les lignes qui y répondent (titre, sous-titre, texte à droite,
+    /// pastille, étiquettes) et les sections qui en ont, dépliées ; le reste est caché ; rien : un message.
+    #[test]
+    fn the_search_keeps_matching_rows_and_their_sections_unfolded() {
+        let mut s = bands();
+        s.row(Row::new("Dépôt").chip(Chip::new("release/été")));
+        let mut local = Local { search: "  GIT ".into(), ..Default::default() };
+        assert_eq!(shown(&s, &local), ["s:g2", "r:t/7"], "Ozmo, plié au départ, est déplié");
+        assert_eq!(rows(&s, &local)[0].fold, 1);
+        local.search = "ete".into();
+        assert_eq!(shown(&s, &local), ["s:Récents", "r:Dépôt\u{1f}"], "dans une étiquette, sans accent");
+        local.search = "claude".into();
+        assert_eq!(shown(&s, &local), ["s:g1", "r:t/3"]);
+        local.search = "zzz".into();
+        let r = rows(&s, &local);
+        assert_eq!((r.len(), r[0].kind, r[0].title.as_str()), (1, 5, "Aucun résultat pour « zzz »."));
+        assert_eq!(plain("Œuvre ÉLUE à Noël"), "oeuvre elue a noel");
     }
 
     #[test]

@@ -107,6 +107,8 @@ pub struct Controller {
     /// La position de la liste de chaque écran quitté, rendue au retour ; un écran ouvert de nouveau part du haut.
     scroll: HashMap<(String, String), f32>,
     scroll_seq: i32,
+    /// Le texte cherché dans chaque écran qui a une recherche (filtrée sur le téléphone).
+    search: HashMap<(String, String), String>,
     req: u32,
     /// Les actions envoyées sans résultat du PC, par numéro de demande : pas de second envoi de la même.
     pending: HashMap<u32, Pending>,
@@ -221,6 +223,7 @@ impl Controller {
             shown: Vec::new(),
             scroll: HashMap::new(),
             scroll_seq: 0,
+            search: HashMap::new(),
             req: 0,
             pending: HashMap::new(),
             target: None,
@@ -667,15 +670,15 @@ impl Controller {
 
     fn refresh_commands(&self) {
         let Some(ui) = self.ui() else { return };
-        let filter = ui.get_command_filter().to_lowercase();
+        let filter = view::plain(ui.get_command_filter().trim());
         let items: Vec<CommandItem> = self
             .commands
             .iter()
             .filter_map(|c| {
                 let module_name = self.card(&c.module).map(|m| m.name.clone()).unwrap_or_else(|| c.module.clone());
                 let hit = filter.is_empty()
-                    || c.title.to_lowercase().contains(&filter)
-                    || module_name.to_lowercase().contains(&filter);
+                    || view::plain(&c.title).contains(&filter)
+                    || view::plain(&module_name).contains(&filter);
                 hit.then(|| CommandItem {
                     module: c.module.as_str().into(),
                     module_name: module_name.into(),
@@ -705,6 +708,9 @@ impl Controller {
     fn local(&mut self, key: &(String, String)) -> view::Local {
         let pending = self.pending.values().filter(|p| p.module == key.0 && p.path == key.1);
         let mut local = view::Local { pending: pending.map(|p| p.act.clone()).collect(), ..Default::default() };
+        if self.screens.get(key).is_some_and(|s| !s.search.is_empty()) {
+            local.search = self.search.get(key).cloned().unwrap_or_default();
+        }
         let pc = self.store.prefs.current.clone().unwrap_or_default();
         let mut reopened = Vec::new();
         for (band, default_open, tone) in bands(self.screens.get(key)) {
@@ -792,6 +798,7 @@ impl Controller {
         ui.set_tab(tab.as_str().into());
         let mut screen_follow = None;
         let mut term_follow = None;
+        let mut search = String::new();
         let (title, subtitle, can_back, acts) = match tab.as_str() {
             "ensemble" => ("Ensemble".to_string(), String::new(), false, Vec::new()),
             "plus" => ("Plus".into(), String::new(), false, Vec::new()),
@@ -814,6 +821,7 @@ impl Controller {
                         if let Some(id) = &s.terminal {
                             term_follow = Some((module.to_string(), id.clone()));
                         }
+                        search = s.search.clone();
                         (s.title.clone(), s.subtitle.clone(), stack_len > 1, s.acts.clone())
                     }
                     None => (name, String::new(), stack_len > 1, Vec::new()),
@@ -826,6 +834,7 @@ impl Controller {
         ui.set_missing(self.missing.get(&key).cloned().unwrap_or_default().into());
         ui.set_screen_title(title.into());
         ui.set_subtitle(subtitle.into());
+        ui.set_search_hint(search.into());
         ui.set_can_back(can_back);
         ui.set_show_pc(acts.iter().any(|a| a.id == "@pc"));
         let local = screen_follow.as_ref().map(|k| self.local(k)).unwrap_or_default();
@@ -871,12 +880,23 @@ impl Controller {
             view::patch(&self.models.rows, &mut self.shown, &items, |i| view::ui_row(i, &local));
             return;
         }
-        // Un autre écran : la liste repart de zéro, à la position où on l'avait laissée.
+        // Un autre écran : la liste repart de zéro, à la position où on l'avait laissée, avec sa recherche.
+        if let Some(ui) = self.ui() {
+            ui.set_search_text(local.search.as_str().into());
+        }
         self.models.rows.set_vec(items.iter().map(|i| view::ui_row(i, &local)).collect::<Vec<_>>());
         self.shown = items.iter().map(|i| (i.key.clone(), i.sig)).collect();
         let y = self.scroll.get(&key).copied().unwrap_or(0.0);
         self.shown_for = Some(key);
         self.scroll_to(y);
+    }
+
+    /// Le texte cherché dans l'écran affiché a changé : la liste est filtrée sur le téléphone, depuis son début.
+    pub(crate) fn search_edited(&mut self, text: &str) {
+        let Some(key) = self.shown_for.clone() else { return };
+        self.search.insert(key.clone(), text.to_string());
+        self.refresh_rows(Some(&key));
+        self.scroll_to(0.0);
     }
 
     /// Retient la position de la liste de l'écran affiché, avant d'en changer.
@@ -1247,6 +1267,7 @@ impl Controller {
         self.missing.clear();
         self.stacks.clear();
         self.scroll.clear();
+        self.search.clear();
         self.pending.clear();
         self.tab = "ensemble".into();
         self.followed = None;
@@ -1455,6 +1476,9 @@ fn wire(ui: &AppWindow) {
     });
     ui.on_fold_band(|band| {
         with(|c| c.fold_bands(Some(&band), false));
+    });
+    ui.on_search_edited(|text| {
+        with(|c| c.search_edited(&text));
     });
     ui.on_open_url(|u| platform::open_url(&u));
     ui.on_haptic(platform::haptic);

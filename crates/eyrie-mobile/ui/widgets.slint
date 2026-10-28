@@ -178,6 +178,68 @@ export component IconButton inherits Rectangle {
     }
 }
 
+// Un champ de recherche, filtré sur le téléphone : icône, texte d'invite, bouton pour effacer.
+export component SearchField inherits Rectangle {
+    in property <string> hint;
+    in-out property <string> text;
+    callback edited(string);
+    height: 60px;
+    Rectangle {
+        x: Theme.pad;
+        y: 8px;
+        width: parent.width - 2 * Theme.pad;
+        height: 44px;
+        border-radius: 22px;
+        background: Theme.surface;
+        border-width: input.has-focus ? 2px : 0;
+        border-color: Theme.accent;
+        HorizontalLayout {
+            padding-left: 14px;
+            padding-right: 2px;
+            spacing: 8px;
+            VerticalLayout {
+                alignment: center;
+                Icon {
+                    kind: "search";
+                    tint: Theme.text-faint;
+                    size: 20px;
+                }
+            }
+            input := TextInput {
+                text <=> root.text;
+                color: Theme.text;
+                font-size: 15px;
+                vertical-alignment: center;
+                single-line: true;
+                horizontal-stretch: 1;
+                accessible-placeholder-text: root.hint;
+                edited => { root.edited(self.text); }
+            }
+            if root.text != "": VerticalLayout {
+                alignment: center;
+                IconButton {
+                    icon: "close";
+                    label: "Effacer la recherche";
+                    size: 40px;
+                    tint: Theme.text-dim;
+                    clicked => {
+                        root.text = "";
+                        root.edited("");
+                    }
+                }
+            }
+        }
+        if root.text == "": Text {
+            x: 46px;
+            height: parent.height;
+            text: root.hint;
+            color: Theme.text-faint;
+            font-size: 15px;
+            vertical-alignment: center;
+        }
+    }
+}
+
 // Le logo d'un module : son image, sinon son glyphe sur sa couleur.
 export component ModuleAvatar inherits Rectangle {
     in property <ModuleItem> module;

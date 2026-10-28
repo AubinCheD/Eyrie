@@ -1,6 +1,6 @@
 //! Démonstration sans PC (`EYRIE_MOBILE_DEMO=<scène>`), pour les captures et la mise au point de l'interface :
-//! `ensemble`, `fawkes`, `terminal`, `patronus`, `depot`, `plus`, `notes`, `reglages`, `accueil`, `accueil-tailscale`,
-//! `code`, `appairage`, `hors-ligne`.
+//! `ensemble`, `fawkes`, `recherche`, `terminal`, `patronus`, `depot`, `plus`, `notes`, `reglages`, `accueil`,
+//! `commandes`, `accueil-tailscale`, `code`, `appairage`, `hors-ligne`.
 
 use suite_mobile::msg::{Badge, CommandCard, ModuleCard, Note, ToPhone, Waiting};
 use suite_mobile::term::{self, Color, Line, Run, TermFrame, TermView};
@@ -60,7 +60,7 @@ fn group_menu(g: &str) -> Band {
 
 /// Fawkes : un bandeau pliant par groupe de terminaux.
 fn fawkes_home() -> Screen {
-    let mut s = Screen::new("Fawkes").act(Act::new("@pc", "Montrer sur le PC"));
+    let mut s = Screen::new("Fawkes").act(Act::new("@pc", "Montrer sur le PC")).search("Chercher un terminal");
     s.note("Une session Claude attend une réponse.", Tone::Warn);
     s.row(Row::new("Nouveau terminal").glyph("➕").subtitle("Shell ou Claude, dans un dossier récent").open("nouveau"));
     let eyrie = group_menu("g1");
@@ -306,6 +306,12 @@ pub fn play(ui: &AppWindow, scene: &str) {
         "fawkes" => {
             with(|c| c.nav_select("fawkes"));
         }
+        // Une recherche dans les terminaux de Fawkes.
+        "recherche" => {
+            with(|c| c.nav_select("fawkes"));
+            ui.set_search_text("claude".into());
+            with(|c| c.search_edited("claude"));
+        }
         "terminal" => {
             with(|c| {
                 c.nav_select("fawkes");
@@ -323,7 +329,7 @@ pub fn play(ui: &AppWindow, scene: &str) {
                 c.run_act(&UiAct { id: "fetch".into(), ..Default::default() }, "");
             });
         }
-        "plus" | "notes" => {
+        "plus" | "notes" | "commandes" => {
             with(|c| c.nav_select(scene));
         }
         // Comme sur Android : le nœud Tailscale de l'application, connecté.
