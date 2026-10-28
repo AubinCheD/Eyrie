@@ -3,7 +3,8 @@
 package main
 
 // Démarrer Eyrie depuis le téléphone quand elle est fermée : le veilleur écoute le port 4748 du tailnet et y tient le
-// défi-réponse de crates/suite-mobile/src/veille.rs, en lignes JSON :
+// défi-réponse de crates/suite-mobile/src/veille.rs, en lignes JSON (chacune terminée par "\n", d'un Kio au plus ; une
+// demande sans fin de ligne dans les 5 s est abandonnée, sans réponse) :
 //
 //  1. veilleur → téléphone : {"v":1,"defi":"<64 hex>","eyrie":"fermee|demarrage|ouverte|acces-coupe"} ;
 //  2. téléphone → veilleur : {"appareil":"<id>","demande":"demarrer","preuve":"<64 hex>"} ;

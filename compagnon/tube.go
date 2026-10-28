@@ -7,8 +7,12 @@ package main
 // l'entrée et la sortie du compagnon lancé par Eyrie : consignes de relais et {"arret":true} dans un sens, lignes
 // d'état dans l'autre. Son client est vérifié (même compte Windows ; l'exécutable d'Eyrie ou du compagnon, rangé à
 // côté du veilleur) ; un seul à la fois. Eyrie ouvre le tube au niveau SECURITY_IDENTIFICATION, sans quoi, lancée en
-// administrateur, elle ne serait pas reconnue. Le client parti (Eyrie fermée, arrêtée ou plantée), plus rien n'est
-// relayé, et le nœud reste sur le tailnet.
+// administrateur, elle ne serait pas reconnue. Le client parti (Eyrie fermée, arrêtée ou plantée), plus aucune
+// connexion n'est relayée (celles en cours vont jusqu'au bout, qu'Eyrie ferme), et le nœud reste sur le tailnet.
+//
+// Le veilleur prend le verrou du nœud (`verrou.go`) avant d'ouvrir son tube : un instant, le verrou est pris sans
+// tube. Eyrie qui trouve le verrou pris sans pouvoir ouvrir le tube réessaie donc quelques secondes avant de conclure
+// qu'un autre compagnon tient le nœud.
 
 import (
 	"bufio"
