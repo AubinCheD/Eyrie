@@ -168,6 +168,11 @@ fn plural(n: usize, one: &str, many: &str) -> String {
     if n == 1 { format!("1 {one}") } else { format!("{n} {many}") }
 }
 
+/// « Arrêter », confirmé partout où il est proposé (bouton visible, menu, écran de la tâche).
+fn stop_act(t: &TaskLine) -> Act {
+    Act::new(format!("arreter:{}", t.id), "Arrêter").glyph("⏹️").danger().confirm(format!("Arrêter « {} » ?", t.name))
+}
+
 fn task_acts(t: &TaskLine) -> Vec<Act> {
     let mut acts = vec![
         Act::new(format!("lancer:{}", t.id), "Lancer").glyph("▶️").primary(),
@@ -178,7 +183,7 @@ fn task_acts(t: &TaskLine) -> Vec<Act> {
             .multiline(),
     ];
     if t.running || t.pending {
-        acts.push(Act::new(format!("arreter:{}", t.id), "Arrêter").glyph("⏹️").danger());
+        acts.push(stop_act(t));
     }
     acts
 }
@@ -237,12 +242,7 @@ fn running_row(t: &TaskLine, now: NaiveDateTime) -> Row {
         .tone(Tone::Info)
         .progress(None)
         .open(format!("tache/{}", t.id))
-        .trailing(
-            Act::new(format!("arreter:{}", t.id), "Arrêter")
-                .glyph("⏹️")
-                .danger()
-                .confirm(format!("Arrêter « {} » ?", t.name)),
-        );
+        .trailing(stop_act(t));
     row.acts = task_acts(t);
     row
 }
@@ -758,6 +758,9 @@ mod tests {
         assert_eq!((rows[0].key.as_str(), rows[0].subtitle.as_str()), ("cours/build", "depuis 4 min"));
         assert_eq!(rows[0].progress, Some(suite_sdk::mobile::ui::PROGRESS_UNKNOWN));
         assert!(rows[0].trailing.as_ref().is_some_and(|a| a.id == "arreter:build" && a.confirm.is_some()));
+        // … et confirmé aussi depuis le menu de la ligne.
+        let stop = rows[0].acts.iter().find(|a| a.id == "arreter:build");
+        assert_eq!(stop.and_then(|a| a.confirm.as_deref()), Some("Arrêter « Build du soir » ?"));
         // La boîte : l'état en glyphe, non lus marqués.
         assert_eq!((rows[1].badge.as_str(), rows[1].tone, rows[1].glyph.as_str()), ("non lu", Some(Tone::Danger), "✗"));
         assert_eq!(rows[1].subtitle, "échouée · aujourd'hui 08:00 · 0,50 $");
