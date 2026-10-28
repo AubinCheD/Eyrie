@@ -1,7 +1,7 @@
-//! Gringotts sur le téléphone : les limites en cours (5 h et semaine, par compte), le coût du jour, les conversations
-//! les plus coûteuses de la semaine, et le détail de chacune.
+//! Gringotts sur le téléphone : les limites en cours (5 h et semaine, un bandeau par compte, en alerte au-delà de
+//! 80 %), le coût du jour, les conversations les plus coûteuses de la semaine, et le détail de chacune.
 
-use suite_sdk::mobile::ui::{Act, Row, Screen, Tone};
+use suite_sdk::mobile::ui::{Act, Band, Row, Screen, Tone};
 
 use crate::analysis::{AccountInfo, ConvStats};
 use crate::readings::{self, Kind};
@@ -93,9 +93,18 @@ pub fn home(
         );
     }
     for a in accounts {
-        s.section(&a.label, format!("relevé {}", ago(a.last.t, now)));
+        let current = |kind| a.window(kind).filter(|w| w.resets_at > now);
+        let worst = Kind::ALL.into_iter().filter_map(|k| current(k).map(|w| w.pct)).fold(0.0, f64::max);
+        let mut band = Band::new(format!("compte/{}", a.key), &a.label)
+            .aside(format!("relevé {}", ago(a.last.t, now)))
+            .glyph("📊");
+        if worst >= 80.0 {
+            // Visible même plié.
+            band = band.badge(readings::pct_text(worst)).tone(tone(worst));
+        }
+        s.band(band);
         for kind in Kind::ALL {
-            let w = a.window(kind).filter(|w| w.resets_at > now);
+            let w = current(kind);
             let pct = w.map_or(0.0, |w| w.pct);
             let text = match w {
                 Some(w) => {
@@ -108,7 +117,7 @@ pub fn home(
             s.meter(label, (pct / 100.0) as f32, text, tone(pct));
         }
     }
-    s.section("Aujourd'hui", money(sum.today_cost));
+    s.band(Band::new("jour", "Aujourd'hui").aside(money(sum.today_cost)).glyph("💰"));
     let n = sum.today_convs;
     let convs_text = match n {
         0 => "aucune conversation".to_string(),
@@ -116,7 +125,7 @@ pub fn home(
         n => format!("{n} conversations"),
     };
     s.row(Row::new("Coût équivalent API").subtitle(convs_text).detail(money(sum.today_cost)).glyph("💰"));
-    s.section("Les plus coûteuses, 7 jours", sum.top.len().to_string());
+    s.band(Band::new("couteuses", "Les plus coûteuses, 7 jours").aside(sum.top.len().to_string()).glyph("🔥"));
     if sum.top.is_empty() {
         s.empty("Aucune conversation cette semaine.");
     }
@@ -126,7 +135,11 @@ pub fn home(
         if let Some(share) = share_text(st) {
             sub = format!("{sub} · {share}");
         }
-        let mut row = Row::new(title(c)).subtitle(sub).detail(money(st.cost)).open(format!("conv/{}", c.id));
+        let mut row = Row::new(title(c))
+            .key(format!("conv/{}", c.id))
+            .subtitle(sub)
+            .detail(money(st.cost))
+            .open(format!("conv/{}", c.id));
         if st.overflow > 0.0 {
             row = row.tone(Tone::Warn).badge("dépassement");
         }
@@ -183,7 +196,7 @@ pub fn conversation(c: &Conversation, st: Option<&ConvStats>, accounts: &[Accoun
 
 #[cfg(test)]
 mod tests {
-    use suite_sdk::mobile::ui::Block;
+    use suite_sdk::mobile::ui::{Block, Fold};
 
     use super::*;
     use crate::readings::{Reading, Window};
@@ -245,6 +258,23 @@ mod tests {
             })
             .collect();
         assert_eq!(meters, [(0.92, Tone::Warn), (0.0, Tone::Ok)], "semaine remise à zéro depuis le relevé : 0 %");
+        // Un bandeau par compte, en alerte au-delà de 80 % (le pourcentage se voit plié), puis le jour et la semaine.
+        let bands: Vec<(&str, Fold, &str, Option<Tone>)> = s
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::Section { key, fold, badge, tone, .. } => Some((key.as_str(), *fold, badge.as_str(), *tone)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            bands,
+            [
+                ("compte/u-1", Fold::Open, "92 %", Some(Tone::Warn)),
+                ("jour", Fold::Open, "", None),
+                ("couteuses", Fold::Open, "", None)
+            ]
+        );
         assert_eq!(s.action_ids().into_iter().collect::<Vec<_>>(), ["relire"]);
         assert_eq!(s.opens().into_iter().collect::<Vec<_>>(), ["conv/a", "conv/b"]);
         assert!(s.blocks.iter().any(|b| matches!(b, Block::Row(r) if r.title == "(sans titre)")));
