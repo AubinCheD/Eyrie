@@ -12,7 +12,8 @@ export struct PickCrumb {
 }
 
 // Une ligne du sélecteur. `kind` : 0 titre d'un groupe, 1 dossier, 2 « N de plus », 3 note (`tone` : 0 neutre,
-// 3 attention, 4 erreur), 4 dossiers cachés (les montrer ou les masquer). Un dossier : son icône dessinée, ou le glyphe
+// 3 attention, 4 erreur), 4 dossiers cachés (les montrer ou les masquer), 5 « Réessayer » (le PC a refusé avant de rien
+// montrer). Un dossier : son icône dessinée, ou le glyphe
 // d'un raccourci du module ; `tone` : la teinte de l'icône (0 neutre, 1 accent, 2 ok) ; `enabled` faux : accès refusé ;
 // `dim` : caché, ou déjà connu du module ; `pick` : un dépôt qui se choisit d'un toucher, sans l'ouvrir ; `first` et
 // `last` : sa carte.
@@ -481,6 +482,14 @@ export component FolderPicker inherits Rectangle {
                         clicked => {
                             root.haptic();
                             root.toggle-hidden();
+                        }
+                    }
+                    if r.kind == 5: LinkRow {
+                        text: r.title;
+                        busy: root.state.loading;
+                        clicked => {
+                            root.haptic();
+                            root.retry();
                         }
                     }
                 }

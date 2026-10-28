@@ -3,8 +3,10 @@
 //! le chemin choisi part comme la saisie de l'action, par le chemin habituel (confirmation, action en cours).
 //!
 //! Sans interface : le contrôleur le suit, lui donne les numéros de demande et l'affiche. Une réponse qui n'est pas
-//! celle de la dernière demande est ignorée ; un PC qui ne sait pas lister, ou qui refuse (droit « Dossiers du PC »
-//! coupé), fait passer au champ de texte.
+//! celle de la dernière demande est ignorée. Un refus du PC (une réponse qui n'est qu'une erreur, quel que soit le
+//! dossier qu'elle redit) se dit sur le dossier montré, qui reste ; avant que rien ne soit montré, le dossier de
+//! départ refusé ramène à la racine, et un refus à la racine (droit « Dossiers du PC » coupé, écran changé) se dit
+//! avec « Réessayer » et la saisie du chemin à la main.
 
 use suite_mobile::msg::{
     ENTRY_CLOUD, ENTRY_DENIED, ENTRY_DRIVE, ENTRY_HIDDEN, ENTRY_KNOWN, ENTRY_LINK, ENTRY_REPO, FolderEntry, Listing,
@@ -35,8 +37,16 @@ pub enum Answer {
     Shown,
     /// Le dossier de départ n'a pas pu être lu et rien n'est montré encore : la racine est à demander.
     Root,
-    /// Le PC ne liste pas ses dossiers (plus ancien) ou le refuse à ce téléphone : le champ de texte, avec ce message.
-    Text(String),
+}
+
+/// Une réponse qui n'est qu'une erreur : ni dossier, ni raccourci, ni choix, ni fil d'Ariane vers un dossier. Le PC y
+/// redit parfois le dossier demandé (`dir`), ou n'y met que la racine du fil (`« Ce PC »`, sans chemin).
+fn only_error(l: &Listing) -> bool {
+    !l.error.is_empty()
+        && l.entries.is_empty()
+        && l.groups.is_empty()
+        && l.choose.is_none()
+        && l.crumbs.iter().all(|(_, path)| path.is_empty())
 }
 
 pub struct Picker {
@@ -62,8 +72,9 @@ pub struct Picker {
     lost: Option<Ask>,
     /// La liaison a été coupée : au retour du PC, la demande perdue est refaite.
     offline: bool,
-    /// Une réponse a déjà été montrée : un refus ensuite se dit dans le sélecteur, sans passer au champ de texte.
-    answered: bool,
+    /// Le refus du PC quand rien n'est montré encore : dit à la place de la liste, avec « Réessayer » et la saisie du
+    /// chemin à la main.
+    refused: Option<String>,
 }
 
 impl Picker {
@@ -82,7 +93,7 @@ impl Picker {
             trouble: None,
             lost: None,
             offline: false,
-            answered: false,
+            refused: None,
         }
     }
 
@@ -115,6 +126,7 @@ impl Picker {
         self.trouble = None;
         self.lost = None;
         self.offline = false;
+        self.refused = None;
         m
     }
 
@@ -186,22 +198,21 @@ impl Picker {
             return Answer::Stale;
         }
         let Some(ask) = self.asked.take() else { return Answer::Stale };
-        let nothing = listing.dir.is_empty()
-            && listing.crumbs.is_empty()
-            && listing.groups.is_empty()
-            && listing.entries.is_empty();
-        if !listing.error.is_empty() && nothing {
-            if !self.answered {
-                // Le dossier de départ a disparu : la racine ; la racine refusée : le PC ne listera rien.
-                return if ask.dir.is_some() { Answer::Root } else { Answer::Text(listing.error) };
-            }
-            // Un refus plus tard (chemin saisi introuvable…) : dit sur le dossier montré, qui reste.
+        if only_error(&listing) {
+            // Un dossier montré (chemin saisi introuvable, zone protégée…) : le refus se dit sur lui, qui reste.
             if let Some(shown) = &mut self.listing {
                 shown.error = listing.error;
                 return Answer::Shown;
             }
+            // Le dossier de départ refusé (disparu, illisible) : la racine.
+            if ask.dir.is_some() && ask.dir == self.start() {
+                return Answer::Root;
+            }
+            // Rien à montrer : le refus, que « Réessayer » redemande.
+            self.refused = Some(listing.error);
+            self.lost = Some(ask);
+            return Answer::Shown;
         }
-        self.answered = true;
         // La page suivante du dossier montré : à la suite.
         if ask.offset > 0
             && let Some(shown) = &mut self.listing
@@ -244,6 +255,17 @@ impl Picker {
         (l.choose.is_some() && !l.dir.is_empty()).then(|| l.dir.clone())
     }
 
+    /// Le PC a refusé de lister avant que rien ne soit montré : son refus, et le bouton de choix mène à la saisie du
+    /// chemin à la main (droit « Dossiers du PC » coupé depuis l'accueil, par exemple).
+    pub fn refusal(&self) -> Option<&str> {
+        self.refused.as_deref().filter(|_| self.listing.is_none())
+    }
+
+    /// Rien n'est encore arrivé du PC : la liste attend sa première réponse.
+    pub fn first_load(&self) -> bool {
+        self.listing.is_none() && self.refused.is_none()
+    }
+
     fn known(&self, e: &FolderEntry) -> bool {
         e.flags & ENTRY_KNOWN != 0 || self.spec.known.iter().any(|k| same_path(k, &e.path))
     }
@@ -278,6 +300,9 @@ impl Picker {
 
     /// Le bouton de choix : son libellé, s'il est possible, et sinon pourquoi (ou que faire).
     pub fn choice(&self) -> (String, bool, String) {
+        if self.refusal().is_some() {
+            return ("Saisir le chemin".into(), true, "Ou saisissez le chemin du dossier à la main.".into());
+        }
         let l = self.listing.as_ref();
         let label = l.and_then(|l| l.choose.clone()).unwrap_or_else(|| "Choisir ce dossier".into());
         let can = self.chosen().is_some();
@@ -291,10 +316,19 @@ impl Picker {
     }
 
     /// Les lignes de la liste : à la racine, les raccourcis du module puis les groupes du PC ; dans un dossier, ses
-    /// sous-dossiers, « N de plus » et les dossiers cachés. Une erreur du PC est dite en tête.
+    /// sous-dossiers, « N de plus » et les dossiers cachés. Une erreur du PC est dite en tête ; un refus avant toute
+    /// liste, avec « Réessayer ».
     pub fn rows(&self) -> Vec<PickRow> {
         let mut out = Vec::new();
-        let Some(l) = &self.listing else { return out };
+        let Some(l) = &self.listing else {
+            if let Some(why) = self.refusal() {
+                out.push(note("erreur", why, 4));
+                out.push(PickRow {
+                    kind: 5, key: "reessayer".into(), title: "Réessayer".into(), ..Default::default()
+                });
+            }
+            return out;
+        };
         if !l.error.is_empty() {
             out.push(note("erreur", &l.error, 4));
         }
@@ -525,36 +559,93 @@ mod tests {
         assert!(p.more(4).is_none(), "tout est là");
     }
 
-    /// Un PC qui ne liste pas ses dossiers (plus ancien), ou qui le refuse à ce téléphone, fait passer au champ de
-    /// texte avec son message ; un dossier de départ illisible ramène d'abord à la racine. Une fois un dossier montré,
-    /// un refus se dit dans le sélecteur.
+    /// Les refus tels que le pont les envoie : `browse::refused(dir, raison)`, qui redit le dossier demandé…
+    fn refused(dir: Option<&str>, why: &str) -> Listing {
+        Listing { dir: dir.unwrap_or_default().into(), error: why.into(), ..Default::default() }
+    }
+
+    /// … et un chemin introuvable ou protégé : le texte demandé, et la seule racine (« Ce PC ») dans le fil.
+    fn unreachable(text: &str, why: &str) -> Listing {
+        Listing {
+            dir: text.into(),
+            title: text.rsplit('\\').next().unwrap_or_default().into(),
+            crumbs: vec![("Ce PC".into(), String::new())],
+            error: why.into(),
+            ..Default::default()
+        }
+    }
+
+    /// Le dossier de départ refusé, sous l'une ou l'autre forme, ramène à la racine.
     #[test]
-    fn a_pc_that_cannot_list_falls_back_to_the_text_field() {
-        let refused = |text: &str| Listing { error: text.into(), ..Default::default() };
-        let mut p = picker(FOLDER_ANY);
-        p.browse(1, None);
-        assert_eq!(
-            p.answer(1, refused("Ce PC ne sait pas encore lister ses dossiers.")),
-            Answer::Text("Ce PC ne sait pas encore lister ses dossiers.".into())
-        );
+    fn a_refused_start_folder_opens_the_root() {
+        let gone = unreachable(r"C:\DEV\clones", "Ce dossier n'existe pas.");
+        for no in [gone, refused(Some(r"C:\DEV\clones"), "Cet écran a changé entre-temps : réessayez.")] {
+            let mut p = picker(FOLDER_PARENT);
+            p.spec.start = r"C:\DEV\clones".into();
+            let first = p.browse(1, p.start().as_deref());
+            assert_eq!(browse_req(&first).1.as_deref(), Some(r"C:\DEV\clones"));
+            assert_eq!(p.answer(1, no), Answer::Root);
+            assert_eq!(browse_req(&p.browse(2, None)).1, None);
+            assert_eq!(p.answer(2, Listing { title: "Ce PC".into(), ..Default::default() }), Answer::Shown);
+        }
+    }
 
-        let mut p = picker(FOLDER_ANY);
-        p.spec.start = r"C:\DEV\parti".into();
-        let first = p.browse(1, p.start().as_deref());
-        assert_eq!(browse_req(&first).1.as_deref(), Some(r"C:\DEV\parti"));
-        assert_eq!(p.answer(1, refused("Dossier introuvable")), Answer::Root);
-        p.browse(2, None);
-        assert_eq!(
-            p.answer(2, refused("Droit « Dossiers du PC » coupé")),
-            Answer::Text("Droit « Dossiers du PC » coupé".into())
-        );
-
+    /// Un dossier montré, un chemin saisi introuvable ou un dossier protégé : le refus se dit en tête, le dossier montré
+    /// reste. Un dossier qui existe mais ne se lit pas (son fil d'Ariane est là) se montre, avec son erreur.
+    #[test]
+    fn a_later_refusal_keeps_the_folder_shown() {
         let mut p = picker(FOLDER_ANY);
         p.browse(1, Some(r"C:\DEV"));
         p.answer(1, listing(r"C:\DEV", &[("Eyrie", 0)]));
         p.browse(2, Some(r"C:\nulle\part"));
-        assert_eq!(p.answer(2, refused("C:\\nulle\\part : introuvable")), Answer::Shown);
-        assert_eq!(titles(&p), ["C:\\nulle\\part : introuvable", "Eyrie"], "le dossier montré reste");
+        assert_eq!(p.answer(2, unreachable(r"C:\nulle\part", "Ce dossier n'existe pas.")), Answer::Shown);
+        assert_eq!(titles(&p), ["Ce dossier n'existe pas.", "Eyrie"], "le dossier montré reste");
+        assert_eq!(p.listing.as_ref().map(|l| l.dir.as_str()), Some(r"C:\DEV"));
+        assert_eq!(p.crumbs().last().map(|c| c.label.to_string()).as_deref(), Some("DEV"));
+        p.browse(3, Some(r"C:\Windows\System32\config"));
+        assert_eq!(p.answer(3, refused(Some(r"C:\Windows\System32\config"), "Zone protégée.")), Answer::Shown);
+        assert_eq!(titles(&p), ["Zone protégée.", "Eyrie"]);
+
+        p.browse(4, Some(r"C:\DEV\Eyrie"));
+        let mut locked = listing(r"C:\DEV\Eyrie", &[]);
+        locked.error = "Accès refusé à ce dossier.".into();
+        assert_eq!(p.answer(4, locked), Answer::Shown);
+        assert_eq!(
+            p.listing.as_ref().map(|l| l.dir.as_str()),
+            Some(r"C:\DEV\Eyrie"),
+            "on y est, on remonte d'un toucher"
+        );
+    }
+
+    /// Rien de montré encore, et le PC refuse (droit coupé depuis l'accueil, écran changé) : le refus se dit, avec
+    /// « Réessayer », qui redemande la même chose, et la saisie du chemin à la main à la place du choix. Un chemin saisi
+    /// refusé avant toute liste se dit de même, sans passer par la racine.
+    #[test]
+    fn a_refusal_before_any_listing_offers_retry_and_typing() {
+        let mut p = picker(FOLDER_ANY);
+        p.browse(1, None);
+        let why = "Ce téléphone n'a pas le droit de parcourir les dossiers du PC (réglage du PC).";
+        assert_eq!(p.answer(1, refused(None, why)), Answer::Shown);
+        assert_eq!(p.refusal(), Some(why));
+        assert_eq!(titles(&p), [why, "Réessayer"]);
+        assert_eq!(p.rows()[1].kind, 5);
+        assert_eq!(
+            p.choice(),
+            ("Saisir le chemin".into(), true, "Ou saisissez le chemin du dossier à la main.".into())
+        );
+        assert!(!p.first_load(), "pas d'attente montrée");
+        let again = p.again(2);
+        assert_eq!(browse_req(&again).1, None, "« Réessayer » : la racine de nouveau");
+        assert!(p.first_load() && p.refusal().is_none());
+        p.answer(2, Listing { title: "Ce PC".into(), ..Default::default() });
+        assert_eq!(p.refusal(), None);
+        assert_eq!(p.choice().0, "Choisir ce dossier");
+
+        let mut p = picker(FOLDER_ANY);
+        p.browse(1, Some(r"C:\nulle\part"));
+        assert_eq!(p.answer(1, unreachable(r"C:\nulle\part", "Ce dossier n'existe pas.")), Answer::Shown);
+        assert_eq!(p.refusal(), Some("Ce dossier n'existe pas."));
+        assert_eq!(browse_req(&p.again(2)).1.as_deref(), Some(r"C:\nulle\part"));
     }
 
     /// Une coupure perd la demande en cours : elle est dite, et refaite au retour du PC.

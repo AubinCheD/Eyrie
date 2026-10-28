@@ -1698,7 +1698,8 @@ impl Controller {
     // --- Le sélecteur de dossiers du PC ---
 
     /// Une action qui demande un dossier du PC : le sélecteur, ouvert là où le module le veut ; le champ de texte si
-    /// ce téléphone n'a pas le droit de parcourir les dossiers du PC.
+    /// ce téléphone n'a pas le droit de parcourir les dossiers du PC ; rien sans le droit d'agir (le PC refuserait
+    /// l'action, avec ce même message).
     pub(crate) fn open_folder(&mut self, a: &UiAct) {
         if !self.nav.is_module_tab() || a.busy {
             return;
@@ -1709,6 +1710,11 @@ impl Controller {
         let Some(spec) = spec else {
             return self.ask_text(a, "");
         };
+        if !self.rights.act {
+            self.toast("Ce téléphone n'a plus le droit d'agir (réglage du PC).", 4);
+            haptic_error();
+            return;
+        }
         if !self.rights.files {
             return self.ask_text(
                 a,
@@ -1757,16 +1763,11 @@ impl Controller {
     }
 
     fn on_folder(&mut self, req: u32, listing: Listing) {
-        let Some((p, a)) = &mut self.picker else { return };
+        let Some((p, _)) = &mut self.picker else { return };
         match p.answer(req, listing) {
             Answer::Stale => {}
             Answer::Shown => self.refresh_picker(),
             Answer::Root => self.picker_ask(|p, req| Some(p.browse(req, None))),
-            Answer::Text(why) => {
-                let a = a.clone();
-                self.close_picker();
-                self.ask_text(&a, &format!("{} : saisissez le chemin.", why.trim_end_matches('.')));
-            }
         }
     }
 
@@ -1838,10 +1839,16 @@ impl Controller {
         }
     }
 
-    /// « Choisir ce dossier » : le dossier montré.
-    fn picker_choose(&mut self) {
-        if let Some(dir) = self.picker.as_ref().and_then(|(p, _)| p.chosen()) {
-            self.picker_done(dir);
+    /// « Choisir ce dossier » : le dossier montré ; le PC a refusé de lister : le chemin saisi à la main.
+    pub(crate) fn picker_choose(&mut self) {
+        let Some((p, a)) = &self.picker else { return };
+        if let Some(dir) = p.chosen() {
+            return self.picker_done(dir);
+        }
+        if let Some(why) = p.refusal() {
+            let (a, why) = (a.clone(), why.to_string());
+            self.close_picker();
+            self.ask_text(&a, &why);
         }
     }
 
@@ -1883,7 +1890,7 @@ impl Controller {
             subtitle: format!("Dossiers de {}", self.pc_label()).into(),
             dir: l.map(|l| l.dir.as_str()).unwrap_or_default().into(),
             loading: p.asked.is_some(),
-            first_load: l.is_none(),
+            first_load: p.first_load(),
             trouble: p.trouble.clone().unwrap_or_default().into(),
             choose_label: choose_label.into(),
             can_choose,

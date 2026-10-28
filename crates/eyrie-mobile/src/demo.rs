@@ -4,7 +4,8 @@
 //! `commandes`, `accueil-tailscale`, `code`, `appairage`, `hors-ligne`, `lien` (l'écran d'un autre module) ; le
 //! sélecteur de dossiers du PC : `dossiers` (un dossier quelconque, une page sur plusieurs), `dossiers-racine`,
 //! `dossiers-depot` (un dépôt existant), `dossiers-clone` et `dossiers-clone-pris` (où cloner), `dossiers-erreur`,
-//! `dossiers-attente`, `dossiers-silence`, `dossiers-texte` (un PC qui ne liste pas) ; le PC sans Eyrie (voir
+//! `dossiers-attente`, `dossiers-silence`, `dossiers-refus` (le PC refuse de lister), `dossiers-texte` (puis le
+//! chemin saisi à la main) ; le PC sans Eyrie (voir
 //! `veilleur.rs`) : `fermee` (« Démarrer Eyrie »), `fermee-par-pc` (elle vient de se fermer), `fermee-sans-cle`,
 //! `demarrage`, `acces-coupe`, `refus-demarrage`, `preuve-refusee`, `injoignable`, `telephone-hors-ligne` ; le
 //! terminal : `terminal-ctrl` (Ctrl collé), `terminal-copie` (le texte à copier), `terminal-coller` (un collage de
@@ -524,8 +525,12 @@ fn folders(scene: &str, feed: &dyn Fn(ToPhone)) {
                 why_not: "Ce dossier n'est pas un dépôt git.".into(),
                 ..Default::default()
             });
+            // Comme le pont : le chemin demandé, la seule racine dans le fil, et l'erreur.
             with(|c| c.picker_go(r"C:\Users\aubin\AppData"));
             answer(Listing {
+                dir: r"C:\Users\aubin\AppData".into(),
+                title: "AppData".into(),
+                crumbs: vec![("Ce PC".into(), String::new())],
                 error: r"C:\Users\aubin\AppData : zone protégée, elle ne se parcourt pas depuis le téléphone.".into(),
                 ..Default::default()
             });
@@ -535,10 +540,17 @@ fn folders(scene: &str, feed: &dyn Fn(ToPhone)) {
             open("dragontree", "", &add_act());
             with(|c| c.demo_folder(None));
         }
-        // Un PC qui ne sait pas lister ses dossiers : le champ de texte, avec son message.
-        "dossiers-texte" => {
+        // Le PC refuse de lister (le droit « Dossiers du PC » coupé depuis l'accueil) : son refus, « Réessayer », et le
+        // chemin à saisir à la main ; puis le champ de texte.
+        "dossiers-refus" | "dossiers-texte" => {
             open("dragontree", "", &add_act());
-            answer(Listing { error: "Ce PC ne sait pas encore lister ses dossiers.".into(), ..Default::default() });
+            answer(Listing {
+                error: "Ce téléphone n'a pas le droit de parcourir les dossiers du PC (réglage du PC).".into(),
+                ..Default::default()
+            });
+            if scene == "dossiers-texte" {
+                with(|c| c.picker_choose());
+            }
         }
         _ => {}
     }
