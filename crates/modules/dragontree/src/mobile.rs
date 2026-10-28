@@ -757,9 +757,10 @@ impl Phone {
     }
 
     /// Ajoute à DragonTree le dépôt du dossier `input` (choisi sur le PC dans le sélecteur du téléphone, contrôlé par
-    /// [`check_repo_dir`]) et l'ouvre sur le téléphone. Comme « Ouvrir un dépôt… » sur le PC : DragonTree l'affiche
-    /// et le retient (dans la liste aussitôt, en mémoire). Déjà dans la liste (sous une autre forme du même chemin,
-    /// peut-être) : le téléphone l'ouvre.
+    /// [`check_repo_dir`]) et l'ouvre sur le téléphone. DragonTree vérifie que git l'ouvre, l'ouvre dans un onglet de
+    /// fond (l'onglet affiché sur le PC ne change pas) et le retient parmi ses récents (`add_repo` : dans la liste
+    /// aussitôt, en mémoire) ; cet onglet est celui du téléphone. Déjà dans la liste (sous une autre forme du même
+    /// chemin, peut-être) : le téléphone l'ouvre.
     fn add(&mut self, app: &mut DragonTreeApp, input: Option<&str>) -> Result<(String, bool), String> {
         let raw = input.map(str::trim).filter(|t| !t.is_empty()).ok_or("Aucun dossier choisi.")?;
         let dir = check_repo_dir(Path::new(raw), &self.forbidden)?;
@@ -767,8 +768,12 @@ impl Phone {
         if let Some(known) = self.repos(app).into_iter().find(|r| long_path_key(&r.path) == long) {
             return Ok((format!("{OPEN_PREFIX}depot/{}", repo_key(&known.path)), false));
         }
-        app.show_repo(&dir);
-        Ok((format!("{OPEN_PREFIX}depot/{}", repo_key(&dir)), false))
+        let path = app
+            .add_repo(&dir)
+            .map_err(|e| format!("DragonTree n'ouvre pas {} : {}", dir.display(), short_error(&e)))?;
+        let key = repo_key(&path);
+        self.opened.insert(key.clone());
+        Ok((format!("{OPEN_PREFIX}depot/{key}"), false))
     }
 
     /// Le dépôt regardé est ouvert dans un onglet de DragonTree (en fond) et devient son foyer distant : relu comme
@@ -1268,9 +1273,9 @@ mod tests {
         }
     }
 
-    /// Un dépôt ajouté depuis le téléphone l'est par DragonTree (affiché sur le PC, comme « Ouvrir un dépôt… »), entre
-    /// tout de suite dans la liste, et le téléphone l'ouvre. Un dossier qui n'est pas un dépôt, un chemin relatif ou
-    /// réseau, un dossier protégé (même par une jonction) sont refusés.
+    /// Un dépôt ajouté depuis le téléphone l'est par DragonTree, dans un onglet de fond (l'onglet du PC ne change pas),
+    /// retenu parmi ses récents ; il entre tout de suite dans la liste, et le téléphone l'ouvre. Un dossier qui n'est
+    /// pas un dépôt, un chemin relatif ou réseau, un dossier protégé (même par une jonction) sont refusés.
     #[test]
     fn an_existing_repo_is_added_by_dragontree_and_opened() {
         let Ok(git) = Git::discover() else { return };
@@ -1307,8 +1312,11 @@ mod tests {
         }
         let (open, show) = phone.action(h.state_mut(), "", "ajouter", Some(&repo.display().to_string())).unwrap();
         assert_eq!((open.as_str(), show), (format!("{OPEN_PREFIX}depot/{key}").as_str(), false));
-        let shown = h.state().active_repo_dir().map(long_path_key);
-        assert_eq!(shown, Some(long_path_key(&repo)), "affiché par DragonTree");
+        assert!(h.state().repo_tab(&resolved(&repo).unwrap()).is_some(), "ouvert par DragonTree");
+        assert!(h.state().active_repo_dir().is_none(), "en fond : l'onglet du PC ne change pas");
+        let recent = h.state().repo_directory().recent.first().map(|p| long_path_key(p));
+        assert_eq!(recent, Some(long_path_key(&repo)), "retenu parmi ses récents");
+        assert!(phone.opened.contains(&key), "un onglet du téléphone");
         if linked {
             // Par la jonction : le même dépôt, déjà dans la liste.
             let (again, _) = phone.action(h.state_mut(), "", "ajouter", Some(&link.display().to_string())).unwrap();
@@ -1316,6 +1324,7 @@ mod tests {
         }
         let home = phone.screen(h.state_mut(), "").unwrap();
         assert!(home.opens().contains(&format!("depot/{key}")), "dans la liste tout de suite : {home:?}");
+        assert_eq!(band_of(&home, &key), Some("Récents".into()), "{home:?}");
         let s = wait_screen(&mut h, &mut phone, &format!("depot/{key}"), "lisez-moi.txt");
         assert!(format!("{s:?}").contains("lisez-moi.txt"), "{s:?}");
         drop(h);
