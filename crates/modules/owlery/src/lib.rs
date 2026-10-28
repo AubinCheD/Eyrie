@@ -8,7 +8,8 @@
 //! - **notifications** : dans le centre de notifications de la suite (une seule icône) ;
 //! - **Fawkes** : `ouvrir` passe par le bus de la suite, en appel Rust, au Fawkes de la suite ;
 //! - même verrou, même `state.lock` et même canal nommé que `owlery.exe` (`afficher`, `etat`) ;
-//! - **téléphone** (`mobile`) : la boîte de réception lue sur le disque, actualiser par le canal des demandes.
+//! - **téléphone** (`mobile`) : la boîte de réception en direct, groupée comme sur le PC ; actualiser par le canal
+//!   des demandes.
 
 pub mod mobile;
 
