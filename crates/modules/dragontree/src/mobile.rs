@@ -20,6 +20,7 @@
 //! liste change d'ordre.
 
 use std::collections::{HashMap, HashSet};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
@@ -30,7 +31,7 @@ use dragontree_app::settings::{Settings, path_key};
 use dragontree_git::discovery::{FoundRepo, repo_head};
 use dragontree_git::{
     CancelToken, Commit, CommitInfo, DiffOptions, FileChange, FileState, Git, GraphLayout, HeadState, LogOptions,
-    LogOrder, LogScope, Oid, RefsSnapshot, Repo, StatusEntry, StatusSnapshot,
+    LogOrder, LogScope, Oid, Repo, StatusEntry, StatusSnapshot,
 };
 use suite_sdk::mobile::msg::OPEN_PREFIX;
 use suite_sdk::mobile::ui::{Act, Block, FOLDER_REPO, FolderInput, GraphCell, PROGRESS_UNKNOWN, Place, Screen, Tone};
@@ -176,9 +177,6 @@ fn scope_text(t: &RepoTab, settings: &Settings) -> String {
 struct Reads {
     /// Le relevé d'état de DragonTree sur lequel le dernier message et les diffs du dossier de travail ont été lus.
     status_seen: usize,
-    /// Les branches lues par DragonTree sur lesquelles les historiques ont été lus (gardées : leur adresse ne peut
-    /// pas resservir à d'autres).
-    refs_seen: Option<Arc<RefsSnapshot>>,
     last_message: Option<String>,
     /// Commit (identifiant complet) → ses informations et ses fichiers.
     commits: HashMap<String, Result<(CommitInfo, Vec<FileChange>), String>>,
@@ -190,8 +188,8 @@ struct Reads {
     tips: Option<Result<Arc<HashMap<Oid, Commit>>, String>>,
     /// Branche locale (`refs/heads/x`) → ses commits à pousser et à tirer.
     pending: HashMap<String, branches::Pending>,
-    /// Lecture → quand elle a été faite ; en cours : absente de `loaded`, présente dans `loading`.
-    loaded: HashMap<String, Instant>,
+    /// Lecture → quand elle a été faite, et sur quoi ([`Load::stamp`]) ; en cours : présente dans `loading`.
+    loaded: HashMap<String, (Instant, u64)>,
     loading: HashSet<String>,
 }
 
@@ -212,18 +210,20 @@ enum Load {
     /// Diff d'un fichier d'un commit.
     CommitDiff(String, String),
     /// Les `count` derniers commits d'une révision et leur graphe ; `topo` : dans l'ordre topologique (réglage de
-    /// DragonTree).
+    /// DragonTree) ; `tip` : le commit où elle est, d'après DragonTree.
     Log {
         rev: String,
         count: usize,
         topo: bool,
+        tip: Option<Oid>,
     },
-    /// Les commits pointés par les branches et les étiquettes.
+    /// Les commits pointés par les branches et les étiquettes (triés, sans doublon).
     Tips(Vec<Oid>),
-    /// Ce qu'une branche locale a à pousser vers sa branche suivie, et à en tirer.
+    /// Ce qu'une branche locale a à pousser vers sa branche suivie, et à en tirer ; `tips` : où elles sont.
     Pending {
         local: String,
         upstream: String,
+        tips: (Oid, Oid),
     },
 }
 
@@ -243,7 +243,8 @@ impl Load {
     fn every(&self) -> Option<Duration> {
         match self {
             Load::WorkDiff(..) => Some(DIFF_EVERY),
-            // Relus quand l'état ou les branches lus par DragonTree changent ; un commit ne change pas.
+            // Relus quand l'état lu par DragonTree change, ou quand leurs pointes bougent (`stamp`) ; un commit ne
+            // change pas.
             Load::LastMessage
             | Load::Commit(_)
             | Load::CommitDiff(..)
@@ -251,6 +252,20 @@ impl Load {
             | Load::Tips(_)
             | Load::Pending { .. } => None,
         }
+    }
+
+    /// Ce sur quoi la lecture est faite : les pointes qu'elle parcourt (et l'ordre d'un historique). Une lecture faite
+    /// sur d'autres est périmée ; tant qu'elles ne bougent pas, elle ne l'est pas, même quand DragonTree relit ses
+    /// branches (toutes les 20 s pour un dépôt regardé).
+    fn stamp(&self) -> u64 {
+        let mut h = DefaultHasher::new();
+        match self {
+            Load::Log { tip, topo, .. } => (tip, topo).hash(&mut h),
+            Load::Tips(oids) => oids.hash(&mut h),
+            Load::Pending { tips, .. } => tips.hash(&mut h),
+            Load::LastMessage | Load::Commit(_) | Load::WorkDiff(..) | Load::CommitDiff(..) => {}
+        }
+        h.finish()
     }
 }
 
@@ -305,7 +320,7 @@ fn read(repo: &Repo, what: &Load, known: Option<&(CommitInfo, Vec<FileChange>)>,
             });
             r.diffs.insert(format!("c:{id}:{f}"), res);
         }
-        Load::Log { rev, count, topo } => {
+        Load::Log { rev, count, topo, .. } => {
             // `rev` vient des branches lues par DragonTree (`HEAD`, `refs/…`) : jamais une option de git.
             let opts = LogOptions {
                 scope: LogScope::Revs(vec![rev.clone()]),
@@ -320,7 +335,7 @@ fn read(repo: &Repo, what: &Load, known: Option<&(CommitInfo, Vec<FileChange>)>,
             let res = repo.commits_of(oids, &CancelToken::new()).map_err(|e| e.to_string());
             r.tips = Some(res.map(|list| Arc::new(list.into_iter().map(|c| (c.id, c)).collect())));
         }
-        Load::Pending { local, upstream } => {
+        Load::Pending { local, upstream, .. } => {
             // Des noms complets lus par DragonTree (`refs/…`) : jamais une option de git.
             let log = |from: &str, not: &str| {
                 let opts = LogOptions {
@@ -683,10 +698,13 @@ impl Phone {
 
     /// Lit `what` pour le dépôt `key` dans un fil, s'il est dû.
     fn want(&self, key: &str, repo: &Arc<Repo>, what: Load) {
-        let k = what.key();
+        let (k, stamp) = (what.key(), what.stamp());
         let mut all = lock(&self.reads);
         let r = all.entry(key.to_string()).or_default();
-        let fresh = r.loaded.get(&k).is_some_and(|t| what.every().is_none_or(|every| t.elapsed() < every));
+        let fresh = r
+            .loaded
+            .get(&k)
+            .is_some_and(|(t, on)| *on == stamp && what.every().is_none_or(|every| t.elapsed() < every));
         if fresh || r.loading.contains(&k) {
             return;
         }
@@ -707,7 +725,7 @@ impl Phone {
             let mut all = lock(&reads);
             let r = all.entry(key).or_default();
             r.loading.remove(&k);
-            r.loaded.insert(k, Instant::now());
+            r.loaded.insert(k, (Instant::now(), stamp));
             if fresh.last_message.is_some() {
                 r.last_message = fresh.last_message;
             }
@@ -721,8 +739,9 @@ impl Phone {
         });
     }
 
-    /// Ce que DragonTree a relu de nouveau rend périmés le dernier message et les diffs du dossier de travail (son
-    /// état), les historiques (ses branches) : ils seront relus, les anciens restant montrés d'ici là.
+    /// L'état que DragonTree a relu rend périmés le dernier message et les diffs du dossier de travail : ils seront
+    /// relus, les anciens restant montrés d'ici là. (Les historiques et les pointes le sont quand leurs pointes
+    /// bougent : [`Load::stamp`].)
     fn follow(&self, key: &str, t: &RepoTab) {
         let mut all = lock(&self.reads);
         let r = all.entry(key.to_string()).or_default();
@@ -730,10 +749,6 @@ impl Phone {
         if r.status_seen != status {
             r.status_seen = status;
             r.loaded.retain(|k, _| k != "message" && !k.starts_with("w:"));
-        }
-        if !r.refs_seen.as_ref().is_some_and(|seen| t.refs.as_ref().is_some_and(|now| Arc::ptr_eq(seen, now))) {
-            r.refs_seen = t.refs.clone();
-            r.loaded.retain(|k, _| !k.starts_with("log:") && k != "tips" && !k.starts_with("pending:"));
         }
     }
 
@@ -874,7 +889,8 @@ impl Phone {
                 }
                 ["historique"] => {
                     let topo = self.settings.topological_order;
-                    self.want(key, handle, Load::Log { rev: "HEAD".into(), count, topo });
+                    let tip = t.refs.as_ref().and_then(|r| r.head_oid).or(t.status.as_ref().and_then(|s| s.head_oid));
+                    self.want(key, handle, Load::Log { rev: "HEAD".into(), count, topo, tip });
                 }
                 _ => {}
             }
@@ -888,12 +904,13 @@ impl Phone {
                 && let Some(branch) = branches::find(refs, b)
             {
                 let topo = self.settings.topological_order;
-                self.want(key, handle, Load::Log { rev: branch.full(), count, topo });
+                self.want(key, handle, Load::Log { rev: branch.full(), count, topo, tip: Some(branch.oid()) });
                 if let branches::Branch::Local(l) = branch
                     && (l.ahead > 0 || l.behind > 0)
-                    && let Some(upstream) = branches::upstream_ref(refs, l)
+                    && let Some((upstream, at)) = branches::upstream_ref(refs, l)
                 {
-                    self.want(key, handle, Load::Pending { local: branch.full(), upstream });
+                    let tips = (l.oid, at);
+                    self.want(key, handle, Load::Pending { local: branch.full(), upstream, tips });
                 }
             }
         }
@@ -1512,6 +1529,38 @@ mod tests {
         assert_eq!(open, format!("{OPEN_PREFIX}{renamed}"));
         let d = wait_screen(&mut h, &mut phone, &renamed, "Premier commit");
         assert_eq!(d.title, "autre2", "{d:?}");
+
+        // DragonTree relit ses branches (toutes les 20 s pour un dépôt regardé) : tant qu'elles n'ont pas bougé,
+        // l'historique lu à part ne l'est pas de nouveau ; un commit de plus, il l'est.
+        let log = format!("log:HEAD:{}", depot::PAGE);
+        let read_at = |phone: &Phone| {
+            let all = lock(&phone.reads);
+            (all[&key].loaded.get(&log).map(|(at, _)| *at), all[&key].loading.contains(&log))
+        };
+        let reread = |h: &mut H| {
+            let old = h.state().repo_tab(&repo).and_then(|t| t.refs.clone());
+            h.state_mut().refresh_repo(&repo, Refresh::REFS.with_extras());
+            let same = |h: &H| {
+                let now = h.state().repo_tab(&repo).and_then(|t| t.refs.clone());
+                now.zip(old.clone()).is_some_and(|(a, b)| Arc::ptr_eq(&a, &b))
+            };
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while same(h) && Instant::now() < deadline {
+                h.step();
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            assert!(!same(h), "DragonTree a relu ses branches");
+        };
+        wait_screen(&mut h, &mut phone, &format!("{base}/historique"), "Second commit");
+        let before = read_at(&phone);
+        assert!(before.0.is_some(), "lu");
+        reread(&mut h);
+        phone.screen(h.state_mut(), &format!("{base}/historique")).unwrap();
+        assert_eq!(read_at(&phone), before, "pas relu : ses pointes n'ont pas bougé");
+        sh(&["commit", "-q", "--allow-empty", "-m", "Troisième commit"]);
+        reread(&mut h);
+        let s = wait_screen(&mut h, &mut phone, &format!("{base}/historique"), "Troisième commit");
+        assert!(format!("{s:?}").contains("Troisième commit"), "relu : HEAD a bougé");
         drop(h);
         let _ = std::fs::remove_dir_all(&dir);
     }

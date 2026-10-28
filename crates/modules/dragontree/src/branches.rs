@@ -108,21 +108,21 @@ pub fn find<'a>(refs: &'a RefsSnapshot, key: &str) -> Option<Branch<'a>> {
     all(refs).find(|b| b.key() == key)
 }
 
-/// Les commits pointés par les branches et les étiquettes : ceux dont la date est à lire.
+/// Les commits pointés par les branches et les étiquettes (triés, sans doublon) : ceux dont la date est à lire.
 pub fn tip_oids(refs: &RefsSnapshot) -> Vec<Oid> {
     let mut oids: Vec<Oid> = all(refs).map(|b| b.oid()).chain(refs.tags.iter().map(|t| t.oid)).collect();
-    oids.sort_unstable_by_key(|o| o.to_hex());
+    oids.sort_unstable();
     oids.dedup();
     oids
 }
 
-/// Le nom complet de la branche suivie par `local` (`origin/x` → `refs/remotes/origin/x`, une locale → `refs/heads/…`).
-pub fn upstream_ref(refs: &RefsSnapshot, local: &LocalBranch) -> Option<String> {
+/// Le nom complet de la branche suivie par `local` (`origin/x` → `refs/remotes/origin/x`, une locale → `refs/heads/…`),
+/// et le commit où elle est.
+pub fn upstream_ref(refs: &RefsSnapshot, local: &LocalBranch) -> Option<(String, Oid)> {
     let u = local.upstream.as_deref().filter(|_| !local.upstream_gone)?;
-    if refs.remotes.iter().any(|r| r.full == u) {
-        Some(format!("refs/remotes/{u}"))
-    } else {
-        refs.local(u).map(|b| format!("refs/heads/{}", b.name))
+    match refs.remotes.iter().find(|r| r.full == u) {
+        Some(r) => Some((format!("refs/remotes/{u}"), r.oid)),
+        None => refs.local(u).map(|b| (format!("refs/heads/{}", b.name), b.oid)),
     }
 }
 
