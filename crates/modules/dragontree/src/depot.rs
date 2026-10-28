@@ -4,7 +4,8 @@
 //! quel, `base` est `depot/<clé>`). Quatre onglets, entre lesquels on passe sans empiler :
 //! - **État** (`depot/<clé>`) : opération en cours (fusion, rebase…) à poursuivre ou abandonner, branche et suivi,
 //!   fetch, pull, push, et les modifications (conflits, indexé, non indexé ; les 30 premières, puis « Tout voir ») ;
-//! - **Historique** (`historique`) : les derniers commits ;
+//! - **Historique** (`historique`, `historique/tout` : `historique.rs`) : celui de la branche courante, ou le graphe
+//!   de DragonTree, avec le graphe des commits ;
 //! - **Branches** (`branches`) : basculer, fusionner, rebaser, pousser, renommer, supprimer, nouvelle branche, suivre
 //!   une branche distante ;
 //! - **Plus** (`plus`) : remises (appliquer, appliquer et retirer, jeter), étiquettes (les plus récentes ; toutes dans
@@ -27,13 +28,13 @@ use std::sync::Arc;
 
 use dragontree_app::repo::RemoteOp;
 use dragontree_git::{
-    ChangeKind, Commit, CommitInfo, FileChange, FileDiff, FileState, LineKind, Oid, OpState, RefsSnapshot, Remote,
-    ResetMode, StashEntry, StatusEntry, StatusSnapshot, TagRef, Worktree,
+    ChangeKind, CommitInfo, FileChange, FileDiff, FileState, LineKind, Oid, OpState, RefsSnapshot, Remote, ResetMode,
+    StashEntry, StatusEntry, StatusSnapshot, TagRef, Worktree,
 };
 use suite_sdk::mobile::ui::{Act, Band, DIFF_ADDED, DIFF_CONTEXT, DIFF_HEADER, DIFF_REMOVED, Row, Screen, Tab, Tone};
 
-/// Commits montrés dans l'historique.
-pub const LOG_COUNT: usize = 60;
+use crate::historique::LogView;
+
 /// Une liste par pages (étiquettes, historique, branches) : sa première page, et ce que « plus » ajoute.
 pub const PAGE: usize = 100;
 /// … et jusqu'où « plus » va.
@@ -81,7 +82,8 @@ pub struct RepoView {
     pub auth_error: Option<String>,
     /// DragonTree n'a toujours pas lu le dépôt après un long moment.
     pub slow: bool,
-    pub log: Option<Result<Vec<Commit>, String>>,
+    /// L'historique montré (`None` : pas encore lu).
+    pub log: Option<Result<LogView, String>>,
     /// Date (secondes) des commits pointés par les branches et les étiquettes, lue à part.
     pub tips: Arc<HashMap<Oid, i64>>,
     /// Lignes demandées de la liste par pages de l'écran.
@@ -578,38 +580,6 @@ pub fn file(v: &RepoView, key: &str, busy: bool) -> Option<Screen> {
         Some(Ok(lines)) => s.diff(lines.clone()),
     };
     Some(s)
-}
-
-/// L'historique de la branche courante.
-pub fn history(base: &str, v: &RepoView, now: i64) -> Screen {
-    let s = Screen::new("Historique").subtitle(v.current_branch().unwrap_or_else(|| "HEAD détachée".into()));
-    let mut s = with_tabs(s, base, &format!("{base}/historique"), v);
-    s.acts.push(Act::new("actualiser", "Actualiser").glyph("🔄"));
-    match &v.log {
-        None => {
-            reading(&mut s, "Lecture de l'historique…", v.slow);
-        }
-        Some(Err(e)) => {
-            s.note(e, Tone::Danger);
-        }
-        Some(Ok(list)) if list.is_empty() => {
-            s.empty("Aucun commit.");
-        }
-        Some(Ok(list)) => {
-            for c in list {
-                let glyph = if c.parents.len() > 1 { "🔀" } else { "●" };
-                s.row(
-                    Row::new(c.summary.as_ref())
-                        .subtitle(format!("{} · {}", c.author, ago(c.author_time, now)))
-                        .detail(c.id.short())
-                        .glyph(glyph)
-                        .key(c.id.to_hex())
-                        .open(format!("{base}/commit/{}", c.id.to_hex())),
-                );
-            }
-        }
-    }
-    s
 }
 
 /// Un commit : son message, ses fichiers, et ce qu'on peut en faire.

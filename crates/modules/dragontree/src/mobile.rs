@@ -29,11 +29,13 @@ use dragontree_app::repo::{Refresh, RemoteOp, RepoTab};
 use dragontree_app::settings::{Settings, path_key};
 use dragontree_git::discovery::{FoundRepo, repo_head};
 use dragontree_git::{
-    CommitInfo, DiffOptions, FileChange, FileState, Git, HeadState, Oid, Repo, StatusEntry, StatusSnapshot,
+    CancelToken, CommitInfo, DiffOptions, FileChange, FileState, Git, GraphLayout, HeadState, LogOptions, LogOrder,
+    LogScope, Oid, RefsSnapshot, Repo, StatusEntry, StatusSnapshot,
 };
-use suite_sdk::mobile::ui::{Act, Block, PROGRESS_UNKNOWN, Screen, Tone};
+use suite_sdk::mobile::ui::{Act, Block, GraphCell, PROGRESS_UNKNOWN, Screen, Tone};
 
 use crate::depot::{self, RepoView, file_key};
+use crate::historique::{self, LogPage, LogView, Marks};
 use crate::liste::{self, Entry, JOB_SHOWN, Job, Listed, RepoState, repo_key};
 
 /// L'état des dépôts que DragonTree n'a pas ouverts est relu au plus toutes les 30 s tant que le téléphone regarde la
@@ -132,15 +134,35 @@ fn tab_job(t: &RepoTab) -> Option<Job> {
     })
 }
 
-/// L'historique tel que DragonTree l'affiche ; `None` : en cours de lecture.
-fn log_of(t: &RepoTab) -> Option<Result<Vec<dragontree_git::Commit>, String>> {
-    if let Some(e) = &t.history.error {
-        return Some(Err(e.to_string()));
+/// La portée du graphe de DragonTree, dite au téléphone : ce que parcourt son onglet (réglages `settings`) et ce qu'il
+/// replie.
+fn scope_text(t: &RepoTab, settings: &Settings) -> String {
+    let h = &t.history;
+    let mut text = if h.current_branch_only {
+        "Branche courante seulement (réglage de DragonTree pour ce dépôt)".to_string()
+    } else if !h.filter_refs.is_empty() {
+        let names: Vec<&str> = h
+            .filter_refs
+            .iter()
+            .map(|r| r.trim_start_matches("refs/heads/").trim_start_matches("refs/remotes/"))
+            .collect();
+        format!("Branches choisies dans DragonTree : {}", names.join(", "))
+    } else {
+        match (settings.show_remote_branches, settings.show_tags) {
+            (true, true) => "Toutes les branches, distantes et étiquettes comprises",
+            (true, false) => "Toutes les branches, distantes comprises",
+            (false, true) => "Toutes les branches locales, étiquettes comprises",
+            (false, false) => "Toutes les branches locales",
+        }
+        .to_string()
+    };
+    if !h.folded.is_empty() {
+        text.push_str(&format!(" · {} fusion(s) repliée(s)", h.folded.len()));
     }
-    if t.history.commits.is_empty() && (t.history.loading || t.refs.is_none()) {
-        return None;
+    if h.loading {
+        text.push_str(" · lecture en cours…");
     }
-    Some(Ok(t.history.commits.iter().take(depot::LOG_COUNT).cloned().collect()))
+    text
 }
 
 // --- Ce qui est lu à part ---
@@ -150,11 +172,16 @@ fn log_of(t: &RepoTab) -> Option<Result<Vec<dragontree_git::Commit>, String>> {
 struct Reads {
     /// Le relevé d'état de DragonTree sur lequel le dernier message et les diffs du dossier de travail ont été lus.
     status_seen: usize,
+    /// Les branches lues par DragonTree sur lesquelles les historiques ont été lus (gardées : leur adresse ne peut
+    /// pas resservir à d'autres).
+    refs_seen: Option<Arc<RefsSnapshot>>,
     last_message: Option<String>,
     /// Commit (identifiant complet) → ses informations et ses fichiers.
     commits: HashMap<String, Result<(CommitInfo, Vec<FileChange>), String>>,
     /// Diff rendu : `w:<fichier>` (dossier de travail) ou `c:<commit>:<fichier>`.
     diffs: HashMap<String, Result<Vec<(u8, String)>, String>>,
+    /// Historique d'une révision (`HEAD`, `refs/heads/x`) → combien de commits ont été demandés, et ce qui a été lu.
+    logs: HashMap<String, (usize, Result<LogPage, String>)>,
     /// Lecture → quand elle a été faite ; en cours : absente de `loaded`, présente dans `loading`.
     loaded: HashMap<String, Instant>,
     loading: HashSet<String>,
@@ -176,6 +203,13 @@ enum Load {
     WorkDiff(String, StatusEntry),
     /// Diff d'un fichier d'un commit.
     CommitDiff(String, String),
+    /// Les `count` derniers commits d'une révision et leur graphe ; `topo` : dans l'ordre topologique (réglage de
+    /// DragonTree).
+    Log {
+        rev: String,
+        count: usize,
+        topo: bool,
+    },
 }
 
 impl Load {
@@ -185,14 +219,15 @@ impl Load {
             Load::Commit(id) => format!("commit:{id}"),
             Load::WorkDiff(f, _) => format!("w:{f}"),
             Load::CommitDiff(id, f) => format!("c:{id}:{f}"),
+            Load::Log { rev, count, .. } => format!("log:{rev}:{count}"),
         }
     }
 
     fn every(&self) -> Option<Duration> {
         match self {
             Load::WorkDiff(..) => Some(DIFF_EVERY),
-            // Relus quand l'état lu par DragonTree change ; un commit ne change pas.
-            Load::LastMessage | Load::Commit(_) | Load::CommitDiff(..) => None,
+            // Relus quand l'état ou les branches lus par DragonTree changent ; un commit ne change pas.
+            Load::LastMessage | Load::Commit(_) | Load::CommitDiff(..) | Load::Log { .. } => None,
         }
     }
 }
@@ -247,6 +282,17 @@ fn read(repo: &Repo, what: &Load, known: Option<&(CommitInfo, Vec<FileChange>)>,
                     .map_err(|e| e.to_string())
             });
             r.diffs.insert(format!("c:{id}:{f}"), res);
+        }
+        Load::Log { rev, count, topo } => {
+            // `rev` vient des branches lues par DragonTree (`HEAD`, `refs/…`) : jamais une option de git.
+            let opts = LogOptions {
+                scope: LogScope::Revs(vec![rev.clone()]),
+                order: if *topo { LogOrder::Topo } else { LogOrder::Date },
+                max_count: Some(*count),
+                ..Default::default()
+            };
+            let res = repo.log(&opts, &CancelToken::new()).map(LogPage::of).map_err(|e| e.to_string());
+            r.logs.insert(rev.clone(), (*count, res));
         }
     }
 }
@@ -303,6 +349,9 @@ fn stamp_of(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
+/// Un graphe découpé en lignes : le graphe, combien de lignes, et leurs parts.
+type CutGraph = (Arc<GraphLayout>, usize, Arc<Vec<GraphCell>>);
+
 /// Une opération du téléphone qui attend que DragonTree ait ouvert son dépôt.
 struct Waiting {
     path: PathBuf,
@@ -338,6 +387,8 @@ pub struct Phone {
     since: HashMap<String, Instant>,
     /// Par chemin d'écran : les lignes demandées de sa liste par pages (« plus »).
     pages: HashMap<String, usize>,
+    /// Par chemin d'écran : le graphe découpé en lignes, et de quoi il l'a été.
+    cells: HashMap<String, CutGraph>,
     waiting: HashMap<String, Waiting>,
     /// Par dépôt : une opération qui n'a pas pu partir (dépôt impossible à ouvrir).
     failed: HashMap<String, Job>,
@@ -362,6 +413,7 @@ impl Phone {
             refreshed: HashMap::new(),
             since: HashMap::new(),
             pages: HashMap::new(),
+            cells: HashMap::new(),
             waiting: HashMap::new(),
             failed: HashMap::new(),
         }
@@ -539,19 +591,82 @@ impl Phone {
             }
             r.commits.extend(fresh.commits);
             r.diffs.extend(fresh.diffs);
+            r.logs.extend(fresh.logs);
         });
     }
 
-    /// Ce que DragonTree a relu de nouveau rend périmés le dernier message et les diffs du dossier de travail : ils
-    /// seront relus (les anciens restent montrés d'ici là).
+    /// Ce que DragonTree a relu de nouveau rend périmés le dernier message et les diffs du dossier de travail (son
+    /// état), les historiques (ses branches) : ils seront relus, les anciens restant montrés d'ici là.
     fn follow(&self, key: &str, t: &RepoTab) {
-        let seen = t.status.as_ref().map_or(0, |s| Arc::as_ptr(s) as usize);
         let mut all = lock(&self.reads);
         let r = all.entry(key.to_string()).or_default();
-        if r.status_seen != seen {
-            r.status_seen = seen;
+        let status = t.status.as_ref().map_or(0, |s| Arc::as_ptr(s) as usize);
+        if r.status_seen != status {
+            r.status_seen = status;
             r.loaded.retain(|k, _| k != "message" && !k.starts_with("w:"));
         }
+        if !r.refs_seen.as_ref().is_some_and(|seen| t.refs.as_ref().is_some_and(|now| Arc::ptr_eq(seen, now))) {
+            r.refs_seen = t.refs.clone();
+            r.loaded.retain(|k, _| !k.starts_with("log:"));
+        }
+    }
+
+    /// Le graphe des `rows` premières lignes de `graph`, gardé tant que DragonTree ne l'a pas refait (`path` : l'écran).
+    fn cells(&mut self, path: &str, graph: &Arc<GraphLayout>, rows: usize) -> Arc<Vec<GraphCell>> {
+        if let Some((g, n, c)) = self.cells.get(path)
+            && Arc::ptr_eq(g, graph)
+            && *n == rows
+        {
+            return c.clone();
+        }
+        let c = Arc::new(historique::cells(graph, rows));
+        self.cells.insert(path.to_string(), (graph.clone(), rows, c.clone()));
+        c
+    }
+
+    /// L'historique de `rev` lu à part, avec son graphe (`None` : pas encore lu) ; `count` : les commits demandés.
+    fn log_view(
+        &mut self,
+        key: &str,
+        path: &str,
+        rev: &str,
+        count: usize,
+        t: &RepoTab,
+    ) -> Option<Result<LogView, String>> {
+        let read = lock(&self.reads).get(key).and_then(|r| r.logs.get(rev).cloned());
+        let (asked, page) = match read? {
+            (asked, Ok(page)) => (asked, page),
+            (_, Err(e)) => return Some(Err(e)),
+        };
+        let cells = self.cells(path, &page.graph, page.commits.len());
+        let rows = historique::rows(&page, &cells, t.refs.as_deref(), &Marks::default());
+        // Autant de commits que demandé : il y en a peut-être d'autres ; moins (une lecture plus longue en cours) :
+        // la suite arrive.
+        let more = page.commits.len() >= asked.min(count) && page.commits.len() < depot::PAGE_MAX;
+        Some(Ok(LogView { rows, more, scope: String::new() }))
+    }
+
+    /// Le graphe de DragonTree, tel qu'il l'affiche (sa portée, ses fusions repliées) ; `count` : les lignes demandées.
+    fn graph_view(&mut self, path: &str, count: usize, t: &RepoTab) -> Option<Result<LogView, String>> {
+        let h = &t.history;
+        if let Some(e) = &h.error {
+            return Some(Err(e.to_string()));
+        }
+        if h.commits.is_empty() && (h.loading || t.refs.is_none()) {
+            return None;
+        }
+        let shown = count.min(h.commits.len()).min(h.graph.rows.len());
+        let cells = self.cells(path, &h.graph, shown);
+        let page = LogPage { commits: h.commits.clone(), graph: h.graph.clone() };
+        let marks = Marks {
+            head: None,
+            lost: Some(&h.lost),
+            stashes: t.stashes.iter().map(|s| s.oid).collect(),
+            folded: Some(&h.folded),
+        };
+        let rows = historique::rows(&page, &cells, t.refs.as_deref(), &marks);
+        let more = shown < h.commits.len() || !h.complete;
+        Some(Ok(LogView { rows, more, scope: scope_text(t, &self.settings) }))
     }
 
     /// Ce que DragonTree sait du dépôt (partagé, sans copie), et ce qui en a été lu à part pour l'écran `parts`
@@ -579,9 +694,6 @@ impl Phone {
             count: self.pages.get(path).copied().unwrap_or(depot::PAGE),
             ..Default::default()
         };
-        if parts == ["historique"] {
-            v.log = log_of(t);
-        }
         let all = lock(&self.reads);
         let Some(r) = all.get(key) else { return v };
         v.last_message = r.last_message.clone().unwrap_or_default();
@@ -614,6 +726,7 @@ impl Phone {
         self.watch(app, &repo);
         let t = app.repo_tab(&repo)?;
         let parts: Vec<&str> = sub.split('/').collect();
+        let count = self.pages.get(path).copied().unwrap_or(depot::PAGE);
         self.follow(key, t);
         if let Some(handle) = &t.repo {
             match parts.as_slice() {
@@ -629,10 +742,19 @@ impl Phone {
                     self.want(key, handle, Load::Commit(id.to_string()));
                     self.want(key, handle, Load::CommitDiff(id.to_string(), f.to_string()));
                 }
+                ["historique"] => {
+                    let topo = self.settings.topological_order;
+                    self.want(key, handle, Load::Log { rev: "HEAD".into(), count, topo });
+                }
                 _ => {}
             }
         }
-        let view = self.view(key, t, &parts, path);
+        let mut view = self.view(key, t, &parts, path);
+        match parts.as_slice() {
+            ["historique"] => view.log = self.log_view(key, path, "HEAD", count, t),
+            ["historique", "tout"] => view.log = self.graph_view(path, count, t),
+            _ => {}
+        }
         let job = self.job(key, Some(t));
         let busy = job.as_ref().is_some_and(Job::running);
         let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
@@ -642,7 +764,8 @@ impl Phone {
             [""] => depot::overview(&base, &listed.title, &repo.display().to_string(), &view, busy),
             ["modifs"] => depot::changes(&base, &view, busy),
             ["fichier", f] => depot::file(&view, f, busy)?,
-            ["historique"] => depot::history(&base, &view, now),
+            ["historique"] => historique::current(&base, &view, now),
+            ["historique", "tout"] => historique::all(&base, &view, now),
             ["commit", id] => depot::commit(&base, &view, id, now, busy),
             ["commit", id, f] => depot::commit_file(&view, id, f)?,
             ["branches"] => depot::branches(&base, &view, busy),
@@ -1043,6 +1166,67 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    fn rows(s: &Screen) -> Vec<&suite_sdk::mobile::ui::Row> {
+        s.blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::Row(r) => Some(r),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Le défaut du 28/10 : « Historique » montrait le haut du graphe de toutes les branches (des commits de
+    /// collègues) en se disant celui de la branche courante. C'est celui de HEAD, avec son graphe et ses étiquettes ;
+    /// le graphe de DragonTree, toutes branches, est à un toucher.
+    #[test]
+    fn the_history_is_the_current_branch_with_its_graph() {
+        let Ok(git) = Git::discover() else { return };
+        let dir = std::env::temp_dir().join(format!("suite-dragontree-historique-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let repo = dir.join("depot");
+        new_repo(&git, &repo);
+        let sh = |args: &[&str]| sh(&git, &repo, args);
+        sh(&["stash", "push", "-q"]);
+        sh(&["checkout", "-q", "-b", "autre"]);
+        sh(&["commit", "-q", "--allow-empty", "-m", "Sur une autre branche"]);
+        sh(&["checkout", "-q", "main"]);
+        sh(&["commit", "-q", "--allow-empty", "-m", "Second commit"]);
+        sh(&["tag", "v1"]);
+
+        let profile = dir.join("profil");
+        let mut phone = phone_for(&profile, &repo);
+        let mut h = dragontree(&profile);
+        let base = format!("depot/{}", repo_key(&repo));
+        let s = wait_screen(&mut h, &mut phone, &format!("{base}/historique"), "Second commit");
+        let text = format!("{s:?}");
+        assert!(text.contains("Premier commit") && !text.contains("Sur une autre branche"), "HEAD seulement : {text}");
+        assert_eq!(s.subtitle, "Branche courante : main");
+        assert!(!s.search.is_empty() && s.tabs.iter().any(|t| t.path == format!("{base}/historique")));
+        let commits: Vec<_> = rows(&s).into_iter().filter(|r| r.graph.is_some()).collect();
+        assert_eq!(commits.len(), 2, "{s:?}");
+        let head = commits[0];
+        assert_eq!(head.graph.as_ref().map(|g| g.kind), Some(suite_sdk::mobile::ui::NODE_HEAD));
+        assert!(head.chips.iter().any(|c| c.text == "main" && c.strong), "{head:?}");
+        assert!(head.chips.iter().any(|c| c.text == "v1"), "{head:?}");
+        assert!(
+            !head.key.is_empty() && head.open.as_deref().is_some_and(|o| o.starts_with(&format!("{base}/commit/")))
+        );
+        assert!(!s.action_ids().contains("plus"), "deux commits : pas de suite");
+
+        let all = wait_screen(&mut h, &mut phone, &format!("{base}/historique/tout"), "Sur une autre branche");
+        assert!(format!("{all:?}").contains("Sur une autre branche"), "{all:?}");
+        assert!(all.subtitle.starts_with("Toutes les branches"), "la vraie portée : {}", all.subtitle);
+        assert!(
+            all.tabs.iter().any(|t| t.path == format!("{base}/historique/tout")),
+            "l'onglet Historique reste actif"
+        );
+        let lanes = rows(&all).iter().filter_map(|r| r.graph.as_ref()).map(|g| g.lanes).max();
+        assert_eq!(lanes, Some(2), "deux branches, deux voies : {all:?}");
+        drop(h);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Un vrai dépôt, mené par DragonTree : modifier, voir le diff, indexer, valider, retrouver le commit dans son
     /// historique, créer une branche ; un nom refusé par git est dit.
     #[test]
@@ -1069,9 +1253,11 @@ mod tests {
         let s = wait_screen(&mut h, &mut phone, &format!("{base}/modifs"), "Valider…");
         assert!(s.action_ids().contains("valider"), "indexé par DragonTree : on peut valider");
         phone.action(h.state_mut(), &format!("{base}/modifs"), "valider", Some("Ajoute deux")).unwrap();
+        // L'historique est lu à part : il peut montrer le commit avant que DragonTree ait fini l'opération.
+        let log = wait_screen(&mut h, &mut phone, &format!("{base}/historique"), "Commit créé");
+        assert!(format!("{log:?}").contains("Commit créé"), "le résultat de DragonTree : {log:?}");
         let log = wait_screen(&mut h, &mut phone, &format!("{base}/historique"), "Ajoute deux");
         assert!(format!("{log:?}").contains("Ajoute deux") && format!("{log:?}").contains("Premier commit"), "{log:?}");
-        assert!(format!("{log:?}").contains("Commit créé"), "le résultat de DragonTree : {log:?}");
 
         phone.action(h.state_mut(), &format!("{base}/branches"), "nouvelle-branche", Some("feature/essai")).unwrap();
         let b = wait_screen(&mut h, &mut phone, &format!("{base}/branches"), "Courante : feature/essai");

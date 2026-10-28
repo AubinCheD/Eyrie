@@ -16,6 +16,7 @@
 //!   onglets, sa file d'opérations, ses comptes, ses notifications et son bandeau de conflits sur le PC).
 
 pub mod depot;
+pub mod historique;
 pub mod liste;
 pub mod mobile;
 
