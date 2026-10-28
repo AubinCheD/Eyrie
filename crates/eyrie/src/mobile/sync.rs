@@ -555,7 +555,7 @@ fn push_light(core: &mut Core) {
                 tone: tone(n.tone),
                 at: n.at.duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
                 read: *read,
-                path: None,
+                path: n.path.clone(),
             })
             .collect();
         let unread = core.notes.unread() as u32;

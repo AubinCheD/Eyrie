@@ -14,7 +14,7 @@ use suite_mobile::msg::{ENTRY_DENIED, ENTRY_REPO, Listing, ToPc, ToPhone};
 use suite_mobile::pairing::Ticket;
 use suite_mobile::term::{Line, TermFrame, TermInput, TermView};
 use suite_mobile::ui::{Act, FOLDER_REPO, FolderInput, Row, Screen};
-use suite_sdk::{Badge, CommandInfo, Cx, Module, ModuleInfo, ModuleStatus, Origin, Tone};
+use suite_sdk::{Badge, CommandInfo, Cx, Module, ModuleInfo, ModuleStatus, Notification, Origin, Tone};
 
 use super::browse;
 use crate::app::Suite;
@@ -450,4 +450,26 @@ fn without_the_folders_right_the_phone_cannot_browse() {
     let journal = h.state().core.mobile.store.read_journal(50);
     assert!(journal.iter().any(|l| l.kind == "acces" && l.text.ends_with("dossiers non")), "{journal:?}");
     assert!(!journal.iter().any(|l| l.kind == "dossiers"));
+}
+
+#[test]
+fn a_notification_leads_the_phone_to_its_screen() {
+    let mut h = suite();
+    let host = h.state().core.host.clone();
+    host.notify(Notification::new("factice", "Une chose attend", "à voir", Tone::Warn).path("detail"));
+    host.notify(Notification::new("factice", "Pour information", "rien à ouvrir", Tone::Info));
+    h.run_steps(2);
+    let notes = with_phone(
+        &mut h,
+        |_| {},
+        |c| {
+            until(c, |m| match m {
+                ToPhone::Notes { notes, .. } if notes.len() >= 2 => Some(notes),
+                _ => None,
+            })
+        },
+    );
+    let path = |title: &str| notes.iter().find(|n| n.title == title).map(|n| n.path.clone());
+    assert_eq!(path("Une chose attend"), Some(Some("detail".into())), "{notes:?}");
+    assert_eq!(path("Pour information"), Some(None), "nulle part : le téléphone la déplie");
 }

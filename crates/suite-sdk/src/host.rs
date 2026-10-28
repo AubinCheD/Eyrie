@@ -44,11 +44,27 @@ pub struct Notification {
     pub body: String,
     pub tone: Tone,
     pub at: SystemTime,
+    /// L'écran du module où elle mène sur le téléphone, chemin absolu dans le module (`t/12` : la session Claude qui
+    /// attend ; `""` : son accueil). `None` : nulle part, le téléphone la déplie.
+    pub path: Option<String>,
 }
 
 impl Notification {
     pub fn new(module: impl Into<String>, title: impl Into<String>, body: impl Into<String>, tone: Tone) -> Self {
-        Notification { module: module.into(), title: title.into(), body: body.into(), tone, at: SystemTime::now() }
+        Notification {
+            module: module.into(),
+            title: title.into(),
+            body: body.into(),
+            tone,
+            at: SystemTime::now(),
+            path: None,
+        }
+    }
+
+    /// Elle mène à cet écran du module sur le téléphone.
+    pub fn path(mut self, path: impl Into<String>) -> Self {
+        self.path = Some(path.into());
+        self
     }
 }
 
@@ -323,6 +339,15 @@ mod tests {
         assert_eq!(out.notifications.len(), 1);
         assert_eq!(out.show, vec!["owlery".to_string()]);
         assert!(h.take_outbox().notifications.is_empty());
+    }
+
+    #[test]
+    fn a_notification_can_lead_to_a_phone_screen() {
+        assert_eq!(Notification::new("owlery", "PR", "à relire", Tone::Info).path, None, "nulle part par défaut");
+        let h = host();
+        h.notify(Notification::new("fawkes", "Claude attend", "ozmo", Tone::Warn).path("t/12"));
+        let out = h.take_outbox();
+        assert_eq!(out.notifications[0].path.as_deref(), Some("t/12"));
     }
 
     #[test]
