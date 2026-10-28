@@ -871,13 +871,14 @@ export component CommitRowView inherits Rectangle {
             x: 2px;
             width: item.graph-w;
             clip: true;
+            // Les commandes sont en pixels de la cellule, dessinées telles quelles : ajustées à la taille (le défaut),
+            // elles seraient réduites de l'épaisseur du trait et s'arrêteraient avant le bord de la ligne.
             for seg in item.segs: Path {
                 x: 0;
                 y: 0;
                 width: item.graph-w;
                 height: 56px;
-                viewbox-width: item.graph-w / 1px;
-                viewbox-height: 56;
+                fit: preserve;
                 commands: seg.d;
                 fill: transparent;
                 stroke: Theme.lane(seg.lane);
