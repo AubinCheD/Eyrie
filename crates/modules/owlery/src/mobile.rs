@@ -154,7 +154,7 @@ fn group_band(g: &Group, key: &str, by: GroupBy) -> Band {
 }
 
 /// L'accueil : un bandeau par groupe, dans l'ordre du PC (ceux qui ont des non lues d'abord) ; au-delà de
-/// [`PER_GROUP`] entrées, une ligne mène à l'écran du groupe.
+/// `PER_GROUP` entrées, une ligne mène à l'écran du groupe.
 pub fn home(inbox: &Inbox, rules: &Rules, by: GroupBy, now: i64) -> Screen {
     let view = groups(inbox, rules, by, now);
     let unread: usize = view.iter().map(|g| g.unread).sum();

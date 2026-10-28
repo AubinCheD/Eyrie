@@ -281,7 +281,7 @@ fn run_row(r: &Run, today: NaiveDate) -> Row {
     row.act(Act::new(format!("archiver:{}", r.id), "Archiver").glyph("🗄️"))
 }
 
-/// L'accueil : ce qui tourne, la boîte de réception, puis les tâches (pliées au-delà de [`TASKS_OPEN`]).
+/// L'accueil : ce qui tourne, la boîte de réception, puis les tâches (pliées au-delà de `TASKS_OPEN`).
 pub fn home(s: &Snapshot, now: NaiveDateTime) -> Screen {
     let today = now.date();
     let mut parts = Vec::new();

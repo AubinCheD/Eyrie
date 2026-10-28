@@ -179,7 +179,7 @@ fn by_project(list: &[Container]) -> Vec<(Option<&str>, Vec<&Container>)> {
     groups
 }
 
-/// L'accueil : les services gérés, les ports ouverts (pliés au-delà de [`PORTS_OPEN`]), un bandeau par projet compose
+/// L'accueil : les services gérés, les ports ouverts (pliés au-delà de `PORTS_OPEN`), un bandeau par projet compose
 /// et ce que font les actions Docker.
 pub fn home(
     managed: &[ManagedSpec],
