@@ -568,6 +568,9 @@ pub struct Phone {
     waiting: HashMap<String, Waiting>,
     /// Par dépôt : une opération qui n'a pas pu partir (dépôt impossible à ouvrir).
     failed: HashMap<String, Job>,
+    /// Par dépôt : la suppression sur le serveur d'une branche distante lancée d'ici (numéro de l'opération dans
+    /// DragonTree, branche `origin/x`), montrée en cours sur son détail tant qu'elle tourne.
+    deleting: HashMap<String, (u64, String)>,
 }
 
 impl Phone {
@@ -591,6 +594,7 @@ impl Phone {
             cells: HashMap::new(),
             waiting: HashMap::new(),
             failed: HashMap::new(),
+            deleting: HashMap::new(),
         }
     }
 
@@ -963,6 +967,11 @@ impl Phone {
             auth_error: t.fetch_auth_error().map(short_error),
             status_error: t.status_error.as_ref().map(|e| short_error(&e.to_string())),
             refs_error: t.refs_error.as_ref().map(|e| short_error(&e.to_string())),
+            deleting: self
+                .deleting
+                .get(key)
+                .filter(|(id, _)| t.running.iter().any(|o| o.id == *id))
+                .map(|(_, branch)| branch.clone()),
             count: self.pages.get(path).copied().unwrap_or(depot::PAGE),
             ..Default::default()
         };
@@ -1165,7 +1174,10 @@ impl Phone {
             self.waiting.insert(key, Waiting { path: repo, op, label: label.clone(), at: Instant::now() });
             return Ok((format!("{label} : ouverture de {name} dans DragonTree…"), false));
         }
-        app.queue_operation(&repo, op)?;
+        let id = app.queue_operation(&repo, op)?;
+        if let Some(("supprimer-distante", full)) = verb.split_once(':') {
+            self.deleting.insert(key.clone(), (id, full.to_string()));
+        }
         // Renommée depuis son détail : le téléphone ouvre celui du nouveau nom (il se remplit quand DragonTree a relu
         // les branches).
         if let (Some(("renommer", _)), Some(new)) = (verb.split_once(':'), input.map(str::trim))
@@ -1249,6 +1261,7 @@ impl Phone {
         self.opened.remove(key);
         self.watched.remove(key);
         self.since.remove(key);
+        self.deleting.remove(key);
         lock(&self.reads).remove(key);
         let screens = format!("depot/{key}");
         self.cells.retain(|path, _| path != &screens && !path.starts_with(&format!("{screens}/")));
@@ -2230,6 +2243,48 @@ mod tests {
         assert_eq!(band_of(&home, &key), Some("Récents".into()), "toujours dans la liste : {home:?}");
         wait_screen(&mut h, &mut phone, &base(&phones), "lisez-moi.txt");
         assert!(h.state().repo_tab(&phones).is_some() && phone.opened.contains_key(&key), "rouvert en fond");
+        drop(h);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// « Supprimer sur le serveur » dans le détail d'une branche distante : menée par DragonTree (sa file, son compte),
+    /// montrée en cours tant qu'elle tourne (les autres gestes attendent) ; ensuite, la branche n'est plus sur le
+    /// serveur, et son détail le dit avec ce qu'a donné l'opération.
+    #[test]
+    fn a_remote_branch_is_deleted_on_the_server_by_dragontree() {
+        let Ok(git) = Git::discover() else { return };
+        let dir = std::env::temp_dir().join(format!("suite-dragontree-distante-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let repo = dir.join("depot");
+        new_repo(&git, &repo);
+        let sh = |args: &[&str]| sh(&git, &repo, args);
+        let origin = dir.join("origin.git").display().to_string();
+        sh(&["init", "-q", "--bare", &origin]);
+        sh(&["remote", "add", "origin", &origin]);
+        sh(&["push", "-q", "-u", "origin", "main", "main:feature/x"]);
+        sh(&["fetch", "-q", "origin"]);
+
+        let profile = dir.join("profil");
+        let mut phone = phone_for(&profile, &repo);
+        let mut h = dragontree(&profile);
+        let x = format!("depot/{}/branche/{}", repo_key(&repo), branches::branch_key("refs/remotes/origin/feature/x"));
+        let d = wait_screen(&mut h, &mut phone, &x, "Supprimer sur le serveur");
+        let id = "supprimer-distante:origin/feature/x";
+        assert!(d.acts.iter().any(|a| a.id == id && a.confirm.is_some()), "au menu, avec sa question : {d:?}");
+        let (text, show) = phone.action(h.state_mut(), &x, id, None).unwrap();
+        assert!(text.ends_with("lancé dans DragonTree") && !show, "{text}");
+        let d = phone.screen(h.state_mut(), &x).unwrap();
+        let acts: Vec<(&str, bool)> = d.all_acts().into_iter().map(|a| (a.id.as_str(), a.busy)).collect();
+        assert!(acts.contains(&(id, true)) && !acts.iter().any(|a| a.0.starts_with("fusionner:")), "en cours : {d:?}");
+
+        let d = wait_screen(&mut h, &mut phone, &x, "introuvable");
+        assert!(format!("{d:?}").contains("origin/feature/x supprimée"), "{d:?}");
+        let on_server = std::process::Command::new(git.exe())
+            .args(["rev-parse", "--verify", "-q", "refs/heads/feature/x"])
+            .current_dir(&origin)
+            .output()
+            .unwrap();
+        assert!(!on_server.status.success(), "plus sur le serveur");
         drop(h);
         let _ = std::fs::remove_dir_all(&dir);
     }

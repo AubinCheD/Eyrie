@@ -7,7 +7,7 @@
 //!   toucher.
 //! - `branche/<b>` : sa pointe, son suivi, les commits à pousser et à tirer, son historique avec son graphe, et les
 //!   gestes (basculer, fusionner dans la courante, rebaser, pousser ou publier, renommer, supprimer ; suivre en local
-//!   pour une distante), tous menés par DragonTree comme ses boutons.
+//!   ou supprimer sur le serveur pour une distante), tous menés par DragonTree comme ses boutons.
 //!
 //! Une branche est désignée par une empreinte de son nom complet (`refs/heads/x`, `refs/remotes/origin/x`) : ses `/`
 //! n'entrent pas dans un chemin d'écran. Les dates des pointes sont lues à part (`commits_of`, voir `mobile.rs`) et
@@ -306,6 +306,17 @@ fn remote_acts(r: &RemoteBranch, tracked: bool, current: Option<&str>) -> Vec<Ac
     acts
 }
 
+/// Supprimer la branche distante `r` du serveur, comme « Supprimer sur le remote… » de DragonTree (sa question dit
+/// pour qui) ; `busy` : cette suppression, lancée d'ici, tourne.
+fn delete_remote_act(r: &RemoteBranch, busy: bool) -> Act {
+    let (full, name, remote) = (&r.full, &r.name, &r.remote);
+    Act::new(format!("supprimer-distante:{full}"), "Supprimer sur le serveur")
+        .glyph("🗑️")
+        .danger()
+        .confirm(format!("Supprimer {full} ? La branche {name} sera supprimée du serveur {remote} pour tout le monde."))
+        .busy(busy)
+}
+
 /// La ligne d'une branche : elle ouvre son détail ; une locale porte ses gestes dans son menu (appui long). `remote` :
 /// le remote par défaut, où publier une branche sans suivi.
 fn branch_row(
@@ -541,6 +552,11 @@ pub fn detail(base: &str, v: &RepoView, key: &str, now: i64, busy: bool) -> Scre
                     *first = first.clone().primary();
                 }
             }
+            // Au menu ; pendant qu'elle tourne, grisée (les autres gestes attendent la fin de l'opération).
+            let deleting = v.deleting.as_deref() == Some(r.full.as_str());
+            if !busy || deleting {
+                s.acts.push(delete_remote_act(r, deleting));
+            }
         }
     }
     if !buttons.is_empty() {
@@ -741,6 +757,44 @@ mod tests {
         assert!(!tracked.action_ids().contains("suivre:origin/feature/x"), "déjà suivie");
         assert!(format!("{:?}", detail("depot/k", &v, "inconnue", 0, false)).contains("introuvable"));
         assert!(detail("depot/k", &v, &key, 0, true).action_ids().is_empty(), "rien pendant une opération");
+    }
+
+    /// Une branche distante se supprime du serveur depuis son détail : au menu, en rouge, avec une question qui dit
+    /// laquelle et sur quel serveur ; DragonTree la supprime comme « Supprimer sur le remote… ». Pendant une opération,
+    /// seule la suppression lancée d'ici reste, grisée.
+    #[test]
+    fn a_remote_branch_is_deleted_on_the_server_from_its_detail() {
+        use dragontree_app::repo::RemoteOp;
+        use suite_sdk::mobile::ui::ActStyle;
+
+        let mut main = local("main", 1);
+        main.is_head = true;
+        let mut v = view(vec![main], vec![remote("origin", "feature/x", 2), remote("amont", "autre", 3)], Vec::new());
+        let x = branch_key("refs/remotes/origin/feature/x");
+        let s = detail("depot/k", &v, &x, 0, false);
+        let delete = s.acts.iter().find(|a| a.id == "supprimer-distante:origin/feature/x").expect("au menu");
+        assert_eq!(
+            (delete.label.as_str(), delete.style, delete.busy),
+            ("Supprimer sur le serveur", ActStyle::Danger, false)
+        );
+        let question = delete.confirm.as_deref().unwrap_or_default();
+        assert!(question.contains("origin/feature/x") && question.contains("du serveur origin"), "{question}");
+        assert!(
+            !s.blocks.iter().any(|b| matches!(b, Block::Buttons { acts } if acts.iter().any(|a| a.id == delete.id)))
+        );
+        assert_eq!(
+            depot::parse(&v, &delete.id, None).unwrap().0,
+            RemoteOp::DeleteRemoteBranch { remote: "origin".into(), branch: "feature/x".into() }
+        );
+        assert!(depot::parse(&v, "supprimer-distante:origin/inconnue", None).is_err(), "pas lue par DragonTree");
+
+        assert!(detail("depot/k", &v, &x, 0, true).action_ids().is_empty(), "une autre opération tourne");
+        v.deleting = Some("origin/feature/x".into());
+        let s = detail("depot/k", &v, &x, 0, true);
+        let acts: Vec<(&str, bool)> = s.all_acts().into_iter().map(|a| (a.id.as_str(), a.busy)).collect();
+        assert_eq!(acts, [("supprimer-distante:origin/feature/x", true)], "elle tourne : grisée, seule");
+        let other = detail("depot/k", &v, &branch_key("refs/remotes/amont/autre"), 0, true);
+        assert!(other.action_ids().is_empty(), "pas celle-ci");
     }
 
     /// Le défaut du 28/10 : « Pousser » une branche qui n'est pas la courante la poussait sur le remote de la

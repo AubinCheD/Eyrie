@@ -96,6 +96,8 @@ pub struct RepoView {
     pub tips: Arc<HashMap<Oid, Commit>>,
     /// Ce qu'une branche a à pousser et à tirer (lu à part).
     pub pending: Option<Pending>,
+    /// La branche distante (`origin/x`) dont le téléphone a demandé la suppression sur le serveur, tant qu'elle tourne.
+    pub deleting: Option<String>,
     /// Lignes demandées de la liste par pages de l'écran.
     pub count: usize,
     /// Commit (identifiant complet) → ses informations et ses fichiers.
@@ -998,6 +1000,16 @@ pub fn parse(v: &RepoView, action: &str, input: Option<&str>) -> Result<(RemoteO
             let local = needed()?;
             let op = RemoteOp::Track { remote_branch: arg.clone(), local: local.clone() };
             (op, format!("Suivre {arg} dans {local}"))
+        }
+        "supprimer-distante" => {
+            // Le remote et le nom tels que DragonTree les a lus (un nom de remote peut contenir un `/`).
+            let remotes = v.refs.as_deref().map(|r| r.remotes.as_slice()).unwrap_or_default();
+            let r = remotes
+                .iter()
+                .find(|r| r.full == arg && !r.is_symbolic)
+                .ok_or_else(|| format!("{arg} : branche distante introuvable, ou pas encore relue par DragonTree."))?;
+            let op = RemoteOp::DeleteRemoteBranch { remote: r.remote.clone(), branch: r.name.clone() };
+            (op, format!("Supprimer {arg} sur le serveur"))
         }
         "nouvelle-branche" => {
             let name = needed()?;
