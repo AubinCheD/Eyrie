@@ -96,17 +96,25 @@ export component ScreenPage inherits Rectangle {
                 first: r.first;
                 last: r.last;
             }
-            if r.kind == 6: HorizontalLayout {
-                padding-left: Theme.pad;
-                padding-right: Theme.pad;
-                padding-top: 8px;
-                padding-bottom: 8px;
-                spacing: 8px;
-                alignment: start;
-                for a in r.acts: ActButton {
-                    text: a.label;
-                    style: a.style;
-                    clicked => { root.act(a); }
+            // Les boutons passent à la ligne quand ils ne tiennent pas dans la largeur (donnée explicitement : dans
+            // une ligne de liste, la mise en page ne la transmet pas et la hauteur serait devinée).
+            if r.kind == 6: Rectangle {
+                height: flow.preferred-height;
+                flow := FlexboxLayout {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    padding-left: Theme.pad;
+                    padding-right: Theme.pad;
+                    padding-top: 8px;
+                    padding-bottom: 8px;
+                    spacing: 8px;
+                    for a in r.acts: ActButton {
+                        text: a.label;
+                        glyph: a.glyph;
+                        style: a.style;
+                        clicked => { root.act(a); }
+                    }
                 }
             }
         }

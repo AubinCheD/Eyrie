@@ -1,6 +1,6 @@
 //! Démonstration sans PC (`EYRIE_MOBILE_DEMO=<scène>`), pour les captures et la mise au point de l'interface :
-//! `ensemble`, `fawkes`, `terminal`, `patronus`, `plus`, `notes`, `reglages`, `accueil`, `accueil-tailscale`, `code`,
-//! `appairage`, `hors-ligne`.
+//! `ensemble`, `fawkes`, `terminal`, `patronus`, `depot`, `plus`, `notes`, `reglages`, `accueil`, `accueil-tailscale`,
+//! `code`, `appairage`, `hors-ligne`.
 
 use suite_mobile::msg::{Badge, CommandCard, ModuleCard, Note, ToPhone, Waiting};
 use suite_mobile::term::{self, Color, Line, Run, TermFrame, TermView};
@@ -115,6 +115,42 @@ fn patronus_home() -> Screen {
             .tone(Tone::Danger)
             .open("run/40"),
     );
+    s
+}
+
+/// Un dépôt de DragonTree, onglet État : l'opération en cours, les gestes, les modifications.
+fn depot_state() -> Screen {
+    let mut s = Screen::new("Eyrie")
+        .subtitle("mobile-ergonomie · ↑2 ↓1")
+        .act(Act::new("@pc", "Montrer sur le PC"))
+        .act(Act::new("actualiser", "Actualiser").glyph("↻"))
+        .tab("État", "depot/eyrie")
+        .tab("Historique", "depot/eyrie/historique")
+        .tab("Branches", "depot/eyrie/branches")
+        .tab("Plus", "depot/eyrie/plus");
+    s.buttons(vec![
+        Act::new("fetch", "Fetch").glyph("↓"),
+        Act::new("pull", "Pull (fusion)").glyph("↓"),
+        Act::new("pull-rebase", "Pull (rebase)").glyph("↓"),
+        Act::new("push", "Push").glyph("↑").primary(),
+        Act::new("push-force", "Push forcé").glyph("↑").danger().confirm("Pousser en forçant (avec bail) ?"),
+    ]);
+    s.section("Modifications", "3");
+    s.row(
+        Row::new("crates/eyrie-mobile/src/view.rs")
+            .subtitle("modifié")
+            .glyph("M")
+            .key("f/view")
+            .open("depot/eyrie/fichier/view"),
+    );
+    s.row(
+        Row::new("crates/eyrie-mobile/ui/pages.slint")
+            .subtitle("modifié")
+            .glyph("M")
+            .key("f/pages")
+            .open("depot/eyrie/fichier/pages"),
+    );
+    s.row(Row::new("lib.rs").subtitle("nouveau").glyph("?").key("f/lib").open("depot/eyrie/fichier/lib"));
     s
 }
 
@@ -234,6 +270,7 @@ pub fn play(ui: &AppWindow, scene: &str) {
     });
     feed(ToPhone::Screen { module: "fawkes".into(), path: String::new(), screen: fawkes_home() });
     feed(ToPhone::Screen { module: "patronus".into(), path: String::new(), screen: patronus_home() });
+    feed(ToPhone::Screen { module: "dragontree".into(), path: "depot/eyrie".into(), screen: depot_state() });
     let term_screen = Screen::new("Claude · appli mobile")
         .subtitle("Claude attend une réponse")
         .terminal("3")
@@ -253,6 +290,9 @@ pub fn play(ui: &AppWindow, scene: &str) {
         }
         "patronus" => {
             with(|c| c.nav_select("patronus"));
+        }
+        "depot" => {
+            with(|c| c.open_module_path("dragontree", "depot/eyrie"));
         }
         "plus" | "notes" => {
             with(|c| c.nav_select(scene));

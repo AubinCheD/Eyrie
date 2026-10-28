@@ -452,27 +452,45 @@ export component TextBlock inherits Rectangle {
     }
 }
 
-// Un bouton plein (`style` : 0 normal, 1 principal, 2 danger).
+// Un bouton plein (`style` : 0 normal, 1 principal, 2 danger), avec le glyphe de l'action devant son libellé.
 export component ActButton inherits Rectangle {
     in property <string> text;
+    in property <string> glyph;
     in property <int> style: 0;
     in property <bool> enabled: true;
     callback clicked();
-    height: 46px;
-    min-width: label.preferred-width + 32px;
-    border-radius: 23px;
+    property <color> ink: root.style == 1 ? Theme.on-accent : root.style == 2 ? Theme.danger : Theme.text;
+    height: 48px;
+    preferred-width: content.preferred-width + 32px;
+    border-radius: 24px;
     opacity: enabled ? 1 : 0.45;
     background: style == 1 ? (ta.pressed ? Theme.accent.darker(0.15) : Theme.accent)
         : style == 2 ? (ta.pressed ? Theme.danger.with-alpha(0.25) : Theme.danger.with-alpha(0.14))
         : (ta.pressed ? Theme.pressed : Theme.surface-2);
     animate background { duration: 100ms; }
-    label := Text {
-        text: root.text;
-        color: root.style == 1 ? Theme.on-accent : root.style == 2 ? Theme.danger : Theme.text;
-        font-size: 15px;
-        font-weight: 600;
-        horizontal-alignment: center;
-        vertical-alignment: center;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { root.clicked(); }
+    content := HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        spacing: 7px;
+        alignment: center;
+        if root.glyph != "": Text {
+            text: root.glyph;
+            color: root.ink;
+            font-size: 15px;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.text;
+            color: root.ink;
+            font-size: 15px;
+            font-weight: 600;
+            vertical-alignment: center;
+            overflow: elide;
+        }
     }
     ta := TouchArea {
         enabled: root.enabled;
