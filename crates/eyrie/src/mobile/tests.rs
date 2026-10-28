@@ -2,7 +2,7 @@
 //! fil, qui s'appaire, suit un écran, agit, suit un terminal et y écrit, parcourt les dossiers du PC et en choisit un.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -14,11 +14,11 @@ use suite_mobile::msg::{ENTRY_DENIED, ENTRY_REPO, Listing, ToPc, ToPhone};
 use suite_mobile::pairing::Ticket;
 use suite_mobile::term::{Line, TermFrame, TermInput, TermView};
 use suite_mobile::ui::{Act, FOLDER_REPO, FolderInput, Row, Screen};
-use suite_sdk::{Badge, CommandInfo, Cx, Module, ModuleInfo, ModuleStatus, Notification, Origin, Tone};
+use suite_sdk::{Badge, CommandInfo, Cx, Module, ModuleInfo, ModuleStatus, Notification, Origin, Tone, Unavailable};
 
 use super::browse;
 use crate::app::Suite;
-use crate::core::Slot;
+use crate::core::{Slot, SlotState};
 use crate::persist::{ModuleSettings, SuiteState};
 use crate::registry;
 
@@ -472,4 +472,103 @@ fn a_notification_leads_the_phone_to_its_screen() {
     let path = |title: &str| notes.iter().find(|n| n.title == title).map(|n| n.path.clone());
     assert_eq!(path("Une chose attend"), Some(Some("detail".into())), "{notes:?}");
     assert_eq!(path("Pour information"), Some(None), "nulle part : le téléphone la déplie");
+}
+
+/// Se construit seulement quand on le lui permet ; sans écran mobile : le pont montre son écran générique.
+static FRAGILE_BUILDS: AtomicBool = AtomicBool::new(false);
+
+struct Fragile {
+    info: ModuleInfo,
+}
+
+fn fragile_info() -> ModuleInfo {
+    ModuleInfo { id: "fragile", name: "Fragile", icon: "f", summary: "essai de l'écran générique", ..info() }
+}
+
+fn build_fragile(_: &suite_sdk::BuildCx) -> Result<Box<dyn Module>, Unavailable> {
+    if !FRAGILE_BUILDS.load(Ordering::Relaxed) {
+        return Err(Unavailable::Failed("pas encore prêt".into()));
+    }
+    Ok(Box::new(Fragile { info: fragile_info() }))
+}
+
+impl Module for Fragile {
+    fn info(&self) -> &ModuleInfo {
+        &self.info
+    }
+
+    fn logic(&mut self, _ctx: &egui::Context, _cx: &mut Cx) {}
+
+    fn ui(&mut self, _ui: &mut egui::Ui, _view: &str, _cx: &mut Cx) {}
+
+    fn commands(&self) -> Vec<CommandInfo> {
+        vec![CommandInfo { id: "bonjour".into(), title: "Dire bonjour".into(), shortcut: None }]
+    }
+}
+
+/// Suit l'accueil du module fragile et attend un écran qui propose `action`.
+fn fragile_screen_with(c: &mut client::Connection, action: &str) -> Screen {
+    c.tx.send(&ToPc::Follow { screen: Some(("fragile".into(), "".into())), terminal: None }).unwrap();
+    until(c, |m| match m {
+        ToPhone::Screen { module, screen, .. } if module == "fragile" && screen.action_ids().contains(action) => {
+            Some(screen)
+        }
+        _ => None,
+    })
+}
+
+fn fragile_act(c: &mut client::Connection, req: u32, action: &str) -> (bool, String) {
+    let module = "fragile".into();
+    c.tx.send(&ToPc::Action { req, module, path: "".into(), action: action.into(), input: None }).unwrap();
+    until(c, |m| match m {
+        ToPhone::Result { req: r, ok, message } if r == req => Some((ok, message)),
+        _ => None,
+    })
+}
+
+#[test]
+fn the_generic_screen_restarts_a_stopped_module_and_says_a_command_left() {
+    let mut h = suite();
+    {
+        let ctx = h.ctx.clone();
+        let s = h.state_mut();
+        let mut slot = Slot::new(fragile_info(), build_fragile);
+        let cc = eframe::CreationContext::_new_kittest(ctx);
+        slot.start(&cc, &s.core.host, suite_sdk::DataMode::Shared, &mut s.core.journal);
+        slot.state = SlotState::Crashed("boum".into());
+        s.core.slots.push(slot);
+    }
+    let labels = with_phone(
+        &mut h,
+        |_| {},
+        |c| {
+            let label = |s: &Screen| s.all_acts().iter().find(|a| a.id == "@relancer").map(|a| a.label.clone());
+            // Arrêté : « Relancer le module », par le chemin de l'hôte ; il ne se construit pas encore.
+            let crashed = label(&fragile_screen_with(c, "@relancer"));
+            let (ok, message) = fragile_act(c, 1, "@relancer");
+            assert!(!ok && message.contains("toujours pas disponible : pas encore prêt"), "{message}");
+            // Indisponible : « Réessayer », qui le relance.
+            let unavailable = label(&fragile_screen_with(c, "@relancer"));
+            FRAGILE_BUILDS.store(true, Ordering::Relaxed);
+            let (ok, message) = fragile_act(c, 2, "@relancer");
+            assert_eq!((ok, message.as_str()), (true, "Fragile relancé"));
+            // Il tourne : ses commandes, plus de « Relancer » ; une commande lancée dit qu'elle est partie.
+            let running = fragile_screen_with(c, "cmd:bonjour");
+            assert!(!running.action_ids().contains("@relancer"), "{running:?}");
+            let (ok, message) = fragile_act(c, 3, "cmd:bonjour");
+            assert_eq!((ok, message.as_str()), (true, "« Dire bonjour » lancée sur le PC"));
+            // Ce qu'il ne propose plus est refusé.
+            let (ok, _) = fragile_act(c, 4, "@relancer");
+            assert!(!ok);
+            (crashed, unavailable)
+        },
+    );
+    assert_eq!(labels, (Some("Relancer le module".into()), Some("Réessayer".into())));
+    let s = h.state();
+    assert!(s.core.slot("fragile").is_some_and(|s| s.is_running()));
+    assert!(s.core.host.is_running("fragile"), "l'hôte sait qu'il tourne (raccourcis, modules actifs)");
+    let journal = s.core.mobile.store.read_journal(50);
+    let actions: Vec<&str> = journal.iter().filter(|l| l.kind == "action").map(|l| l.text.as_str()).collect();
+    assert!(actions.iter().any(|t| t.starts_with("Fragile › Relancer le module : échec")), "{actions:?}");
+    assert!(actions.contains(&"Fragile › Réessayer"), "{actions:?}");
 }

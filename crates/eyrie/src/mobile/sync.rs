@@ -8,7 +8,8 @@
 //!
 //! Une action n'est exécutée que si l'appareil a le droit d'agir et si le dernier écran envoyé la proposait (même
 //! module, même chemin, même identifiant). Les actions qui commencent par `@` sont celles de l'hôte (« Montrer sur le
-//! PC »), comme celles des écrans génériques (`cmd:<id>` : une commande de la palette du module).
+//! PC », « Relancer » un module arrêté), comme celles des écrans génériques (`cmd:<id>` : une commande de la palette du
+//! module).
 //!
 //! Une action qui demande un dossier du PC (`input.folder`) garde sa saisie avec la liste blanche : le téléphone ne
 //! parcourt les dossiers ([`ToPc::Browse`], lu dans un fil par [`browse`]) que pour elle, avec le droit « Dossiers du
@@ -40,6 +41,8 @@ const TERM_EVERY: Duration = Duration::from_millis(50);
 pub const TERM_HISTORY: usize = 500;
 /// Une saisie de terminal est notée au journal au plus une fois par minute et par terminal.
 const TERM_JOURNAL_EVERY: Duration = Duration::from_secs(60);
+/// L'action de l'écran générique qui relance un module arrêté ou indisponible.
+const RESTART: &str = "@relancer";
 
 /// L'écran que suit un téléphone.
 struct Followed {
@@ -384,7 +387,7 @@ fn message(
                 }
             };
             let result = if action.starts_with('@') || generic {
-                host_action(core, &module, &action, commands)
+                host_action(core, ctx, &module, &action, &label, commands)
             } else {
                 with_module(core, &module, frame, ctx, |m, cx| m.mobile_action(&path, &action, input.as_deref(), cx))
                     .unwrap_or_else(|| Err(format!("{} ne tourne pas sur le PC", module_name(core, &module))))
@@ -478,11 +481,15 @@ fn message(
     }
 }
 
-/// Les actions de l'hôte : `@pc` montre le module sur le PC ; `cmd:<id>` exécute une commande de sa palette.
+/// Les actions de l'hôte : `@pc` montre le module sur le PC ; `cmd:<id>` exécute une commande de sa palette (`label` :
+/// son titre) ; `@relancer` reconstruit un module arrêté ou indisponible, comme « Relancer le module » et « Réessayer »
+/// dans sa case.
 fn host_action(
     core: &mut Core,
+    ctx: &egui::Context,
     module: &str,
     action: &str,
+    label: &str,
     commands: &mut Vec<(String, String)>,
 ) -> Result<Option<String>, String> {
     if action == "@pc" {
@@ -492,9 +499,33 @@ fn host_action(
     if let Some(command) = action.strip_prefix("cmd:") {
         core.host.show(module);
         commands.push((module.to_string(), command.to_string()));
-        return Ok(None);
+        return Ok(Some(format!("« {label} » lancée sur le PC")));
+    }
+    if action == RESTART {
+        return restart(core, ctx, module);
     }
     Err("action inconnue".into())
+}
+
+/// Relance un module arrêté ou indisponible par le chemin de l'hôte ([`Core::start_module`]), et dit ce qu'il en est :
+/// un module qui tourne n'est pas reconstruit, un module désactivé ne s'active pas depuis le téléphone.
+fn restart(core: &mut Core, ctx: &egui::Context, module: &str) -> Result<Option<String>, String> {
+    let name = module_name(core, module);
+    match core.slot(module).map(|s| &s.state) {
+        Some(SlotState::Unavailable(_) | SlotState::Crashed(_)) => {}
+        Some(SlotState::Running(_)) => return Ok(Some(format!("{name} tourne déjà sur le PC"))),
+        Some(SlotState::Disabled) => return Err(format!("{name} est désactivé dans les réglages d'Eyrie")),
+        None => return Err(format!("{name} n'existe pas sur le PC")),
+    }
+    core.start_module(ctx, module);
+    match core.slot(module).map(|s| &s.state) {
+        Some(SlotState::Running(_)) => Ok(Some(format!("{name} relancé"))),
+        Some(SlotState::Unavailable(u)) => {
+            Err(format!("{name} n'est toujours pas disponible : {}", crate::app::unavailable_text(u)))
+        }
+        Some(SlotState::Crashed(msg)) => Err(format!("{name} s'est de nouveau arrêté : {msg}")),
+        _ => Err(format!("{name} n'a pas redémarré")),
+    }
 }
 
 /// Cartes, vue d'ensemble, notifications, commandes.
@@ -638,11 +669,15 @@ fn generic_screen(core: &Core, module: &str) -> Option<Screen> {
         SlotState::Disabled => {
             s.note("Ce module est désactivé dans les réglages d'Eyrie.", mui::Tone::Info);
         }
+        // Les boutons de sa case sur le PC : un module indisponible (son exe lancé seul…) se réessaie, un module arrêté
+        // se relance.
         SlotState::Unavailable(u) => {
             s.note(crate::app::unavailable_text(u), mui::Tone::Warn);
+            s.buttons(vec![Act::new(RESTART, "Réessayer").glyph("🔄")]);
         }
         SlotState::Crashed(msg) => {
             s.note(format!("Ce module s'est arrêté après une erreur : {msg}"), mui::Tone::Danger);
+            s.buttons(vec![Act::new(RESTART, "Relancer le module").glyph("🔄").primary()]);
         }
     }
     Some(s)

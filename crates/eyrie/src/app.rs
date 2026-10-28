@@ -196,6 +196,43 @@ impl Core {
         self.actions.push(a);
     }
 
+    /// Reconstruit le module (arrêté, indisponible, ou désactivé : il est alors activé) : [`Action::StartModule`], et
+    /// « Relancer » depuis le téléphone, qui passe par la logique de l'hôte (fenêtre réduite, `ui` n'est pas appelé).
+    pub fn start_module(&mut self, ctx: &egui::Context, id: &str) {
+        let cc = eframe::CreationContext::_new_kittest(ctx.clone());
+        // Le mode du lancement, pas le réglage changé depuis : les variables
+        // d'environnement du mode essai sont posées au démarrage seulement.
+        let data = data_mode(self.launch_data, &self.dir, id);
+        let Core { slots, host, journal, st, .. } = self;
+        if let Some(slot) = slots.iter_mut().find(|s| s.info.id == id) {
+            slot.start(&cc, host, data, journal);
+            st.modules.insert(id.to_string(), persist::ModuleSettings { enabled: true });
+        }
+        // Son constructeur a pu poser son thème et son zoom : ceux de la suite reviennent
+        // (ses polices sont rétablies au début de l'image suivante).
+        theme::apply(ctx, self.host.palette(), self.st.zoom);
+        self.refresh_registry();
+    }
+
+    /// Raccourcis et modules actifs, après un démarrage ou un arrêt de module.
+    fn refresh_registry(&mut self) {
+        let mut registry = Registry::default();
+        for (id, title, sc) in suite_shortcuts(&self.st) {
+            registry.add(Owner::Suite, id, tr(title), sc);
+        }
+        for s in &self.slots {
+            if let Some(m) = s.module() {
+                for c in m.commands() {
+                    if let Some(sc) = c.shortcut {
+                        registry.add(Owner::Module(s.info.id.to_string()), c.id, c.title, sc);
+                    }
+                }
+            }
+        }
+        self.registry = registry;
+        self.host.set_running(self.slots.iter().filter(|s| s.is_running()).map(|s| s.info.id.to_string()).collect());
+    }
+
     pub fn palette(&self) -> &'static theme::Palette {
         self.host.palette()
     }
@@ -762,21 +799,7 @@ impl Suite {
                     };
                     self.core.journal.push("suite", Tone::Info, msg);
                 }
-                Action::StartModule(id) => {
-                    let cc = eframe::CreationContext::_new_kittest(ctx.clone());
-                    // Le mode du lancement, pas le réglage changé depuis : les variables
-                    // d'environnement du mode essai sont posées au démarrage seulement.
-                    let data = data_mode(self.core.launch_data, &self.core.dir, &id);
-                    let Core { slots, host, journal, st, .. } = &mut self.core;
-                    if let Some(slot) = slots.iter_mut().find(|s| s.info.id == id) {
-                        slot.start(&cc, host, data, journal);
-                        st.modules.insert(id.clone(), persist::ModuleSettings { enabled: true });
-                    }
-                    // Son constructeur a pu poser son thème et son zoom : ceux de la suite reviennent
-                    // (ses polices sont rétablies au début de l'image suivante).
-                    theme::apply(ctx, self.core.host.palette(), self.core.st.zoom);
-                    self.refresh_registry();
-                }
+                Action::StartModule(id) => self.core.start_module(ctx, &id),
                 Action::StopModule(id) => {
                     let Core { slots, journal, st, .. } = &mut self.core;
                     if let Some(slot) = slots.iter_mut().find(|s| s.info.id == id) {
@@ -784,7 +807,7 @@ impl Suite {
                         journal.push(&id, Tone::Info, format!("{} {}", slot.info.name, tr("arrêté et désactivé")));
                         st.modules.insert(id.clone(), persist::ModuleSettings { enabled: false });
                     }
-                    self.refresh_registry();
+                    self.core.refresh_registry();
                 }
                 Action::Restart => {
                     self.core.quit.restart = true;
@@ -794,27 +817,6 @@ impl Suite {
                 Action::Quit => ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, ViewportCommand::Close),
             }
         }
-    }
-
-    /// Raccourcis et modules actifs, après un démarrage ou un arrêt de module.
-    fn refresh_registry(&mut self) {
-        let mut registry = Registry::default();
-        for (id, title, sc) in suite_shortcuts(&self.core.st) {
-            registry.add(Owner::Suite, id, tr(title), sc);
-        }
-        for s in &self.core.slots {
-            if let Some(m) = s.module() {
-                for c in m.commands() {
-                    if let Some(sc) = c.shortcut {
-                        registry.add(Owner::Module(s.info.id.to_string()), c.id, c.title, sc);
-                    }
-                }
-            }
-        }
-        self.core.registry = registry;
-        self.core
-            .host
-            .set_running(self.core.slots.iter().filter(|s| s.is_running()).map(|s| s.info.id.to_string()).collect());
     }
 
     /// La file de l'hôte : notifications, événements, demandes, « montre-moi », attention.
