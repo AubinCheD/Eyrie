@@ -101,34 +101,52 @@ static UNSEEN: Seen = Seen {
     foreground: None,
 };
 
-fn seen_of(app: &App, id: TermId) -> Seen {
-    let (_, label) = fawkes::ui::panes::status_color(app, id);
-    let label = label.lines().next().unwrap_or_default().to_string();
-    let Some(l) = app.live.get(&id) else {
-        let state = if app.failed.contains_key(&id) {
+/// Ce que Fawkes sait d'un terminal, en un état. Arrêté : en échec, en attente de son tour, sinon en veille. En
+/// marche : Claude qui attend passe avant tout (c'est ce qu'il faut voir), puis l'échec, la fin du programme, et ce
+/// que fait Claude ; Claude qui démarre, non identifié ou absent : un terminal qui tourne.
+fn state_of(
+    live: bool,
+    waiting: bool,
+    failed: bool,
+    pending: bool,
+    exited: bool,
+    claude: Option<ClaudeStatus>,
+) -> State {
+    if !live {
+        return if failed {
             State::Failed
-        } else if app.pending_start(id) {
+        } else if pending {
             State::Starting
         } else {
             State::Asleep
         };
-        return Seen { state, label, ..Default::default() };
-    };
-    let state = if app.ui.waiting.contains(&id) {
+    }
+    if waiting || claude == Some(ClaudeStatus::Waiting) {
         State::Waiting
-    } else if app.failed.contains_key(&id) {
+    } else if failed {
         State::Failed
-    } else if l.rt.is_exited() {
+    } else if exited {
         State::Ended
     } else {
-        match fawkes::ui::panes::claude_status(l) {
+        match claude {
             Some(ClaudeStatus::Busy) => State::Working,
             Some(ClaudeStatus::Idle) => State::Ready,
             _ => State::Running,
         }
+    }
+}
+
+fn seen_of(app: &App, id: TermId) -> Seen {
+    let (_, label) = fawkes::ui::panes::status_color(app, id);
+    let label = label.lines().next().unwrap_or_default().to_string();
+    let (failed, pending) = (app.failed.contains_key(&id), app.pending_start(id));
+    let Some(l) = app.live.get(&id) else {
+        return Seen { state: state_of(false, false, failed, pending, false, None), label, ..Default::default() };
     };
+    let waiting = app.ui.waiting.contains(&id);
+    let claude = fawkes::ui::panes::claude_status(l);
     Seen {
-        state,
+        state: state_of(true, waiting, failed, pending, l.rt.is_exited(), claude),
         label,
         live: true,
         claude: l.proc.claude_pid.is_some(),
@@ -945,6 +963,28 @@ mod tests {
         assert_eq!(badge(Tally { terms: 1, live: 1, ..Default::default() }), (String::new(), None));
         let renamed = group(5, "Eyrie (renommé)", &[]);
         assert_eq!(group_band(&renamed, &Tally::default(), false, 3).key, "g5");
+    }
+
+    /// Ce que Fawkes sait d'un terminal donne un état, dans cet ordre : arrêté (échec, démarrage prévu, veille), puis
+    /// en marche (Claude qui attend, échec, programme terminé, Claude au travail ou prêt, le reste).
+    #[test]
+    fn what_fawkes_knows_gives_one_state() {
+        use ClaudeStatus::{Busy, Idle, Starting, Unidentified, Waiting};
+        let off = |failed, pending| state_of(false, false, failed, pending, false, None);
+        assert_eq!(off(true, true), State::Failed, "arrêté en échec, même si un démarrage est prévu");
+        assert_eq!(off(false, true), State::Starting, "son tour de démarrer : pas en veille");
+        assert_eq!(off(false, false), State::Asleep);
+        assert_eq!(state_of(false, true, false, false, false, Some(Waiting)), State::Asleep, "arrêté : rien n'attend");
+        let on = |waiting, failed, exited, claude| state_of(true, waiting, failed, false, exited, claude);
+        assert_eq!(on(true, true, true, Some(Idle)), State::Waiting, "Claude qui attend passe avant l'échec");
+        assert_eq!(on(false, false, false, Some(Waiting)), State::Waiting, "relevé entre deux images de Fawkes");
+        assert_eq!(on(false, true, true, Some(Busy)), State::Failed, "l'échec passe avant la fin");
+        assert_eq!(on(false, false, true, Some(Busy)), State::Ended, "la fin passe avant ce que faisait Claude");
+        assert_eq!(on(false, false, false, Some(Busy)), State::Working);
+        assert_eq!(on(false, false, false, Some(Idle)), State::Ready);
+        for claude in [Some(Starting), Some(Unidentified), None] {
+            assert_eq!(on(false, false, false, claude), State::Running, "{claude:?}");
+        }
     }
 
     /// Claude qui travaille, Claude prêt, en veille, en échec, qui attend : chaque état a son glyphe ou son ton, et un
