@@ -1568,15 +1568,25 @@ mod tests {
         }
     }
 
-    /// Parcourt les écrans que le téléphone peut ouvrir depuis `start` (au plus `max`) : chaque chemin qu'un écran
-    /// ouvre (ligne, onglet, action d'écran) doit exister sur le PC. Rend les chemins visités.
+    /// Parcourt les écrans que le téléphone peut ouvrir depuis `start` (au plus `max`, et 4 de chaque sorte : détails
+    /// de branche, commits…) : chaque chemin qu'un écran visité ouvre (ligne, onglet, action d'écran) doit exister sur
+    /// le PC, visité ou non. Rend les chemins visités.
     fn walk(h: &mut H, phone: &mut Phone, start: &str, max: usize) -> Vec<String> {
+        // `depot/<clé>/branche/<b>` : « branche », 4 parts.
+        let kind = |p: &str| format!("{}:{}", p.split('/').nth(2).unwrap_or_default(), p.split('/').count());
+        let mut kinds: HashMap<String, usize> = HashMap::new();
         let mut seen = std::collections::BTreeSet::new();
         let mut todo = std::collections::VecDeque::from([start.to_string()]);
         while let Some(path) = todo.pop_front() {
-            if seen.len() >= max || !seen.insert(path.clone()) {
+            if seen.len() >= max || seen.contains(&path) {
                 continue;
             }
+            let visits = kinds.entry(kind(&path)).or_default();
+            if *visits >= 4 {
+                continue;
+            }
+            *visits += 1;
+            seen.insert(path.clone());
             let s = settle(h, phone, &path).unwrap_or_else(|| panic!("l'écran « {path} » n'existe pas sur le PC"));
             for open in s.opens() {
                 assert!(
@@ -1595,7 +1605,8 @@ mod tests {
 
     /// Le défaut du 28/10 : les sous-écrans d'un dépôt ouvraient des chemins relatifs, que le PC ne trouvait pas.
     /// Depuis la liste, chaque écran atteignable existe, sur un vrai dépôt avec un commit, une modification, une
-    /// seconde branche, une étiquette et une remise.
+    /// seconde branche, une étiquette, une remise, et un remote de 32 branches (un bandeau coupé, son groupe entier,
+    /// le détail d'une branche distante).
     #[test]
     fn every_screen_reachable_from_the_list_exists_on_the_pc() {
         let Ok(git) = Git::discover() else { return };
@@ -1615,6 +1626,17 @@ mod tests {
         for i in 0..31 {
             std::fs::write(repo.join(format!("neuf-{i}.txt")), "neuf\n").unwrap();
         }
+        // Un remote nu où `main` est suivie, et 31 branches d'un même dossier : au-delà de 30, un bandeau par dossier,
+        // coupé à 25 lignes, puis « 6 autres… » vers le groupe entier.
+        let origin = dir.join("origin.git").display().to_string();
+        sh(&["init", "-q", "--bare", &origin]);
+        sh(&["remote", "add", "origin", &origin]);
+        sh(&["push", "-q", "-u", "origin", "main"]);
+        let many: Vec<String> = (0..31).map(|i| format!("main:refs/heads/equipe/eux/b{i}")).collect();
+        let mut push = vec!["push", "-q", "origin"];
+        push.extend(many.iter().map(String::as_str));
+        sh(&push);
+        sh(&["fetch", "-q", "origin"]);
 
         // Le dépôt n'est que dans la liste du scan de DragonTree (ni onglet, ni récent).
         let profile = dir.join("profil");
@@ -1633,6 +1655,17 @@ mod tests {
             seen.iter().any(|s| s.starts_with(&format!("{base}/commit/")) && s.matches('/').count() == 4),
             "le diff d'un fichier d'un commit : {seen:?}"
         );
+        assert!(has("branches/g/"), "le groupe entier d'un gros remote : {seen:?}");
+        // Une branche distante : un bandeau plié de l'onglet Branches l'ouvre ; son détail la suit en local, la
+        // fusionne ou rebase la courante dessus.
+        let branches = settle(&mut h, &mut phone, &format!("{base}/branches")).unwrap();
+        let theirs = format!("{base}/branche/{}", branches::branch_key("refs/remotes/origin/equipe/eux/b0"));
+        assert!(branches.opens().contains(&theirs), "{branches:?}");
+        assert!(format!("{branches:?}").contains("6 autres…"), "{branches:?}");
+        let d = settle(&mut h, &mut phone, &theirs).unwrap();
+        for id in ["suivre:origin/equipe/eux/b0", "fusionner:origin/equipe/eux/b0", "rebaser:origin/equipe/eux/b0"] {
+            assert!(d.action_ids().contains(id), "{id} : {d:?}");
+        }
         drop(h);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1648,6 +1681,50 @@ mod tests {
             }
         }
         None
+    }
+
+    /// Un dépôt que le téléphone a ouvert pour le lire reste dans son bandeau ; son onglet refermé sur le PC, il n'est
+    /// plus « au téléphone » : rouvert ensuite par l'utilisateur, il est parmi les dépôts ouverts sur le PC, même en
+    /// fond.
+    #[test]
+    fn a_tab_closed_on_the_pc_is_no_longer_the_phones() {
+        use eframe::egui::{Key, Modifiers};
+
+        let Ok(git) = Git::discover() else { return };
+        let dir = std::env::temp_dir().join(format!("suite-dragontree-onglet-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (repo, other) = (dir.join("depot"), dir.join("autre"));
+        new_repo(&git, &repo);
+        new_repo(&git, &other);
+        let profile = dir.join("profil");
+        std::fs::create_dir_all(&profile).unwrap();
+        let settings = Settings { recent_repos: vec![repo.clone(), other.clone()], ..Default::default() };
+        std::fs::write(profile.join("settings.json"), serde_json::to_vec(&settings).unwrap()).unwrap();
+        let mut phone = Phone::new(profile.join("settings.json"), profile.join("repos-cache.json"));
+        let mut h = dragontree(&profile);
+        let key = repo_key(&repo);
+        let band = |h: &mut H, phone: &mut Phone| band_of(&phone.screen(h.state_mut(), "").unwrap(), &key);
+        wait_screen(&mut h, &mut phone, &format!("depot/{key}"), "lisez-moi.txt");
+        assert_eq!(band(&mut h, &mut phone), Some("Récents".into()), "lu depuis le téléphone : il ne bouge pas");
+
+        // L'utilisateur l'affiche sur le PC (son onglet), puis le ferme (Ctrl+W) ; le téléphone regarde sa liste.
+        h.state_mut().show_repo(&repo);
+        h.step();
+        h.key_press_modifiers(Modifiers::COMMAND, Key::W);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while h.state().repo_tab(&repo).is_some() && Instant::now() < deadline {
+            h.step();
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(h.state().repo_tab(&repo).is_none(), "onglet fermé");
+        assert_eq!(band(&mut h, &mut phone), Some("Récents".into()));
+        // Rouvert par l'utilisateur, puis un autre dépôt affiché : le sien reste ouvert, en fond.
+        h.state_mut().show_repo(&repo);
+        h.state_mut().show_repo(&other);
+        h.step();
+        assert_eq!(band(&mut h, &mut phone), Some("Ouverts sur le PC".into()));
+        drop(h);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn rows(s: &Screen) -> Vec<&suite_sdk::mobile::ui::Row> {
