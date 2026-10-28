@@ -1,10 +1,11 @@
 // Un terminal du PC, en direct : la grille (couleurs résolues dans le thème du téléphone), ajustée à la largeur de
 // l'écran ; deux doigts la zooment (le zoom est gardé). Dessous : réponses rapides quand Claude attend, barre de touches
-// (Ctrl et Alt collants, coller), champ de saisie (sur plusieurs lignes, il part en collage).
+// (Ctrl et Alt collants, coller, copier), champ de saisie (sur plusieurs lignes, il part en collage). Un appui long sur
+// la sortie, ou « Copier », montre son texte dans un champ en lecture seule, où l'on sélectionne ce qu'on copie.
 
 import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Icon, IconButton } from "widgets.slint";
+import { Icon, IconButton, ActButton } from "widgets.slint";
 
 export struct TermSeg {
     col: int,
@@ -72,6 +73,135 @@ component KeyChip inherits Rectangle {
     }
 }
 
+// Le texte du terminal à copier (l'historique gardé compris), figé à l'ouverture : on y sélectionne (appui long, puis
+// les poignées) et « Copier » ; sans sélection, tout part.
+component CopySheet inherits Rectangle {
+    in property <string> text;
+    // La sélection de départ (octets) : la ligne d'un appui long ; égales, le curseur seul (à la fin : le bas visible).
+    in property <int> anchor;
+    in property <int> focus-at;
+    callback close();
+    callback copied(bool);
+    property <bool> selecting: field.anchor-position-byte-offset != field.cursor-position-byte-offset;
+    // La sélection de départ vient d'être posée : elle se montre au milieu.
+    property <bool> placing;
+    background: Theme.surface;
+    // Rien ne passe au terminal dessous.
+    TouchArea { }
+    VerticalLayout {
+        HorizontalLayout {
+            height: 64px;
+            padding-left: Theme.pad;
+            padding-right: 6px;
+            spacing: 6px;
+            VerticalLayout {
+                alignment: center;
+                horizontal-stretch: 1;
+                spacing: 2px;
+                Text {
+                    text: "Copier du terminal";
+                    color: Theme.text;
+                    font-size: 16px;
+                    font-weight: 600;
+                }
+                Text {
+                    text: "Appui long sur le texte pour sélectionner, puis Copier.";
+                    color: Theme.text-dim;
+                    font-size: Theme.font-small;
+                    wrap: word-wrap;
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                IconButton {
+                    icon: "close";
+                    label: "Fermer";
+                    clicked => { root.close(); }
+                }
+            }
+        }
+        Rectangle {
+            vertical-stretch: 1;
+            background: Theme.term-bg;
+            clip: true;
+            flick := Flickable {
+                x: 12px;
+                width: parent.width - 24px;
+                // La souris sélectionne (bureau) ; le doigt fait défiler, l'appui long sélectionne.
+                mouse-drag-pan-enabled: false;
+                content-width: self.width;
+                content-height: max(self.height, field.preferred-height + 24px);
+                field := TextInput {
+                    y: 12px;
+                    width: flick.width;
+                    height: max(flick.height - 24px, self.preferred-height);
+                    text: root.text;
+                    read-only: true;
+                    single-line: false;
+                    wrap: word-wrap;
+                    vertical-alignment: top;
+                    font-family: "Hack";
+                    font-size: 13px;
+                    color: Theme.term-fg;
+                    selection-background-color: Theme.accent.with-alpha(0.35);
+                    selection-foreground-color: Theme.term-fg;
+                    accessible-label: "Texte du terminal";
+                    // Le curseur (le bout de la sélection) reste visible.
+                    cursor-position-changed(p) => {
+                        if root.placing {
+                            root.placing = false;
+                            flick.content-y = max(min(0px, flick.height - flick.content-height), min(0px, flick.height / 2 - p.y - 12px));
+                        } else if p.y + 12px + flick.content-y < 0 {
+                            flick.content-y = min(0px, 8px - p.y - 12px);
+                        } else if p.y + 52px + flick.content-y > flick.height {
+                            flick.content-y = flick.height - p.y - 52px;
+                        }
+                    }
+                }
+            }
+        }
+        HorizontalLayout {
+            height: 64px;
+            padding-left: Theme.pad;
+            padding-right: Theme.pad;
+            padding-top: 8px;
+            padding-bottom: 8px;
+            spacing: 10px;
+            alignment: end;
+            ActButton {
+                text: "Tout sélectionner";
+                clicked => { field.select-all(); }
+            }
+            ActButton {
+                text: root.selecting ? "Copier" : "Tout copier";
+                style: 1;
+                clicked => {
+                    if root.selecting {
+                        field.copy();
+                        root.copied(false);
+                    } else {
+                        field.select-all();
+                        field.copy();
+                        root.copied(true);
+                    }
+                }
+            }
+        }
+    }
+    // Après la première mise en page : le champ prend le focus (l'appui long d'Android y sélectionne), puis la
+    // sélection de départ.
+    Timer {
+        interval: 40ms;
+        running: true;
+        triggered => {
+            self.running = false;
+            field.focus();
+            root.placing = root.focus-at > 0;
+            field.set-selection-offsets(root.anchor, root.focus-at);
+        }
+    }
+}
+
 export component TermView inherits Rectangle {
     in property <[TermRow]> rows;
     in property <int> cols: 80;
@@ -87,6 +217,11 @@ export component TermView inherits Rectangle {
     in-out property <string> draft;
     // Ce qui est collé (tenu par le code) : 0 rien, 1 Ctrl, 2 Alt.
     in property <int> latch;
+    // Le texte à copier, figé à l'ouverture, et sa sélection de départ (octets).
+    in property <string> copy-text;
+    in property <int> copy-anchor;
+    in property <int> copy-focus;
+    in-out property <bool> copy-visible;
     // Le bas de la liste est visible.
     out property <bool> at-bottom: list.content-y <= list.visible-height - root.content-h + 2 * root.ch;
     // La liste suit le bas tant que l'utilisateur ne l'a pas remontée : la sortie qui arrive y reste collée, et le bas
@@ -103,6 +238,9 @@ export component TermView inherits Rectangle {
     callback typed(string);
     // Le texte du presse-papiers, à coller.
     callback paste(string);
+    // Le texte à copier, cette ligne sélectionnée (-1 : aucune) ; copié (`true` : tout le texte).
+    callback copy(int);
+    callback copied(bool);
     callback reply(int);
     callback zoomed(float);
     callback haptic();
@@ -177,7 +315,7 @@ export component TermView inherits Rectangle {
             }
         }
     }
-    // Le champ de saisie touché pendant que Ctrl ou Alt était collé : il se relâche.
+    // Le champ de saisie touché pendant que Ctrl ou Alt était collé (ou le texte à copier ouvert) : il se relâche.
     changed catching => {
         if !root.catching && root.latch != 0 {
             root.unlatch();
@@ -247,7 +385,9 @@ export component TermView inherits Rectangle {
                             root.follow = false;
                         }
                     }
-                    for row[i] in root.rows: Rectangle {
+                    for row[i] in root.rows: line := Rectangle {
+                        // L'appui long a déjà ouvert le texte à copier : relâcher ne fait rien de plus.
+                        property <bool> held;
                         height: root.ch;
                         for seg in row.segs: Rectangle {
                             x: 6px + seg.col * root.cw;
@@ -275,6 +415,23 @@ export component TermView inherits Rectangle {
                             width: max(2px, root.cw);
                             height: root.ch;
                             background: Theme.accent.with-alpha(0.55);
+                        }
+                        // Un appui long : le texte du terminal à copier, cette ligne sélectionnée.
+                        hold := TouchArea {
+                            pointer-event(e) => {
+                                if e.kind == PointerEventKind.down {
+                                    line.held = false;
+                                }
+                            }
+                        }
+                        Timer {
+                            interval: 520ms;
+                            running: hold.pressed && !line.held;
+                            triggered => {
+                                line.held = true;
+                                root.haptic();
+                                root.copy(i);
+                            }
                         }
                     }
                 }
@@ -380,6 +537,13 @@ export component TermView inherits Rectangle {
                         clicked => {
                             root.haptic();
                             root.paste-clipboard();
+                        }
+                    }
+                    KeyChip {
+                        text: "Copier";
+                        clicked => {
+                            root.haptic();
+                            root.copy(-1);
                         }
                     }
                     for k in root.more-keys: KeyChip {
@@ -547,4 +711,18 @@ export component TermView inherits Rectangle {
         }
     }
 
+    if root.copy-visible: CopySheet {
+        width: parent.width;
+        height: parent.height;
+        text: root.copy-text;
+        anchor: root.copy-anchor;
+        focus-at: root.copy-focus;
+        close => {
+            root.copy-visible = false;
+        }
+        copied(all) => {
+            root.copy-visible = false;
+            root.copied(all);
+        }
+    }
 }

@@ -91,6 +91,11 @@ export component AppWindow inherits Window {
     out property <bool> term-follow: term.follow;
     // Ctrl ou Alt collé : 0 rien, 1 Ctrl, 2 Alt.
     in property <int> term-latch;
+    // Le texte du terminal à copier (figé à l'ouverture) et sa sélection de départ (octets).
+    in property <string> term-copy-text;
+    in property <int> term-copy-anchor;
+    in property <int> term-copy-focus;
+    in-out property <bool> term-copy-visible;
     // Un collage de plusieurs lignes, demandé d'abord : la question, avec un aperçu.
     in property <string> term-paste-text;
     in-out property <bool> term-paste-visible;
@@ -182,6 +187,8 @@ export component AppWindow inherits Window {
     callback term-typed(string);
     callback term-paste(string);
     callback term-paste-confirmed();
+    callback term-copy(int);
+    callback term-copied(bool);
     callback open-folder(UiAct);
     callback picker-go(string);
     callback picker-pick(string);
@@ -312,7 +319,11 @@ export component AppWindow inherits Window {
                     root.term-paste-visible = false;
                     return accept;
                 }
-                // Ctrl ou Alt collé se relâche.
+                // Le texte à copier se ferme ; Ctrl ou Alt collé se relâche.
+                if root.terminal-mode && root.term-copy-visible {
+                    root.term-copy-visible = false;
+                    return accept;
+                }
                 if root.terminal-mode && root.term-latch != 0 {
                     root.term-unlatch();
                     return accept;
@@ -382,7 +393,13 @@ export component AppWindow inherits Window {
                         root.haptic();
                         root.run-act({ id: "@pc", label: "Montrer sur le PC" }, "");
                     }
-                    back => { root.back-requested(); }
+                    back => {
+                        if root.terminal-mode && root.term-copy-visible {
+                            root.term-copy-visible = false;
+                            return;
+                        }
+                        root.back-requested();
+                    }
                     act(a) => { root.start-act(a); }
                     more => { root.show-sheet(root.screen-title, root.screen-acts); }
                 }
@@ -548,12 +565,18 @@ export component AppWindow inherits Window {
                         can-type: root.term-can-type;
                         draft <=> root.term-draft;
                         latch: root.term-latch;
+                        copy-text: root.term-copy-text;
+                        copy-anchor: root.term-copy-anchor;
+                        copy-focus: root.term-copy-focus;
+                        copy-visible <=> root.term-copy-visible;
                         send-line(t) => { root.term-send-line(t); }
                         key(k) => { root.term-key(k); }
                         latch-key(w) => { root.term-latch-key(w); }
                         unlatch => { root.term-unlatch(); }
                         typed(t) => { root.term-typed(t); }
                         paste(t) => { root.term-paste(t); }
+                        copy(i) => { root.term-copy(i); }
+                        copied(all) => { root.term-copied(all); }
                         reply(i) => { root.term-reply(i); }
                         zoomed(z) => { root.term-zoomed(z); }
                         haptic => { root.haptic(); }

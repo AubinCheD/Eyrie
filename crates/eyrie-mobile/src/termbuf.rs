@@ -46,6 +46,21 @@ impl TermBuf {
         written.max(cursor).max(1).min(self.lines.len())
     }
 
+    /// Le texte à copier : les lignes montrées (l'historique gardé compris), une par ligne, et l'octet où chacune
+    /// commence (pour sélectionner celle qu'un appui long a désignée).
+    pub fn copy_text(&self) -> (String, Vec<usize>) {
+        let mut text = String::new();
+        let mut starts = Vec::new();
+        for (i, l) in self.lines[..self.visible_len()].iter().enumerate() {
+            if i > 0 {
+                text.push('\n');
+            }
+            starts.push(text.len());
+            text.push_str(&line_text(l));
+        }
+        (text, starts)
+    }
+
     pub fn apply(&mut self, f: &TermFrame) -> Change {
         let full = !self.is(&f.module, &f.id);
         if full {
@@ -61,6 +76,23 @@ impl TermBuf {
         self.ended = f.ended;
         Change { full, shifted, len: self.lines.len(), changed: f.changed.iter().map(|(i, _)| *i as usize).collect() }
     }
+}
+
+/// Le texte d'une ligne, colonnes gardées (les blancs entre deux suites de même style reviennent) ; sans les blancs de
+/// la fin.
+pub fn line_text(line: &Line) -> String {
+    let mut s = String::new();
+    let mut col = 0;
+    for r in &line.runs {
+        while col < r.col as usize {
+            s.push(' ');
+            col += 1;
+        }
+        s.push_str(&r.text);
+        col += r.text.chars().count();
+    }
+    s.truncate(s.trim_end().len());
+    s
 }
 
 /// Les couleurs du terminal dans un thème.
@@ -188,6 +220,28 @@ mod tests {
         v.cursor = Some((2, 0));
         b.apply(&TermFrame::full("fawkes", "1", &v));
         assert_eq!(b.visible_len(), 3, "le curseur plus bas : ses lignes se montrent");
+    }
+
+    #[test]
+    fn the_text_to_copy_keeps_columns_and_the_kept_history() {
+        let mut b = TermBuf::default();
+        let mut v = view(&["$ cargo test", "", "", ""]);
+        v.lines.insert(
+            1,
+            Line {
+                runs: vec![
+                    Run { col: 2, text: "ok".into(), fg: Color::Indexed(2), bg: Color::Default, flags: 0 },
+                    Run { col: 6, text: "3 tests  ".into(), fg: Color::Default, bg: Color::Default, flags: 0 },
+                ],
+            },
+        );
+        v.cursor = Some((2, 0));
+        b.apply(&TermFrame::full("fawkes", "1", &v));
+        let (text, starts) = b.copy_text();
+        assert_eq!(text, "$ cargo test\n  ok  3 tests\n", "le curseur sur la troisième : elle se copie, vide");
+        assert_eq!(starts, vec![0, 13, 27]);
+        assert_eq!(&text[starts[1]..starts[2] - 1], "  ok  3 tests");
+        assert_eq!(TermBuf::default().copy_text(), (String::new(), Vec::new()));
     }
 
     #[test]

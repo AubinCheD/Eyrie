@@ -2012,11 +2012,27 @@ impl Controller {
         }
     }
 
-    /// Un autre terminal, ou plus de terminal : ce qui le servait se referme (Ctrl collé, collage).
+    /// Le texte du terminal à copier, dans un champ en lecture seule ; `line` : la ligne d'un appui long, sélectionnée.
+    pub(crate) fn term_copy(&mut self, line: Option<usize>) {
+        let Some(ui) = self.ui() else { return };
+        let (text, starts) = self.term.copy_text();
+        let end = |i: usize| starts.get(i + 1).map_or(text.len(), |s| s - 1);
+        let (anchor, focus) = match line.filter(|&i| i < starts.len()) {
+            Some(i) => (starts[i], end(i)),
+            None => (text.len(), text.len()),
+        };
+        ui.set_term_copy_text(text.as_str().into());
+        ui.set_term_copy_anchor(anchor as i32);
+        ui.set_term_copy_focus(focus as i32);
+        ui.set_term_copy_visible(true);
+    }
+
+    /// Un autre terminal, ou plus de terminal : ce qui le servait se referme (Ctrl collé, texte à copier, collage).
     fn leave_term(&mut self) {
         self.set_latch(Latch::None);
         self.paste = None;
         if let Some(ui) = self.ui() {
+            ui.set_term_copy_visible(false);
             ui.set_term_paste_visible(false);
         }
     }
@@ -2526,6 +2542,15 @@ fn wire(ui: &AppWindow) {
     });
     ui.on_term_paste_confirmed(|| {
         with(|c| c.term_paste_confirmed());
+    });
+    ui.on_term_copy(|line| {
+        with(|c| c.term_copy(usize::try_from(line).ok()));
+    });
+    ui.on_term_copied(|all| {
+        with(|c| {
+            platform::haptic();
+            c.toast(if all { "Tout le texte est copié." } else { "Sélection copiée." }, 2);
+        });
     });
     ui.on_term_zoomed(|zoom| {
         with(|c| c.term_zoomed(zoom));

@@ -6,11 +6,11 @@
 //! `dossiers-depot` (un dépôt existant), `dossiers-clone` et `dossiers-clone-pris` (où cloner), `dossiers-erreur`,
 //! `dossiers-attente`, `dossiers-silence`, `dossiers-texte` (un PC qui ne liste pas) ; le PC sans Eyrie (voir
 //! `veilleur.rs`) : `fermee` (« Démarrer Eyrie »), `fermee-par-pc` (elle vient de se fermer), `fermee-sans-cle`,
-//! `demarrage`, `acces-coupe`, `refus-demarrage`, `preuve-refusee`, `injoignable`, `telephone-hors-ligne` ; le terminal
-//! : `terminal-ctrl` (Ctrl collé), `terminal-coller` (un collage de plusieurs lignes à confirmer), `terminal-saisie`
-//! (sur plusieurs lignes), `terminal-zoom`, `terminal-suivi` (le bas reste en vue quand la liste rapetisse),
-//! `terminal-remonte` (la sortie qui arrive ne ramène pas en bas). Suffixe `+clair` ou `+sombre` : le thème (sinon
-//! celui du système).
+//! `demarrage`, `acces-coupe`, `refus-demarrage`, `preuve-refusee`, `injoignable`, `telephone-hors-ligne` ; le
+//! terminal : `terminal-ctrl` (Ctrl collé), `terminal-copie` (le texte à copier), `terminal-coller` (un collage de
+//! plusieurs lignes à confirmer), `terminal-saisie` (sur plusieurs lignes), `terminal-zoom`, `terminal-suivi` (le bas
+//! reste en vue quand la liste rapetisse), `terminal-remonte` (la sortie qui arrive ne ramène pas en bas). Suffixe
+//! `+clair` ou `+sombre` : le thème (sinon celui du système).
 
 use slint::ComponentHandle;
 use suite_mobile::msg::{
@@ -614,12 +614,15 @@ fn terminal() -> TermView {
     }
 }
 
-/// Le terminal ouvert : Ctrl collé, un collage de plusieurs lignes à confirmer, une saisie sur plusieurs lignes, un zoom
-/// (gardé seulement le temps de la démonstration).
+/// Le terminal ouvert : Ctrl collé, le texte à copier (la ligne d'un appui long sélectionnée), un collage de plusieurs
+/// lignes à confirmer, une saisie sur plusieurs lignes, un zoom (gardé seulement le temps de la démonstration).
 fn terminal_scene(ui: &AppWindow, scene: &str) {
     match scene {
         "terminal-ctrl" => {
             with(|c| c.term_latch(Latch::Ctrl));
+        }
+        "terminal-copie" => {
+            with(|c| c.term_copy(Some(9)));
         }
         "terminal-coller" => {
             with(|c| c.term_paste("git fetch --all\ngit status --short\ncargo test -p eyrie-mobile\n"));
