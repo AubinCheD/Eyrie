@@ -1,8 +1,8 @@
 //! Démonstration sans PC (`EYRIE_MOBILE_DEMO=<scène>`), pour les captures et la mise au point de l'interface :
-//! `ensemble`, `fawkes`, `recherche`, `terminal`, `patronus`, `depot`, `menu`, `erreur`, `erreur-lue`, `historique`,
-//! `diff`, `diff-retour`, `plus`, `notes`, `reglages`, `attente`, `injoignable`, `refus`, `accueil`, `commandes`,
-//! `accueil-tailscale`, `code`, `appairage`, `hors-ligne`. Suffixe `+clair` ou `+sombre` : le thème (sinon celui du
-//! système).
+//! `ensemble`, `fawkes`, `recherche`, `terminal`, `patronus`, `depot`, `menu`, `erreur`, `erreur-lue`, `erreur-longue`,
+//! `historique`, `diff`, `diff-retour`, `plus`, `notes`, `reglages`, `attente`, `injoignable`, `refus`, `accueil`,
+//! `commandes`, `accueil-tailscale`, `code`, `appairage`, `hors-ligne`. Suffixe `+clair` ou `+sombre` : le thème
+//! (sinon celui du système).
 
 use slint::ComponentHandle;
 use suite_mobile::msg::{Badge, CommandCard, ModuleCard, Note, ToPhone, Waiting};
@@ -455,13 +455,14 @@ pub fn play(ui: &AppWindow, scene: &str) {
                 c.run_act(&UiAct { id: "fetch".into(), ..Default::default() }, "");
             });
         }
-        // Une erreur longue du PC, puis dépliée d'un toucher.
-        "erreur" | "erreur-lue" => {
+        // Une erreur longue du PC, puis dépliée d'un toucher ; plus longue que la place permise, elle défile.
+        "erreur" | "erreur-lue" | "erreur-longue" => {
+            let text = if scene == "erreur-longue" { [PUSH_REFUSED; 6].join(" ") } else { PUSH_REFUSED.into() };
             with(|c| {
                 c.open_module_path("dragontree", "depot/eyrie");
-                c.toast(PUSH_REFUSED, 4);
+                c.toast(&text, 4);
                 c.toast("Fetch terminé", 2);
-                if scene == "erreur-lue" {
+                if scene != "erreur" {
                     c.toast_tapped();
                 }
             });

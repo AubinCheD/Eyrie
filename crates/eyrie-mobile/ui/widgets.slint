@@ -1685,14 +1685,17 @@ export component ConfirmDialog inherits Rectangle {
     }
 }
 
-// Une bulle en bas de l'écran : trois lignes au plus ; dépliée (une erreur touchée), le texte entier.
+// Une bulle en bas de l'écran : trois lignes au plus ; dépliée (une erreur touchée), le texte entier, qui défile s'il
+// dépasse la hauteur permise. Un toucher la referme.
 export component Toast inherits Rectangle {
     in property <string> text;
     in property <int> tone;
     in property <bool> expanded;
     in property <length> max-text: 400px;
     callback tapped();
-    height: min(label.preferred-height, root.expanded ? root.max-text : 3 * 1.2 * 14px) + 24px;
+    // La hauteur d'une ligne, mesurée : elle dépend de la police du téléphone.
+    property <length> line: probe.preferred-height;
+    height: min(label.preferred-height, root.expanded ? root.max-text : 3 * root.line) + 24px;
     accessible-role: AccessibleRole.text;
     accessible-label: root.text;
     accessible-action-default => { root.tapped(); }
@@ -1700,6 +1703,15 @@ export component Toast inherits Rectangle {
     background: Theme.dark ? #3a3e48 : #2b2f36;
     drop-shadow-blur: 12px;
     drop-shadow-color: #00000055;
+    probe := Text {
+        visible: false;
+        text: "X";
+        font-size: 14px;
+    }
+    // Sous le texte : les marges et la pastille de ton se touchent aussi.
+    TouchArea {
+        clicked => { root.tapped(); }
+    }
     HorizontalLayout {
         padding-left: 14px;
         padding-right: 16px;
@@ -1718,17 +1730,25 @@ export component Toast inherits Rectangle {
         }
         Rectangle {
             clip: true;
-            label := Text {
-                y: 0;
-                width: parent.width;
-                text: root.text;
-                color: #f2f3f5;
-                font-size: 14px;
-                wrap: word-wrap;
+            flick := Flickable {
+                interactive: root.expanded;
+                content-width: self.width;
+                content-height: max(self.height, label.preferred-height);
+                label := Text {
+                    y: 0;
+                    width: flick.width;
+                    text: root.text;
+                    color: #f2f3f5;
+                    font-size: 14px;
+                    wrap: word-wrap;
+                }
+                // Un toucher sans glisser : la bulle se déplie ou se referme ; glisser fait défiler le texte déplié.
+                TouchArea {
+                    width: flick.content-width;
+                    height: flick.content-height;
+                    clicked => { root.tapped(); }
+                }
             }
         }
-    }
-    TouchArea {
-        clicked => { root.tapped(); }
     }
 }
