@@ -26,6 +26,9 @@ use crate::mobile::{rounded, short_error};
 /// (les plus anciens d'abord).
 pub const DRAFT_KEPT: Duration = Duration::from_secs(3600);
 pub const DRAFTS_MAX: usize = 16;
+/// Un clonage qui se connecte encore au-delà (aucune progression) le dit : une fenêtre d'identification attend peut-être
+/// sur le PC (aucun compte, ou un jeton absent du coffre), comme pour une opération.
+pub const SILENT_AFTER: Duration = Duration::from_secs(15);
 
 /// « Cloner un dépôt… » : un brouillon neuf (`@ouvrir cloner/<n>`).
 pub fn clone_act() -> Act {
@@ -252,6 +255,8 @@ pub struct JobView {
     pub progress: Option<Progress>,
     /// `None` : en cours.
     pub result: Option<Result<(), String>>,
+    /// Son lancement, puis sa fin.
+    pub at: Instant,
 }
 
 impl From<&HostJob> for JobView {
@@ -262,6 +267,7 @@ impl From<&HostJob> for JobView {
             dest: j.dest.clone(),
             progress: j.progress.clone(),
             result: j.result.clone(),
+            at: j.at,
         }
     }
 }
@@ -282,6 +288,10 @@ pub fn job_block(j: &JobView, open: Option<&str>) -> Block {
         None => {
             let (text, percent) = match &j.progress {
                 Some(p) => (format!("{} : {}…", j.title, p.phase), rounded(p.percent)),
+                None if j.at.elapsed() >= SILENT_AFTER => (
+                    format!("{} : connexion… (une fenêtre d'identification attend peut-être sur le PC)", j.title),
+                    None,
+                ),
                 None => (format!("{} : connexion…", j.title), None),
             };
             let progress = Some(percent.unwrap_or(PROGRESS_UNKNOWN));
@@ -573,6 +583,7 @@ mod tests {
             dest: PathBuf::from(r"C:\dev\outil"),
             progress: Some(Progress { phase: "Receiving objects".into(), percent: Some(47), current: 0, total: None }),
             result: None,
+            at: Instant::now(),
         };
         let s = screen(&d, &view(Some(&job)));
         assert_eq!(ids(&s), ["annuler-clone:7"], "pendant le clonage, rien d'autre : {s:?}");
@@ -582,5 +593,35 @@ mod tests {
         assert!(s.opens().contains("depot/abc") && ids(&s) == ["cloner"], "{s:?}");
         let failed = JobView { result: Some(Err("Clonage annulé.".into())), ..job.clone() };
         assert!(ids(&screen(&d, &view(Some(&failed)))).contains(&"url".to_string()), "de nouveau à changer");
+    }
+
+    /// Un clonage qui se connecte encore après 15 s (sans compte, git a pu ouvrir la fenêtre d'identification de
+    /// Windows sur le PC, où personne ne la voit) le dit, avec « Annuler » ; une progression, même lente, non.
+    #[test]
+    fn a_clone_that_still_connects_says_a_window_may_wait_on_the_pc() {
+        let text = |j: &JobView| match job_block(j, None) {
+            Block::Note { text, acts, .. } => {
+                assert_eq!(acts.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), ["annuler-clone:3"]);
+                text
+            }
+            b => panic!("{b:?}"),
+        };
+        let long_ago = Instant::now().checked_sub(SILENT_AFTER * 2).expect("un PC allumé depuis plus de 30 s");
+        let job = JobView {
+            id: 3,
+            title: "Clonage de outil".into(),
+            dest: PathBuf::from(r"C:\dev\outil"),
+            progress: None,
+            result: None,
+            at: Instant::now(),
+        };
+        assert_eq!(text(&job), "Clonage de outil : connexion…");
+        let silent = JobView { at: long_ago, ..job.clone() };
+        assert!(text(&silent).contains("une fenêtre d'identification attend peut-être sur le PC"), "{silent:?}");
+        let moving = JobView {
+            progress: Some(Progress { phase: "Receiving objects".into(), percent: Some(3), current: 0, total: None }),
+            ..silent
+        };
+        assert!(!text(&moving).contains("identification"));
     }
 }
