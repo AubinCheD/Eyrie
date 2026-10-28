@@ -217,11 +217,15 @@ pub fn render_diff(d: &FileDiff) -> Vec<(u8, String)> {
     out
 }
 
-/// Ce qui n'est pas encore lu ; `slow` : DragonTree le lit depuis longtemps, peut-être en vain (sa lecture ratée ne se
-/// dit que sur le PC).
-pub fn reading(s: &mut Screen, text: &str, slow: bool) {
+/// Ce qui n'est pas encore lu : pourquoi, si DragonTree n'a pas pu ouvrir le dépôt ; sinon `text`, et un mot de plus
+/// s'il le lit depuis longtemps, peut-être en vain (sa lecture ratée ne se dit que sur le PC).
+pub fn reading(s: &mut Screen, text: &str, v: &RepoView) {
+    if let Some(Err(e)) = &v.status {
+        s.note(e, Tone::Danger);
+        return;
+    }
     s.empty(text);
-    if slow {
+    if v.slow {
         s.note(
             "DragonTree n'a pas encore lu ce dépôt : il est peut-être très gros, ou sa lecture a échoué (voir ses \
              notifications sur le PC). « Actualiser » le fait relire.",
@@ -379,7 +383,7 @@ pub fn overview(base: &str, name: &str, path: &str, v: &RepoView, busy: bool) ->
     s.acts.push(Act::new("pc", "Afficher dans DragonTree sur le PC").glyph("🖥️"));
     let st = match &v.status {
         None => {
-            reading(&mut s, "Lecture du dépôt…", v.slow);
+            reading(&mut s, "Lecture du dépôt…", v);
             return s;
         }
         Some(Err(e)) => {
@@ -519,7 +523,7 @@ fn quiet(mut row: Row, busy: bool) -> Row {
 pub fn changes(base: &str, v: &RepoView, busy: bool) -> Screen {
     let mut s = Screen::new("Modifications").search("Chercher un fichier");
     let Some(st) = v.status() else {
-        reading(&mut s, "Lecture du dépôt…", v.slow);
+        reading(&mut s, "Lecture du dépôt…", v);
         return s;
     };
     let conflicts = st.conflicted();
@@ -559,7 +563,7 @@ pub fn changes(base: &str, v: &RepoView, busy: bool) -> Screen {
 pub fn file(v: &RepoView, key: &str, busy: bool) -> Option<Screen> {
     if v.status().is_none() {
         let mut s = Screen::new("Fichier");
-        reading(&mut s, "Lecture du dépôt…", v.slow);
+        reading(&mut s, "Lecture du dépôt…", v);
         return Some(s);
     }
     let e = v.entry(key)?;
@@ -785,6 +789,11 @@ pub fn more(base: &str, v: &RepoView, now: i64, busy: bool) -> Screen {
             s.acts.push(Act::new("elaguer", "Élaguer les worktrees disparus").glyph("🧹"));
         }
     }
+    // Les remises, worktrees et remotes sont lus avec le dépôt : rien à en dire avant.
+    if !matches!(v.status, Some(Ok(_))) {
+        reading(&mut s, "Lecture du dépôt…", v);
+        return s;
+    }
     s.band(Band::new("remises", "Remises (stash)").glyph("📦").aside(v.stashes.len().to_string()));
     if v.stashes.is_empty() {
         s.empty("Aucune remise.");
@@ -795,7 +804,7 @@ pub fn more(base: &str, v: &RepoView, now: i64, busy: bool) -> Screen {
     let tags = v.tags_by_date();
     s.band(Band::new("etiquettes", "Étiquettes").glyph("🏷️").aside(tags.len().to_string()));
     if v.refs.is_none() {
-        reading(&mut s, "Lecture des étiquettes…", v.slow);
+        reading(&mut s, "Lecture des étiquettes…", v);
     } else if tags.is_empty() {
         s.empty("Aucune étiquette.");
     }
@@ -843,7 +852,7 @@ pub fn tags(base: &str, v: &RepoView, now: i64, busy: bool) -> Screen {
         s.acts.push(Act::new("nouvelle-etiquette", "Nouvelle étiquette sur HEAD…").glyph("🏷️").input("Nom", "v1.2.0"));
     }
     if v.refs.is_none() {
-        reading(&mut s, "Lecture des étiquettes…", v.slow);
+        reading(&mut s, "Lecture des étiquettes…", v);
         return s;
     }
     let list = v.tags_by_date();

@@ -1270,6 +1270,12 @@ mod tests {
                 .any(|b| matches!(b, Block::Note { tone: Tone::Danger, text, .. } if text.starts_with("Fetch : "))),
             "pas un dépôt git : {s:?}"
         );
+        // Chaque onglet dit pourquoi DragonTree ne l'a pas ouvert, au lieu de « Lecture… » sans fin.
+        for tab in ["historique", "historique/tout", "branches", "plus"] {
+            let s = phone.screen(h.state_mut(), &format!("depot/{key}/{tab}")).unwrap();
+            let dangers = s.blocks.iter().filter(|b| matches!(b, Block::Note { tone: Tone::Danger, .. })).count();
+            assert!(dangers >= 1 && !format!("{s:?}").contains("Lecture"), "{tab} : {s:?}");
+        }
         drop(h);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1508,7 +1514,10 @@ mod tests {
                 ("modifs", format!("{base}/modifs"), "Non indexé"),
                 ("diff", format!("{base}/fichier/{f}"), "+trois"),
                 ("historique", format!("{base}/historique"), "Ajoute deux"),
+                ("historique-tout", format!("{base}/historique/tout"), "Ajoute deux"),
                 ("branches", format!("{base}/branches"), "feature/essai"),
+                ("branche", format!("{base}/branche/{}", branches::branch_key("refs/heads/main")), "Premier commit"),
+                ("plus", format!("{base}/plus"), "Remotes"),
             ] {
                 let s = wait_screen(&mut h, &mut phone, &path, wait);
                 std::fs::write(out.join(format!("{name}.json")), serde_json::to_vec(&s).unwrap()).unwrap();

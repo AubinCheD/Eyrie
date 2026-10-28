@@ -214,9 +214,9 @@ pub fn more_row(shown: usize, more: bool) -> Option<Row> {
 }
 
 /// Les commits d'un historique, ou ce qui manque pour les montrer.
-pub fn fill(s: &mut Screen, base: &str, log: Option<&Result<LogView, String>>, slow: bool, now: i64) {
-    match log {
-        None => depot::reading(s, "Lecture de l'historique…", slow),
+pub fn fill(s: &mut Screen, base: &str, v: &RepoView, now: i64) {
+    match &v.log {
+        None => depot::reading(s, "Lecture de l'historique…", v),
         Some(Err(e)) => {
             s.note(e, Tone::Danger);
         }
@@ -253,7 +253,7 @@ pub fn current(base: &str, v: &RepoView, now: i64) -> Screen {
             .key("tout")
             .open(format!("{base}/historique/tout")),
     );
-    fill(&mut s, base, v.log.as_ref(), v.slow, now);
+    fill(&mut s, base, v, now);
     s
 }
 
@@ -264,7 +264,7 @@ pub fn all(base: &str, v: &RepoView, now: i64) -> Screen {
         Screen::new("Toutes les branches").subtitle(scope).search("Chercher un commit (titre, auteur, identifiant)");
     let mut s = depot::with_tabs(s, base, &format!("{base}/historique/tout"), v);
     s.acts.push(Act::new("actualiser", "Actualiser").glyph("🔄"));
-    fill(&mut s, base, v.log.as_ref(), v.slow, now);
+    fill(&mut s, base, v, now);
     s
 }
 

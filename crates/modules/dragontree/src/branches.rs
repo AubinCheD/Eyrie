@@ -319,7 +319,7 @@ pub fn list(base: &str, v: &RepoView, now: i64, busy: bool) -> Screen {
     let s = Screen::new("Branches").search("Chercher une branche");
     let mut s = depot::with_tabs(s, base, &format!("{base}/historique"), v);
     let Some(refs) = &v.refs else {
-        depot::reading(&mut s, "Lecture des branches…", v.slow);
+        depot::reading(&mut s, "Lecture des branches…", v);
         return s;
     };
     let remotes = refs.remotes.iter().filter(|r| !r.is_symbolic).count();
@@ -382,7 +382,7 @@ pub fn list(base: &str, v: &RepoView, now: i64, busy: bool) -> Screen {
 pub fn group(base: &str, v: &RepoView, hash: &str, now: i64, busy: bool) -> Option<Screen> {
     let Some(refs) = &v.refs else {
         let mut s = Screen::new("Branches");
-        depot::reading(&mut s, "Lecture des branches…", v.slow);
+        depot::reading(&mut s, "Lecture des branches…", v);
         return Some(s);
     };
     let g = groups(refs, &v.tips).into_iter().find(|g| short_hash(&g.id) == hash)?;
@@ -415,7 +415,7 @@ fn plain_commit_row(base: &str, c: &Commit, prefix: &str, now: i64) -> Row {
 pub fn detail(base: &str, v: &RepoView, key: &str, now: i64, busy: bool) -> Screen {
     let mut s = Screen::new("Branche").search("Chercher un commit (titre, auteur, identifiant)");
     let Some(refs) = &v.refs else {
-        depot::reading(&mut s, "Lecture des branches…", v.slow);
+        depot::reading(&mut s, "Lecture des branches…", v);
         return s;
     };
     let Some(b) = find(refs, key) else {
@@ -498,7 +498,7 @@ pub fn detail(base: &str, v: &RepoView, key: &str, now: i64, busy: bool) -> Scre
         s.buttons(buttons);
     }
     s.band(Band::new("historique", "Historique").glyph("🕘"));
-    historique::fill(&mut s, base, v.log.as_ref(), v.slow, now);
+    historique::fill(&mut s, base, v, now);
     s
 }
 
