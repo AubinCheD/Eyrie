@@ -3,8 +3,9 @@
 //! blanche ([`super::sync`]).
 //!
 //! - [`check`] est le seul contrôle d'un chemin venu du téléphone, pour lister comme pour agir : forme `X:\…` (ni UNC,
-//!   ni `\\?\` ou `\\.\`, ni flux `:`, ni `..`, ni nom réservé), disque fixe du PC, résolu (`canonicalize` : noms
-//!   courts, jonctions) puis revérifié, hors des zones interdites ([`Env`]) ;
+//!   ni `\\?\` ou `\\.\`, ni flux `:`, ni `..`, ni nom réservé), disque fixe du PC, liens qui ne mènent pas ailleurs
+//!   (lus sans être suivis), résolu (`canonicalize` : noms courts, jonctions) puis revérifié, hors des zones
+//!   interdites ([`Env`]) ;
 //! - [`chosen`] y ajoute la règle de la saisie (`want`), avant que le pont n'appelle le module ;
 //! - [`listing`] lit un niveau (des dossiers seulement, triés, filtrés, par pages de [`PAGE`], avec leurs drapeaux) ou
 //!   la racine (raccourcis du module, accès rapide, lecteurs fixes) ;
@@ -293,6 +294,57 @@ fn protected_text(shown: &str) -> String {
     format!("{shown} : dossier protégé, refusé depuis le téléphone.")
 }
 
+/// Les liens suivis au plus pour contrôler un chemin.
+const MAX_LINKS: usize = 8;
+
+/// Où mène un lien (sa cible lue par `read_link`, `at` son emplacement) : le chemin à contrôler ensuite, ou `None` pour
+/// un volume local désigné autrement (`\\?\Volume{…}`) ; refusé s'il mène à un partage réseau ou à un lecteur qui
+/// n'est pas un disque fixe du PC.
+fn link_target(env: &Env, at: &Path, target: &Path) -> Result<Option<PathBuf>, String> {
+    let text = target.to_string_lossy();
+    let sep = |c: u8| matches!(c, b'\\' | b'/');
+    let bare = text.strip_prefix(r"\\?\").unwrap_or(&text);
+    let b = bare.as_bytes();
+    if bare.get(..4).is_some_and(|p| p.eq_ignore_ascii_case(r"UNC\")) || (b.len() >= 2 && sep(b[0]) && sep(b[1])) {
+        return Err(NETWORK.into());
+    }
+    if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
+        fixed(env, bare)?;
+        return Ok(Some(PathBuf::from(bare)));
+    }
+    if target.is_relative() {
+        return Ok(Some(at.parent().unwrap_or(at).join(target)));
+    }
+    Ok(None)
+}
+
+/// Les liens symboliques et jonctions de `path`, lus sans être suivis, et ceux de leurs cibles : aucun ne doit mener
+/// hors des disques fixes du PC. `canonicalize` les suit ensuite sans attendre un serveur absent (le contrôle d'une
+/// action se fait dans le fil de l'interface) ; ces lectures-ci restent sur les disques du PC.
+fn links(env: &Env, path: &Path, hops: &mut usize) -> Result<(), String> {
+    let mut at = PathBuf::new();
+    for c in path.components() {
+        at.push(c);
+        if !matches!(c, Component::Normal(_)) {
+            continue;
+        }
+        // Absent ou illisible : `canonicalize` dira pourquoi.
+        let Ok(meta) = std::fs::symlink_metadata(&at) else { return Ok(()) };
+        if !meta.file_type().is_symlink() {
+            continue;
+        }
+        *hops += 1;
+        if *hops > MAX_LINKS {
+            return Err("Chemin refusé : trop de liens à suivre.".into());
+        }
+        let Ok(target) = std::fs::read_link(&at) else { continue };
+        if let Some(next) = link_target(env, &at, &target)? {
+            links(env, &next, hops)?;
+        }
+    }
+    Ok(())
+}
+
 /// Le contrôle d'un chemin venu du téléphone, le même pour lister et pour agir : un dossier existant d'un disque fixe
 /// du PC, hors des zones interdites, avant et après résolution (noms courts, jonctions, liens). Rend le chemin résolu,
 /// sans `\\?\` : c'est lui qu'on lit ou que reçoit le module, pas l'endroit où mènerait une jonction changée
@@ -303,6 +355,7 @@ pub fn check(env: &Env, text: &str) -> Result<PathBuf, String> {
     if protected(env, Path::new(text)) {
         return Err(protected_text(text));
     }
+    links(env, Path::new(text), &mut 0)?;
     let full = std::fs::canonicalize(text).map_err(|e| match e.kind() {
         ErrorKind::NotFound => format!("{text} n'existe pas sur le PC."),
         ErrorKind::PermissionDenied => format!("{text} : accès refusé."),
@@ -971,6 +1024,39 @@ mod tests {
         assert_eq!(check(&env, &at(r"libre\vers-libre")).unwrap(), long(&root.join(r"profils\moi\projets")));
         // Les séparateurs `/` passent.
         assert_eq!(check(&env, &at("libre").replace('\\', "/")).unwrap(), long(&root.join("libre")));
+    }
+
+    /// Un lien qui mène hors des disques fixes (partage, lecteur réseau ou amovible) est refusé avant d'être suivi : la
+    /// résolution attendrait un serveur absent, dans le fil de l'interface pour une action. Une jonction se suit ; une
+    /// boucle de liens s'arrête.
+    #[test]
+    fn a_link_out_of_the_fixed_drives_is_refused_before_it_is_followed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = long(tmp.path());
+        let env = env(&root);
+        let at = root.join("lien");
+        for t in [r"\\?\UNC\serveur\partage", r"\\serveur\partage", "//serveur/partage", r"Z:\projets", r"\\?\Z:\x"] {
+            assert!(link_target(&env, &at, Path::new(t)).unwrap_err().contains("réseau"), "{t}");
+        }
+        assert!(link_target(&env, &at, Path::new(r"E:\clé")).unwrap_err().contains("amovible"));
+        assert_eq!(link_target(&env, &at, Path::new(r"\\?\C:\DEV")), Ok(Some(PathBuf::from(r"C:\DEV"))));
+        assert_eq!(link_target(&env, &at, Path::new(r"..\voisin")), Ok(Some(root.join(r"..\voisin"))));
+        let volume = r"\\?\Volume{0b1c4a3e-0000-0000-0000-100000000000}\";
+        assert_eq!(link_target(&env, &at, Path::new(volume)), Ok(None));
+
+        mkdir(&root.join("cible"));
+        junction(&root.join("j1"), &root.join("cible"));
+        assert_eq!(check(&env, &root.join("j1").to_string_lossy()), Ok(root.join("cible")));
+        junction(&root.join("boucle-a"), &root.join("boucle-b"));
+        junction(&root.join("boucle-b"), &root.join("boucle-a"));
+        assert!(check(&env, &root.join("boucle-a").to_string_lossy()).unwrap_err().contains("trop de liens"));
+        // Un vrai lien vers un partage, si ce compte peut en créer (mode développeur) : refusé sans attendre.
+        let share = root.join("partage");
+        if std::os::windows::fs::symlink_dir(r"\\192.0.2.1\partage", &share).is_ok() {
+            let started = Instant::now();
+            assert!(check(&env, &share.join("depot").to_string_lossy()).unwrap_err().contains("réseau"));
+            assert!(started.elapsed() < Duration::from_secs(2));
+        }
     }
 
     /// Le profil de l'utilisateur écrit sous son nom court (`C:\Users\CLBR-A~1\DEV`) est le sien : permis, rendu sous
