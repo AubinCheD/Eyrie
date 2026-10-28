@@ -213,11 +213,13 @@ fn depot_state() -> Screen {
     s
 }
 
-/// Un commit de l'historique de démonstration : sa voie (et sa couleur), sa sorte de nœud, ses traits.
+/// Un commit de l'historique de démonstration, comme DragonTree l'envoie (`historique::commit_row`) : sa voie (et sa
+/// couleur), sa sorte de nœud, ses traits.
 fn commit(title: &str, sha: &str, hours: u8, lane: u8, kind: u8, lines: Vec<(u8, u8, u8, u8)>) -> Row {
     Row::new(title)
         .key(sha)
-        .subtitle(format!("Aubin Chedotal · il y a {hours} h · {sha}"))
+        .subtitle(format!("Aubin Chedotal · il y a {hours} h"))
+        .detail(sha)
         .graph(GraphCell { lanes: 2, node: lane, color: lane, kind, lines })
         .open(format!("depot/eyrie/commit/{sha}"))
         .act(Act::new(format!("cherry-pick:{sha}"), "Cherry-pick").glyph("⇢"))
@@ -228,16 +230,18 @@ fn commit(title: &str, sha: &str, hours: u8, lane: u8, kind: u8, lines: Vec<(u8,
 fn depot_history() -> Screen {
     let mut s = depot("Eyrie").search("Chercher un commit");
     s.buttons(vec![Act::new("toutes", "Toutes les branches")]);
-    let remote = |name: &str| Chip::new(name).color(0x2f80ed);
+    // Les étiquettes de DragonTree (`historique::chips`) : glyphe, ton, la branche courante mise en avant.
+    let remote = |name: &str| Chip::new(name).glyph("☁️").tone(Tone::Info);
     s.row(
         commit("Téléphone : bandeaux pliants", "75b78ee", 1, 0, NODE_HEAD, vec![(B, 0, 0, 0)])
-            .chip(Chip::new("mobile-ergonomie").color(0x27ae60).strong())
-            .chip(remote("origin/mobile-ergonomie")),
+            .chip(Chip::new("mobile-ergonomie").glyph("🌿").tone(Tone::Ok).strong())
+            .chip(remote("origin/mobile-ergonomie"))
+            .chip(Chip::new("v1.0-rc1").glyph("🏷️")),
     );
     let both = vec![(H, 0, 0, 0), (B, 0, 0, 0)];
     s.row(commit("Téléphone : une action en cours se voit", "a31b4d7", 2, 0, NODE_COMMIT, both.clone()));
     let merge = vec![(H, 0, 0, 0), (B, 0, 0, 0), (B, 0, 1, 1)];
-    s.row(commit("Fusion de « graphe » dans mobile-ergonomie", "f2bb5e0", 3, 0, NODE_MERGE, merge));
+    s.row(commit("Fusion de « graphe » dans mobile-ergonomie", "f2bb5e0", 3, 0, NODE_MERGE, merge).badge("+2"));
     let side = vec![(T, 0, 0, 0), (H, 1, 1, 1), (B, 1, 1, 1)];
     s.row(
         commit("Graphe : les traits se raccordent", "9b082a2", 4, 1, NODE_COMMIT, side.clone())
@@ -247,7 +251,7 @@ fn depot_history() -> Screen {
     let fork = vec![(H, 0, 0, 0), (H, 1, 0, 1), (B, 0, 0, 0)];
     s.row(
         commit("Docs : conception de la passe d'ergonomie", "5c1b48d", 6, 0, NODE_COMMIT, fork)
-            .chip(Chip::new("v0.9").glyph("◆").color(0xd4a000))
+            .chip(Chip::new("v0.9").glyph("🏷️"))
             .chip(remote("origin/main")),
     );
     s.row(commit("Protocole mobile : bandeaux, onglets, graphe", "f4b1c15", 7, 0, NODE_COMMIT, both));

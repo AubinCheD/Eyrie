@@ -506,15 +506,18 @@ export component SectionHeader inherits Rectangle {
     }
 }
 
-// Une étiquette : contour de sa couleur, pleine si elle est mise en avant.
+// Une étiquette : contour de sa couleur, pleine si elle est mise en avant. À l'étroit, elle garde son glyphe et
+// quelques lettres ; celle qui est mise en avant (la branche courante) se réduit après les autres.
 export component ChipView inherits Rectangle {
     in property <UiChip> chip;
     property <color> ink: chip.has-color ? chip.color : chip.tone > 0 ? Theme.tone(chip.tone) : Theme.text-dim;
+    property <length> keep: (chip.glyph != "" ? 20px : 0px) + 8 * 6.5px + 12px;
     height: 20px;
-    min-width: 24px;
-    preferred-width: min(110px, label.preferred-width + 12px);
+    min-width: min(self.preferred-width, root.keep);
+    preferred-width: min(150px, label.preferred-width + 12px);
     max-width: self.preferred-width;
-    horizontal-stretch: 1;
+    // Dans une mise en page trop étroite, ce qui s'étire se réduit d'abord ; le reste ensuite, à parts égales.
+    horizontal-stretch: chip.strong ? 0 : 1;
     border-radius: 6px;
     background: chip.strong ? root.ink : root.ink.with-alpha(0.14);
     border-width: chip.strong ? 0 : 1px;
@@ -528,6 +531,31 @@ export component ChipView inherits Rectangle {
         font-weight: chip.strong ? 700 : 500;
         vertical-alignment: center;
         overflow: elide;
+    }
+}
+
+// Une ligne d'étiquettes, puis un texte qui se coupe le premier (il s'étire cent fois plus qu'elles : il se réduit
+// d'autant plus vite). Ce qui dépasse la largeur est coupé au bord : la ligne ne pousse pas les boutons voisins.
+component ChipLine inherits Rectangle {
+    in property <[UiChip]> chips;
+    in property <string> text;
+    min-width: 0;
+    height: 20px;
+    clip: true;
+    HorizontalLayout {
+        spacing: 5px;
+        for c in root.chips: ChipView {
+            chip: c;
+        }
+        Text {
+            text: root.text;
+            color: Theme.text-dim;
+            font-size: Theme.font-small;
+            vertical-alignment: center;
+            overflow: elide;
+            min-width: 0;
+            horizontal-stretch: 100;
+        }
     }
 }
 
@@ -748,15 +776,11 @@ export component RowView inherits Rectangle {
                         tone: item.tone >= 3 ? item.tone : 1;
                     }
                 }
-                if item.chips.length > 0: HorizontalLayout {
-                    spacing: 5px;
+                if item.chips.length > 0: VerticalLayout {
                     padding-top: 2px;
                     padding-bottom: 2px;
-                    for c in item.chips: ChipView {
-                        chip: c;
-                    }
-                    Rectangle {
-                        horizontal-stretch: 0.01;
+                    ChipLine {
+                        chips: item.chips;
                     }
                 }
                 if item.subtitle != "": Text {
@@ -846,16 +870,20 @@ export component RowView inherits Rectangle {
 }
 
 // Une ligne de commit : dense, la colonne du graphe sur toute la hauteur (les traits des lignes voisines se
-// raccordent), les étiquettes devant le titre, puis le sous-titre (auteur, date).
+// raccordent). Le titre a toute la largeur de sa ligne, avec sa pastille ; dessous, les étiquettes, puis le sous-titre
+// (auteur, date) et le texte à droite (identifiant court), qui leur cèdent la place.
 export component CommitRowView inherits Rectangle {
     in property <UiRow> item;
     callback tapped();
     callback menu();
+    callback trailing();
     callback haptic();
     property <bool> long-fired;
+    property <string> second: item.subtitle + (item.subtitle != "" && item.detail != "" ? " · " : "") + item.detail;
     height: 56px;
     accessible-role: list-item;
-    accessible-label: item.title + (item.subtitle != "" ? ", " + item.subtitle : "");
+    accessible-label: item.title + (item.badge != "" ? ", " + item.badge : "") + (root.second != "" ? ", " + root.second : "");
+    accessible-description: item.opens ? "Ouvre l'écran" : item.has-tap ? item.tap.label + " sur le PC" : "";
     accessible-action-default => { root.tapped(); }
     Rectangle {
         x: Theme.pad;
@@ -913,11 +941,9 @@ export component CommitRowView inherits Rectangle {
             VerticalLayout {
                 alignment: center;
                 spacing: 3px;
+                horizontal-stretch: 1;
                 HorizontalLayout {
-                    spacing: 5px;
-                    for c in item.chips: ChipView {
-                        chip: c;
-                    }
+                    spacing: 8px;
                     Text {
                         text: item.title;
                         color: item.node == 3 ? Theme.text-dim : Theme.text;
@@ -925,27 +951,49 @@ export component CommitRowView inherits Rectangle {
                         font-weight: item.node == 2 ? 600 : 400;
                         vertical-alignment: center;
                         overflow: elide;
-                        min-width: 110px;
-                        horizontal-stretch: 2;
+                        min-width: 0;
+                        horizontal-stretch: 1;
+                    }
+                    if item.badge != "": VerticalLayout {
+                        alignment: center;
+                        Pill {
+                            text: item.badge;
+                            tone: item.tone >= 3 ? item.tone : 1;
+                        }
                     }
                 }
-                if item.subtitle != "": Text {
-                    text: item.subtitle;
+                if item.chips.length > 0: ChipLine {
+                    chips: item.chips;
+                    text: root.second;
+                }
+                if item.chips.length == 0 && root.second != "": Text {
+                    text: root.second;
                     color: Theme.text-dim;
                     font-size: Theme.font-small;
                     overflow: elide;
+                    min-width: 0;
                 }
             }
-            if item.detail != "": Text {
-                text: item.detail;
-                color: Theme.text-faint;
-                font-size: Theme.font-small;
-                vertical-alignment: center;
-                horizontal-alignment: right;
-                max-width: 90px;
-                overflow: elide;
+            if item.has-tap && !item.opens: VerticalLayout {
+                alignment: center;
+                TapPill {
+                    act: item.tap;
+                }
             }
-            if item.busy: VerticalLayout {
+            if item.has-trailing: VerticalLayout {
+                alignment: center;
+                ActButton {
+                    height: 40px;
+                    pad: 12px;
+                    min-width: self.preferred-width;
+                    text: item.trailing.label;
+                    glyph: item.trailing.glyph;
+                    style: item.trailing.style;
+                    busy: item.trailing.busy;
+                    clicked => { root.trailing(); }
+                }
+            }
+            if item.busy && !(item.has-tap && item.tap.busy): VerticalLayout {
                 alignment: center;
                 Busy { }
             }
@@ -966,6 +1014,15 @@ export component CommitRowView inherits Rectangle {
                     size: 22px;
                 }
             }
+        }
+        // Une opération en cours sur la ligne : une barre en bas, sous le texte.
+        if item.has-progress: ThinProgress {
+            x: item.graph-w + 8px;
+            y: parent.height - 6px;
+            width: parent.width - item.graph-w - 8px - 14px;
+            value: item.value;
+            indeterminate: item.indeterminate;
+            tint: item.tone >= 3 ? Theme.tone(item.tone) : Theme.accent;
         }
         ta := TouchArea {
             x: 0;

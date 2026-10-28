@@ -389,11 +389,20 @@ fn graph(ui: &mut UiRow, g: &GraphCell) {
 
 /// Étiquettes montrées au plus ; les autres sont comptées (« +2 »).
 const CHIPS_SHOWN: usize = 3;
+/// Sur une ligne de commit, les étiquettes partagent la ligne du sous-titre : deux au plus.
+const COMMIT_CHIPS_SHOWN: usize = 2;
 
-fn chips(list: &[Chip]) -> ModelRc<UiChip> {
-    let mut out: Vec<UiChip> = list
+/// Les étiquettes d'une ligne, `shown` au plus, puis le compte des autres. Le PC borne parfois déjà les siennes : son
+/// « +N » final (sans glyphe) compte celles qu'il n'a pas envoyées, et s'ajoute au compte.
+fn chips(list: &[Chip], shown: usize) -> ModelRc<UiChip> {
+    let counted = |c: &Chip| c.glyph.is_empty().then(|| c.text.strip_prefix('+')?.parse::<usize>().ok()).flatten();
+    let (named, already) = match list.split_last() {
+        Some((last, rest)) => counted(last).map_or((list, 0), |n| (rest, n)),
+        None => (list, 0),
+    };
+    let mut out: Vec<UiChip> = named
         .iter()
-        .take(CHIPS_SHOWN)
+        .take(shown)
         .map(|c| UiChip {
             text: c.text.as_str().into(),
             glyph: c.glyph.as_str().into(),
@@ -403,8 +412,9 @@ fn chips(list: &[Chip]) -> ModelRc<UiChip> {
             strong: c.strong,
         })
         .collect();
-    if list.len() > CHIPS_SHOWN {
-        out.push(UiChip { text: format!("+{}", list.len() - CHIPS_SHOWN).into(), ..Default::default() });
+    let more = named.len().saturating_sub(shown) + already;
+    if more > 0 {
+        out.push(UiChip { text: format!("+{more}").into(), ..Default::default() });
     }
     ModelRc::new(VecModel::from(out))
 }
@@ -441,7 +451,7 @@ fn row(r: &Row, first: bool, last: bool, local: &Local) -> UiRow {
         first,
         last,
         busy: r.tap.iter().chain(&r.acts).any(|a| local.busy(a)),
-        chips: chips(&r.chips),
+        chips: chips(&r.chips, if r.graph.is_some() { COMMIT_CHIPS_SHOWN } else { CHIPS_SHOWN }),
         ..Default::default()
     };
     if let Some(g) = &r.graph {
@@ -867,8 +877,13 @@ mod tests {
         assert_eq!(graph_path(GRAPH_TOP, 2, 2), "M 41 0 L 41 28");
     }
 
-    /// Une ligne de commit : colonne à la largeur de ses voies (bornée), nœud et traits avec leurs couleurs ; les
-    /// étiquettes au-delà de trois sont comptées.
+    fn chip_texts(r: &UiRow) -> Vec<String> {
+        r.chips.iter().map(|c| c.text.to_string()).collect()
+    }
+
+    /// Une ligne de commit : colonne à la largeur de ses voies (bornée), nœud et traits avec leurs couleurs ; deux
+    /// étiquettes au plus (elles partagent la ligne du sous-titre), les autres comptées ; sa pastille (« +3 » fusions
+    /// repliées) lui reste.
     #[test]
     fn a_commit_row_carries_its_graph_and_chips() {
         let cell = GraphCell {
@@ -883,6 +898,7 @@ mod tests {
             Row::new("Corrige le push")
                 .key("abc123")
                 .graph(cell)
+                .badge("+3")
                 .chip(Chip::new("main").strong())
                 .chip(Chip::new("origin/main"))
                 .chip(Chip::new("v1.2"))
@@ -895,10 +911,35 @@ mod tests {
         assert_eq!((r[0].graph_w, r[0].node_x), (40.0, 27.0));
         let lanes: Vec<i32> = r[0].segs.iter().map(|g| g.lane).collect();
         assert_eq!(lanes, [3, 5, 2]);
-        let chips: Vec<String> = r[0].chips.iter().map(|c| c.text.to_string()).collect();
-        assert_eq!(chips, ["main", "origin/main", "v1.2", "+2"]);
+        assert_eq!(chip_texts(&r[0]), ["main", "origin/main", "+3"]);
         assert!(r[0].chips.row_data(0).unwrap().strong);
+        assert_eq!(r[0].badge, "+3");
         assert_eq!((r[1].node, r[1].graph_w), (-1, 2.0 * GRAPH_PAD + 8.0 * LANE_W), "huit voies au plus");
+    }
+
+    /// Le « +N » que le PC met après les étiquettes qu'il a bornées s'ajoute au compte du téléphone : rien de caché
+    /// n'est oublié, et il n'est pas compté comme une étiquette.
+    #[test]
+    fn the_pc_count_of_hidden_chips_adds_to_the_phone_count() {
+        let row = |chips: &[&str]| {
+            let mut r = Row::new("x");
+            for c in chips {
+                r = r.chip(Chip::new(*c));
+            }
+            r
+        };
+        let mut s = Screen::new("x");
+        s.row(row(&["a", "b", "c", "d", "e", "+3"]));
+        s.row(row(&["a", "b", "c", "+4"]));
+        s.row(row(&["a", "+2"]));
+        s.row(row(&["a", "b", "c"]));
+        s.row(row(&["+1 jour"]).graph(GraphCell::default()));
+        let r = rows(&s, &Local::default());
+        assert_eq!(chip_texts(&r[0]), ["a", "b", "c", "+5"], "deux cachées ici, trois sur le PC");
+        assert_eq!(chip_texts(&r[1]), ["a", "b", "c", "+4"]);
+        assert_eq!(chip_texts(&r[2]), ["a", "+2"]);
+        assert_eq!(chip_texts(&r[3]), ["a", "b", "c"]);
+        assert_eq!(chip_texts(&r[4]), ["+1 jour"], "pas un compte");
     }
 
     /// Une progression : une barre sous la ligne, ou dans la note d'une opération en cours avec son « Annuler » ;
