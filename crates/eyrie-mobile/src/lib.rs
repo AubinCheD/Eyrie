@@ -5,6 +5,7 @@
 //! - [`veilleur`] : le PC quand la liaison est coupée (Eyrie fermée…) et « Démarrer Eyrie » ;
 //! - [`tailnet`] : le nœud Tailscale de l'application, par où passent les connexions (Android) ;
 //! - [`termbuf`], [`view`] : ce que le PC envoie, prêt à dessiner ;
+//! - [`termkeys`] : ce que le téléphone envoie au terminal (touches, Ctrl et Alt collés, saisie, collage) ;
 //! - [`picker`] : le sélecteur de dossiers du PC (une action qui demande un dossier) ;
 //! - [`store`] : identité, PC appairés, préférences ;
 //! - [`platform`] : ce qui dépend du système (Android, ou le bureau pour le développement) ;
@@ -22,6 +23,7 @@ pub mod platform;
 pub mod store;
 pub mod tailnet;
 pub mod termbuf;
+pub mod termkeys;
 pub mod veilleur;
 pub mod view;
 

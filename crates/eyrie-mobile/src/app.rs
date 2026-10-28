@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use suite_mobile::msg::{CommandCard, Listing, ModuleCard, Note, Rights, ToPc, ToPhone, Waiting, module_target};
 use suite_mobile::pairing::{self, Ticket};
-use suite_mobile::term::{Key, TermInput};
+use suite_mobile::term::TermInput;
 use suite_mobile::ui::{Act, Block, Fold, Screen, Tab, Tone};
 
 use crate::net::{Link, NetEvent, PairEvent};
@@ -18,6 +18,7 @@ use crate::picker::{Answer, Picker};
 use crate::store::{self, Pc, Store, Wake};
 use crate::tailnet::{self, Tailnet};
 use crate::termbuf::{self, TermBuf};
+use crate::termkeys::{self, Latch, Paste, Typed};
 use crate::veilleur::{self, Away, Shown, Start};
 use crate::{
     AppWindow, CommandItem, ModuleItem, NavItem, NoteItem, PcItem, PickCrumb, PickRow, PickerState, TabItem, TermRow,
@@ -432,6 +433,10 @@ pub struct Controller {
     term: TermBuf,
     term_model: Rc<VecModel<TermRow>>,
     term_dark: Option<bool>,
+    /// Ctrl ou Alt collé : il part avec la touche suivante.
+    latch: Latch,
+    /// Le texte collé qui attend sa confirmation (plusieurs lignes), et le terminal `(module, id)` où il va.
+    paste: Option<(String, String, String)>,
     /// Les listes de l'interface, mises à jour sur place (jamais remplacées) : une ligne touchée survit aux messages.
     models: Models,
     /// L'écran dont les lignes sont affichées, et leurs clés et empreintes (voir [`view::patch`]).
@@ -584,6 +589,8 @@ impl Controller {
             term: TermBuf::default(),
             term_model,
             term_dark: None,
+            latch: Latch::None,
+            paste: None,
             models,
             shown_for: None,
             shown: Vec::new(),
@@ -671,6 +678,12 @@ impl Controller {
     }
 
     fn send(&self, m: ToPc) {
+        // Démonstration : rien ne part ; la saisie du terminal se lit dans la console (essais des gestes).
+        if self.demo
+            && let ToPc::Terminal { input, .. } = &m
+        {
+            eprintln!("démonstration, au terminal : {input:?}");
+        }
         if let Some(l) = &self.link {
             l.send(m);
         }
@@ -1400,6 +1413,9 @@ impl Controller {
             self.term.reset(&m, &id);
             self.term_model.set_vec(Vec::new());
             ui.set_term_draft(SharedString::new());
+            self.leave_term();
+        } else if !terminal_mode && ui.get_terminal_mode() {
+            self.leave_term();
         }
         ui.set_terminal_mode(terminal_mode);
         let follow = (screen_follow, term_follow);
@@ -1910,45 +1926,99 @@ impl Controller {
         self.toast(&format!("« {} » envoyée au PC", c.title), 2);
     }
 
-    fn term_input(&self, input: TermInput) {
-        let Some((module, id)) = self.followed_term() else { return };
+    /// Une saisie pour le terminal suivi, envoyée d'un bloc (rien ne part hors ligne) ; `false` : elle n'est pas partie.
+    fn term_inputs(&self, inputs: Vec<TermInput>) -> bool {
+        let Some((module, id)) = self.followed_term() else { return false };
         if !self.online {
             self.toast("Hors ligne : la saisie n'est pas partie.", 3);
-            return;
+            return false;
         }
-        self.send(ToPc::Terminal { module, id, input });
+        for input in inputs {
+            self.send(ToPc::Terminal { module: module.clone(), id: id.clone(), input });
+        }
+        true
     }
 
-    fn term_key(&self, name: &str) {
-        let key = match name {
-            "escape" => Key::Escape,
-            "tab" => Key::Tab,
-            "backtab" => Key::BackTab,
-            "up" => Key::Up,
-            "down" => Key::Down,
-            "left" => Key::Left,
-            "right" => Key::Right,
-            "enter" => Key::Enter,
-            "shift-enter" => Key::ShiftEnter,
-            "backspace" => Key::Backspace,
-            "home" => Key::Home,
-            "end" => Key::End,
-            "pageup" => Key::PageUp,
-            "pagedown" => Key::PageDown,
-            k if k.starts_with("ctrl-") => match k.chars().last() {
-                Some(c) => Key::Ctrl(c),
-                None => return,
-            },
-            _ => return,
-        };
-        self.term_input(TermInput::Key(key));
+    fn set_latch(&mut self, latch: Latch) {
+        self.latch = latch;
+        if let Some(ui) = self.ui() {
+            ui.set_term_latch(latch.code());
+        }
     }
 
-    fn term_send_line(&self, text: &str) {
-        if !text.is_empty() {
-            self.term_input(TermInput::Text(text.to_string()));
+    /// Ctrl ou Alt touché : il se colle pour la touche suivante, ou se relâche.
+    pub(crate) fn term_latch(&mut self, which: Latch) {
+        self.set_latch(self.latch.toggle(which));
+    }
+
+    /// Une touche de la barre : elle prend ce qui est collé (s'il va avec elle), qui se relâche.
+    pub(crate) fn term_key(&mut self, name: &str) {
+        let latch = self.latch;
+        self.set_latch(Latch::None);
+        if let Some(inputs) = termkeys::chip(name, latch) {
+            self.term_inputs(inputs);
         }
-        self.term_input(TermInput::Key(Key::Enter));
+    }
+
+    /// Un caractère tapé au clavier du téléphone pendant que Ctrl ou Alt était collé.
+    pub(crate) fn term_typed(&mut self, text: &str) {
+        let latch = self.latch;
+        self.set_latch(Latch::None);
+        match termkeys::typed(text, latch) {
+            Typed::Send(inputs) if !inputs.is_empty() => {
+                self.term_inputs(inputs);
+            }
+            Typed::Send(_) => {}
+            Typed::Refused(why) => self.toast(why, 3),
+            Typed::Draft(text) => {
+                if let Some(ui) = self.ui() {
+                    ui.set_term_draft(format!("{}{text}", ui.get_term_draft()).into());
+                }
+            }
+        }
+    }
+
+    /// La saisie du champ, avec Entrée (sur plusieurs lignes : en collage). Le champ ne se vide que si elle est partie.
+    pub(crate) fn term_send_line(&mut self, text: &str) {
+        if self.term_inputs(termkeys::line(text))
+            && let Some(ui) = self.ui()
+        {
+            ui.set_term_draft(SharedString::new());
+        }
+    }
+
+    /// Le presse-papiers, collé dans le terminal ; sur plusieurs lignes, après confirmation.
+    pub(crate) fn term_paste(&mut self, clip: &str) {
+        match termkeys::paste(clip) {
+            Paste::Empty => self.toast("Le presse-papiers est vide.", 1),
+            Paste::Now(text) => {
+                self.term_inputs(vec![TermInput::Paste(text)]);
+            }
+            Paste::Ask { text, question } => {
+                let Some((module, id)) = self.followed_term() else { return };
+                let Some(ui) = self.ui() else { return };
+                self.paste = Some((module, id, text));
+                ui.set_term_paste_text(question.into());
+                ui.set_term_paste_visible(true);
+            }
+        }
+    }
+
+    /// Le collage confirmé : il part au terminal pour lequel il a été demandé, s'il est toujours celui affiché.
+    fn term_paste_confirmed(&mut self) {
+        let Some((module, id, text)) = self.paste.take() else { return };
+        if self.followed_term() == Some((module, id)) {
+            self.term_inputs(vec![TermInput::Paste(text)]);
+        }
+    }
+
+    /// Un autre terminal, ou plus de terminal : ce qui le servait se referme (Ctrl collé, collage).
+    fn leave_term(&mut self) {
+        self.set_latch(Latch::None);
+        self.paste = None;
+        if let Some(ui) = self.ui() {
+            ui.set_term_paste_visible(false);
+        }
     }
 
     /// Le zoom du terminal laissé par un pincement (ou A−, A+) : gardé pour la prochaine fois.
@@ -1969,7 +2039,7 @@ impl Controller {
 
     fn term_reply(&self, i: usize) {
         if let Some(r) = self.term.replies.get(i) {
-            self.term_input(r.input.clone());
+            self.term_inputs(vec![r.input.clone()]);
         }
     }
 
@@ -2441,6 +2511,21 @@ fn wire(ui: &AppWindow) {
     });
     ui.on_term_key(|k| {
         with(|c| c.term_key(&k));
+    });
+    ui.on_term_latch_key(|which| {
+        with(|c| c.term_latch(Latch::from_code(which)));
+    });
+    ui.on_term_unlatch(|| {
+        with(|c| c.set_latch(Latch::None));
+    });
+    ui.on_term_typed(|text| {
+        with(|c| c.term_typed(&text));
+    });
+    ui.on_term_paste(|clip| {
+        with(|c| c.term_paste(&clip));
+    });
+    ui.on_term_paste_confirmed(|| {
+        with(|c| c.term_paste_confirmed());
     });
     ui.on_term_zoomed(|zoom| {
         with(|c| c.term_zoomed(zoom));

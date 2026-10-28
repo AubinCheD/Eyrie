@@ -1,6 +1,6 @@
 // Un terminal du PC, en direct : la grille (couleurs résolues dans le thème du téléphone), ajustée à la largeur de
-// l'écran ; deux doigts la zooment (le zoom est gardé). Dessous : réponses rapides quand Claude attend ; barre de
-// touches ; champ de saisie.
+// l'écran ; deux doigts la zooment (le zoom est gardé). Dessous : réponses rapides quand Claude attend, barre de touches
+// (Ctrl et Alt collants, coller), champ de saisie (sur plusieurs lignes, il part en collage).
 
 import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
@@ -22,27 +22,50 @@ export struct TermRow {
     segs: [TermSeg],
 }
 
+// Une touche de la barre : son nom pour le code, et si elle prend Ctrl ou Alt collé (sinon elle part seule).
 export struct TermKey {
     label: string,
     key: string,
+    ctrl: bool,
+    alt: bool,
 }
 
+// Une touche : 44 px de côté au moins. Collée (Ctrl, Alt) : pleine et soulignée, comme enfoncée ; pâle : elle ne
+// prend pas ce qui est collé.
 component KeyChip inherits Rectangle {
     in property <string> text;
     in property <bool> accent;
+    in property <bool> latchable;
+    in property <bool> latched;
+    in property <bool> dim;
     callback clicked();
-    height: 36px;
-    width: max(44px, t.preferred-width + 22px);
-    border-radius: 10px;
-    background: ta.pressed ? Theme.pressed : (accent ? Theme.accent-soft : Theme.surface-2);
+    height: 44px;
+    width: max(44px, t.preferred-width + 24px);
+    border-radius: 12px;
+    background: root.latched ? (ta.pressed ? Theme.accent.darker(0.15) : Theme.accent)
+        : ta.pressed ? Theme.pressed : (root.accent ? Theme.accent-soft : Theme.surface-2);
+    opacity: root.dim ? 0.45 : 1;
     animate background { duration: 80ms; }
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-checkable: root.latchable;
+    accessible-checked: root.latched;
+    accessible-action-default => { root.clicked(); }
     t := Text {
         text: root.text;
-        color: root.accent ? Theme.accent : Theme.text;
+        color: root.latched ? Theme.on-accent : root.accent ? Theme.accent : Theme.text;
         font-size: 14px;
-        font-weight: 600;
+        font-weight: root.latched ? 700 : 600;
         horizontal-alignment: center;
         vertical-alignment: center;
+    }
+    if root.latched: Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: parent.height - 8px;
+        width: 18px;
+        height: 3px;
+        border-radius: 1.5px;
+        background: Theme.on-accent;
     }
     ta := TouchArea {
         clicked => { root.clicked(); }
@@ -62,13 +85,24 @@ export component TermView inherits Rectangle {
     in property <[string]> replies;
     in property <bool> can-type: true;
     in-out property <string> draft;
+    // Ce qui est collé (tenu par le code) : 0 rien, 1 Ctrl, 2 Alt.
+    in property <int> latch;
     // Le bas de la liste est visible.
     out property <bool> at-bottom: list.content-y <= list.visible-height - root.content-h + 2 * root.ch;
     // La liste suit le bas tant que l'utilisateur ne l'a pas remontée : la sortie qui arrive y reste collée, et le bas
     // reste en vue quand la hauteur change (clavier du téléphone qui s'ouvre, réponses rapides, zoom).
     out property <bool> follow: true;
+    // La hauteur des barres sous la liste : les bulles se posent au-dessus.
+    out property <length> bars-height: (root.waiting && root.replies.length > 0 ? 56px : 0) + 56px + root.input-h + 16px;
     callback send-line(string);
     callback key(string);
+    // Ctrl (1) ou Alt (2) touché : il se colle, ou se relâche ; `unlatch` : il se relâche.
+    callback latch-key(int);
+    callback unlatch();
+    // Un caractère tapé au clavier du téléphone pendant que Ctrl ou Alt est collé.
+    callback typed(string);
+    // Le texte du presse-papiers, à coller.
+    callback paste(string);
     callback reply(int);
     callback zoomed(float);
     callback haptic();
@@ -80,6 +114,8 @@ export component TermView inherits Rectangle {
     out property <length> ch: ceil(root.fs * 1.22 / 1px) * 1px;
     property <length> content-h: root.rows.length * root.ch;
     property <length> list-h: list.visible-height;
+    // Le champ de saisie grandit avec ses lignes, jusqu'à cinq environ.
+    property <length> input-h: min(116px, max(42px, input.preferred-height + 20px));
 
     public function scroll-to-end() {
         root.follow = true;
@@ -99,6 +135,14 @@ export component TermView inherits Rectangle {
         list.content-x = max(min(0px, list.visible-width - list.content-width), -left * root.cw);
     }
 
+    // Le presse-papiers, lu par un champ caché (le système ne le donne qu'à un champ de texte).
+    function paste-clipboard() {
+        clip.text = "";
+        clip.paste();
+        root.paste(clip.text);
+        clip.text = "";
+    }
+
     changed content-h => {
         if root.follow {
             root.scroll-to-end();
@@ -114,6 +158,65 @@ export component TermView inherits Rectangle {
             root.follow = true;
         }
     }
+
+    // Ctrl ou Alt collé : la touche suivante tapée au clavier du téléphone arrive dans `catcher` (qui ouvre le clavier
+    // s'il était fermé). Relâché : le champ de saisie reprend le focus s'il l'avait.
+    property <bool> had-field;
+    property <bool> catching: catcher.has-focus;
+    changed latch => {
+        if root.latch != 0 {
+            if !catcher.has-focus {
+                root.had-field = input.has-focus;
+                catcher.focus();
+            }
+        } else if catcher.has-focus {
+            if root.had-field {
+                input.focus();
+            } else {
+                catcher.clear-focus();
+            }
+        }
+    }
+    // Le champ de saisie touché pendant que Ctrl ou Alt était collé : il se relâche.
+    changed catching => {
+        if !root.catching && root.latch != 0 {
+            root.unlatch();
+        }
+    }
+
+    // La saisie : Entrée envoie ; Maj+Entrée (clavier physique) va à la ligne dans le champ. Un clavier qui donne
+    // Entrée comme du texte (un retour ajouté au bout) envoie aussi.
+    property <string> last-draft;
+    property <bool> shift-return;
+    changed draft => {
+        root.last-draft = root.draft;
+    }
+
+    // Les touches de la barre, de part et d'autre de Coller et Copier (voir `termkeys.rs` pour ce qu'elles prennent
+    // de Ctrl ou Alt collé).
+    property <[TermKey]> first-keys: [
+        { label: "Échap", key: "escape" },
+        { label: "Tab", key: "tab" },
+        { label: "↑", key: "up" },
+        { label: "↓", key: "down" },
+        { label: "←", key: "left" },
+        { label: "→", key: "right" },
+        { label: "Entrée", key: "enter" },
+        { label: "Ctrl+C", key: "ctrl-c", ctrl: true },
+    ];
+    property <[TermKey]> more-keys: [
+        { label: "Maj+Tab", key: "backtab" },
+        { label: "Maj+Entrée", key: "shift-enter" },
+        { label: "Effacer", key: "backspace", ctrl: true, alt: true },
+        { label: "Ctrl+D", key: "ctrl-d", ctrl: true },
+        { label: "Ctrl+R", key: "ctrl-r", ctrl: true },
+        { label: "Ctrl+L", key: "ctrl-l", ctrl: true },
+        { label: "Ctrl+Z", key: "ctrl-z", ctrl: true },
+        { label: "Début", key: "home" },
+        { label: "Fin", key: "end" },
+        { label: "Page ↑", key: "pageup" },
+        { label: "Page ↓", key: "pagedown" },
+    ];
 
     background: Theme.term-bg;
 
@@ -176,6 +279,24 @@ export component TermView inherits Rectangle {
                     }
                 }
             }
+            // Ctrl ou Alt collé : ce qu'il attend.
+            if root.latch != 0: Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: parent.height - self.height - 12px;
+                width: hint.preferred-width + 28px;
+                height: 36px;
+                border-radius: 18px;
+                background: Theme.accent;
+                drop-shadow-blur: 8px;
+                drop-shadow-color: #00000044;
+                hint := Text {
+                    text: root.latch == 1 ? "Ctrl collé : tapez une lettre" : "Alt collé : tapez une touche";
+                    color: Theme.on-accent;
+                    font-size: 13.5px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+            }
             // Revenir en bas, quand on a remonté l'historique.
             if !root.at-bottom: Rectangle {
                 x: parent.width - 60px;
@@ -186,6 +307,9 @@ export component TermView inherits Rectangle {
                 background: Theme.surface;
                 drop-shadow-blur: 8px;
                 drop-shadow-color: #00000044;
+                accessible-role: button;
+                accessible-label: "Revenir en bas";
+                accessible-action-default => { root.scroll-to-end(); }
                 Icon {
                     kind: "down";
                     tint: Theme.accent;
@@ -197,12 +321,12 @@ export component TermView inherits Rectangle {
         }
 
         if root.waiting && root.replies.length > 0: Rectangle {
-            height: 52px;
+            height: 56px;
             background: Theme.warn.with-alpha(0.12);
             Flickable {
                 content-width: replies-row.preferred-width;
                 replies-row := HorizontalLayout {
-                    padding: 8px;
+                    padding: 6px;
                     spacing: 8px;
                     for r[i] in root.replies: KeyChip {
                         text: r;
@@ -218,13 +342,54 @@ export component TermView inherits Rectangle {
 
         // Touches que le clavier du téléphone n'a pas.
         Rectangle {
-            height: 48px;
+            height: 56px;
             background: Theme.surface;
             Flickable {
                 content-width: keys-row.preferred-width;
                 keys-row := HorizontalLayout {
                     padding: 6px;
                     spacing: 6px;
+                    KeyChip {
+                        text: "Ctrl";
+                        latchable: true;
+                        latched: root.latch == 1;
+                        clicked => {
+                            root.haptic();
+                            root.latch-key(1);
+                        }
+                    }
+                    KeyChip {
+                        text: "Alt";
+                        latchable: true;
+                        latched: root.latch == 2;
+                        clicked => {
+                            root.haptic();
+                            root.latch-key(2);
+                        }
+                    }
+                    for k in root.first-keys: KeyChip {
+                        text: k.label;
+                        dim: (root.latch == 1 && !k.ctrl) || (root.latch == 2 && !k.alt);
+                        clicked => {
+                            root.haptic();
+                            root.key(k.key);
+                        }
+                    }
+                    KeyChip {
+                        text: "Coller";
+                        clicked => {
+                            root.haptic();
+                            root.paste-clipboard();
+                        }
+                    }
+                    for k in root.more-keys: KeyChip {
+                        text: k.label;
+                        dim: (root.latch == 1 && !k.ctrl) || (root.latch == 2 && !k.alt);
+                        clicked => {
+                            root.haptic();
+                            root.key(k.key);
+                        }
+                    }
                     KeyChip {
                         text: "A−";
                         clicked => {
@@ -239,39 +404,46 @@ export component TermView inherits Rectangle {
                             root.zoomed(root.zoom);
                         }
                     }
-                    for k in [
-                        { label: "Échap", key: "escape" },
-                        { label: "Tab", key: "tab" },
-                        { label: "↑", key: "up" },
-                        { label: "↓", key: "down" },
-                        { label: "←", key: "left" },
-                        { label: "→", key: "right" },
-                        { label: "Entrée", key: "enter" },
-                        { label: "Ctrl+C", key: "ctrl-c" },
-                        { label: "Maj+Tab", key: "backtab" },
-                        { label: "Maj+Entrée", key: "shift-enter" },
-                        { label: "Effacer", key: "backspace" },
-                        { label: "Ctrl+D", key: "ctrl-d" },
-                        { label: "Ctrl+R", key: "ctrl-r" },
-                        { label: "Ctrl+L", key: "ctrl-l" },
-                        { label: "Ctrl+Z", key: "ctrl-z" },
-                        { label: "Début", key: "home" },
-                        { label: "Fin", key: "end" },
-                        { label: "Page ↑", key: "pageup" },
-                        { label: "Page ↓", key: "pagedown" },
-                    ]: KeyChip {
-                        text: k.label;
-                        clicked => {
-                            root.haptic();
-                            root.key(k.key);
-                        }
-                    }
                 }
+            }
+            // Le champ qui reçoit la touche suivante quand Ctrl ou Alt est collé : invisible, et sans suggestions du
+            // clavier (un champ de mot de passe), pour que chaque lettre arrive aussitôt tapée.
+            catcher := TextInput {
+                x: 0;
+                y: 0;
+                width: 1px;
+                height: 1px;
+                color: transparent;
+                text-cursor-width: 0;
+                input-type: password;
+                single-line: true;
+                enabled: root.can-type && !root.ended;
+                accessible-label: "Touche suivante";
+                edited => {
+                    root.typed(self.text);
+                    self.text = "";
+                }
+                // Les touches que le clavier envoie comme touches (Effacer dans un champ vide, Entrée).
+                key-pressed(e) => {
+                    if e.text == Key.Return {
+                        root.key("enter");
+                        return accept;
+                    }
+                    if e.text == Key.Backspace {
+                        root.key("backspace");
+                        return accept;
+                    }
+                    reject
+                }
+            }
+            clip := TextInput {
+                visible: false;
+                single-line: false;
             }
         }
 
         Rectangle {
-            height: 58px;
+            height: root.input-h + 16px;
             background: Theme.surface;
             HorizontalLayout {
                 padding-left: 10px;
@@ -285,51 +457,94 @@ export component TermView inherits Rectangle {
                     background: Theme.surface-2;
                     border-width: input.has-focus ? 1.5px : 0;
                     border-color: Theme.accent;
-                    input := TextInput {
+                    clip: true;
+                    field := Flickable {
                         x: 16px;
                         width: parent.width - 28px;
-                        height: parent.height;
-                        vertical-alignment: center;
-                        text <=> root.draft;
-                        enabled: root.can-type && !root.ended;
-                        color: Theme.text;
-                        font-size: 15px;
-                        single-line: true;
-                        accepted => {
-                            root.send-line(self.text);
-                            self.text = "";
+                        interactive: self.content-height > self.height + 1px;
+                        content-width: self.width;
+                        content-height: max(self.height, input.preferred-height + 20px);
+                        input := TextInput {
+                            y: 10px;
+                            width: field.width;
+                            height: max(field.height - 20px, self.preferred-height);
+                            vertical-alignment: center;
+                            text <=> root.draft;
+                            enabled: root.can-type && !root.ended;
+                            color: Theme.text;
+                            font-size: 15px;
+                            single-line: false;
+                            wrap: word-wrap;
+                            // Des commandes, pas des phrases : ni majuscule ni correction automatiques.
+                            input-method-hints: { capitalization: CapitalizationMode.none, auto-correct: false };
+                            accessible-label: "Saisie pour le terminal";
+                            key-pressed(e) => {
+                                if e.text == Key.Return {
+                                    if e.modifiers.shift {
+                                        root.shift-return = true;
+                                        return reject;
+                                    }
+                                    root.send-line(self.text);
+                                    return accept;
+                                }
+                                reject
+                            }
+                            edited => {
+                                if !root.shift-return && self.text == root.last-draft + "\n" {
+                                    self.text = root.last-draft;
+                                    root.send-line(self.text);
+                                }
+                                root.shift-return = false;
+                                root.last-draft = self.text;
+                            }
+                            // Le curseur reste visible quand le texte dépasse le champ.
+                            cursor-position-changed(p) => {
+                                if p.y + 10px + field.content-y < 0 {
+                                    field.content-y = min(0px, -p.y);
+                                } else if p.y + 40px + field.content-y > field.height {
+                                    field.content-y = max(field.height - field.content-height, field.height - p.y - 40px);
+                                }
+                            }
                         }
                     }
                     if root.draft == "": Text {
                         x: 16px;
+                        width: parent.width - 28px;
                         text: root.ended ? "Terminal arrêté" : root.can-type ? "Écrire dans le terminal…" : "Saisie non autorisée sur ce PC";
                         color: Theme.text-faint;
                         font-size: 15px;
                         vertical-alignment: center;
+                        overflow: elide;
                         height: parent.height;
                     }
                 }
-                Rectangle {
-                    width: 42px;
-                    height: 42px;
-                    border-radius: 21px;
-                    background: send-ta.pressed ? Theme.accent.darker(0.2) : Theme.accent;
-                    opacity: root.can-type && !root.ended ? 1 : 0.4;
-                    Icon {
-                        kind: "send";
-                        tint: Theme.on-accent;
-                        size: 20px;
-                    }
-                    send-ta := TouchArea {
-                        enabled: root.can-type && !root.ended;
-                        clicked => {
-                            root.haptic();
-                            root.send-line(input.text);
-                            input.text = "";
+                VerticalLayout {
+                    alignment: end;
+                    Rectangle {
+                        width: 42px;
+                        height: 42px;
+                        border-radius: 21px;
+                        background: send-ta.pressed ? Theme.accent.darker(0.2) : Theme.accent;
+                        opacity: root.can-type && !root.ended ? 1 : 0.4;
+                        accessible-role: button;
+                        accessible-label: "Envoyer";
+                        accessible-action-default => { root.send-line(input.text); }
+                        Icon {
+                            kind: "send";
+                            tint: Theme.on-accent;
+                            size: 20px;
+                        }
+                        send-ta := TouchArea {
+                            enabled: root.can-type && !root.ended;
+                            clicked => {
+                                root.haptic();
+                                root.send-line(input.text);
+                            }
                         }
                     }
                 }
             }
         }
     }
+
 }

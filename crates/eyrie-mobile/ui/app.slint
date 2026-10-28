@@ -89,6 +89,11 @@ export component AppWindow inherits Window {
     in-out property <string> term-draft;
     // La liste du terminal suit le bas : la sortie qui arrive y reste collée.
     out property <bool> term-follow: term.follow;
+    // Ctrl ou Alt collé : 0 rien, 1 Ctrl, 2 Alt.
+    in property <int> term-latch;
+    // Un collage de plusieurs lignes, demandé d'abord : la question, avec un aperçu.
+    in property <string> term-paste-text;
+    in-out property <bool> term-paste-visible;
 
     // --- Accueil et appairage ---
     in property <image> logo;
@@ -172,6 +177,11 @@ export component AppWindow inherits Window {
     callback term-key(string);
     callback term-reply(int);
     callback term-zoomed(float);
+    callback term-latch-key(int);
+    callback term-unlatch();
+    callback term-typed(string);
+    callback term-paste(string);
+    callback term-paste-confirmed();
     callback open-folder(UiAct);
     callback picker-go(string);
     callback picker-pick(string);
@@ -291,7 +301,7 @@ export component AppWindow inherits Window {
     focus := FocusScope {
         key-pressed(e) => {
             if e.text == Key.Back || e.text == Key.Escape {
-                if root.sheet-visible || root.confirm-visible || root.input-visible || root.forget-visible || root.logout-visible || root.start-visible {
+                if root.sheet-visible || root.confirm-visible || root.input-visible || root.forget-visible || root.logout-visible || root.start-visible || root.term-paste-visible {
                     root.sheet-visible = false;
                     root.confirm-visible = false;
                     root.has-chosen = false;
@@ -299,6 +309,12 @@ export component AppWindow inherits Window {
                     root.forget-visible = false;
                     root.logout-visible = false;
                     root.start-visible = false;
+                    root.term-paste-visible = false;
+                    return accept;
+                }
+                // Ctrl ou Alt collé se relâche.
+                if root.terminal-mode && root.term-latch != 0 {
+                    root.term-unlatch();
                     return accept;
                 }
                 // Le sélecteur de dossiers se ferme (on remonte d'un dossier par le fil d'Ariane).
@@ -531,8 +547,13 @@ export component AppWindow inherits Window {
                         replies: root.term-replies;
                         can-type: root.term-can-type;
                         draft <=> root.term-draft;
+                        latch: root.term-latch;
                         send-line(t) => { root.term-send-line(t); }
                         key(k) => { root.term-key(k); }
+                        latch-key(w) => { root.term-latch-key(w); }
+                        unlatch => { root.term-unlatch(); }
+                        typed(t) => { root.term-typed(t); }
+                        paste(t) => { root.term-paste(t); }
                         reply(i) => { root.term-reply(i); }
                         zoomed(z) => { root.term-zoomed(z); }
                         haptic => { root.haptic(); }
@@ -631,6 +652,17 @@ export component AppWindow inherits Window {
             }
         }
     }
+    if root.term-paste-visible: ConfirmDialog {
+        text: root.term-paste-text;
+        ok-text: "Coller";
+        answered(yes) => {
+            root.term-paste-visible = false;
+            if yes {
+                root.haptic();
+                root.term-paste-confirmed();
+            }
+        }
+    }
     if root.logout-visible: ConfirmDialog {
         text: "Déconnecter ce téléphone de Tailscale ? Il ne joindra plus le PC avant de se reconnecter à votre compte.";
         ok-text: "Déconnecter";
@@ -719,7 +751,7 @@ export component AppWindow inherits Window {
     if root.toast-visible: Toast {
         x: 16px;
         width: parent.width - 32px;
-        y: parent.height - root.bottom-inset - (root.terminal-mode ? 170px : 84px) - self.height;
+        y: parent.height - root.bottom-inset - (root.terminal-mode ? term.bars-height + 12px : 84px) - self.height;
         text: root.toast-text;
         tone: root.toast-tone;
         expanded: root.toast-expanded;

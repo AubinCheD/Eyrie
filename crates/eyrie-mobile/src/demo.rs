@@ -7,8 +7,10 @@
 //! `dossiers-attente`, `dossiers-silence`, `dossiers-texte` (un PC qui ne liste pas) ; le PC sans Eyrie (voir
 //! `veilleur.rs`) : `fermee` (« Démarrer Eyrie »), `fermee-par-pc` (elle vient de se fermer), `fermee-sans-cle`,
 //! `demarrage`, `acces-coupe`, `refus-demarrage`, `preuve-refusee`, `injoignable`, `telephone-hors-ligne` ; le terminal
-//! : `terminal-zoom`, `terminal-suivi` (le bas reste en vue quand la liste rapetisse), `terminal-remonte` (la sortie
-//! qui arrive ne ramène pas en bas). Suffixe `+clair` ou `+sombre` : le thème (sinon celui du système).
+//! : `terminal-ctrl` (Ctrl collé), `terminal-coller` (un collage de plusieurs lignes à confirmer), `terminal-saisie`
+//! (sur plusieurs lignes), `terminal-zoom`, `terminal-suivi` (le bas reste en vue quand la liste rapetisse),
+//! `terminal-remonte` (la sortie qui arrive ne ramène pas en bas). Suffixe `+clair` ou `+sombre` : le thème (sinon
+//! celui du système).
 
 use slint::ComponentHandle;
 use suite_mobile::msg::{
@@ -24,6 +26,7 @@ use suite_mobile::ui::{
 
 use crate::app::with;
 use crate::tailnet::Tailnet;
+use crate::termkeys::Latch;
 use crate::veilleur::{Away, Eyrie, Reach, Start};
 use crate::{AppWindow, NoteItem, Theme, UiAct};
 
@@ -611,9 +614,21 @@ fn terminal() -> TermView {
     }
 }
 
-/// Le terminal ouvert, et un zoom (gardé seulement le temps de la démonstration).
+/// Le terminal ouvert : Ctrl collé, un collage de plusieurs lignes à confirmer, une saisie sur plusieurs lignes, un zoom
+/// (gardé seulement le temps de la démonstration).
 fn terminal_scene(ui: &AppWindow, scene: &str) {
     match scene {
+        "terminal-ctrl" => {
+            with(|c| c.term_latch(Latch::Ctrl));
+        }
+        "terminal-coller" => {
+            with(|c| c.term_paste("git fetch --all\ngit status --short\ncargo test -p eyrie-mobile\n"));
+        }
+        "terminal-saisie" => {
+            ui.set_term_draft(
+                "Relis le diff ci-dessus\net propose un titre de commit en français,\nau style du journal".into(),
+            );
+        }
         "terminal-zoom" => ui.set_term_zoom(1.8),
         // Une longue sortie, suivie en bas ; puis la liste rapetisse comme quand le clavier du téléphone s'ouvre (ici, la
         // fenêtre perd 300 px de haut ; rien n'arrive du PC) : le bas reste en vue.
