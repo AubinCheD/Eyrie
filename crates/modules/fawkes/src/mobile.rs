@@ -19,7 +19,7 @@ use eframe::egui;
 use suite_sdk::Cx;
 use suite_sdk::mobile::msg::OPEN_PREFIX;
 use suite_sdk::mobile::term::{self, Color, Key, Line, Run, TermInput, TermView};
-use suite_sdk::mobile::ui::{Act, Band, Row, Screen, Tone};
+use suite_sdk::mobile::ui::{Act, Band, FOLDER_ANY, FolderInput, Place, Row, Screen, Tone};
 
 use fawkes::app::{App, NewClaude, NewTerm};
 use fawkes::model::{AppState, Group, GroupId, Rgb, TermId, TermSpec};
@@ -395,23 +395,24 @@ fn home(st: &AppState, seen: &HashMap<TermId, Seen>) -> Screen {
     s
 }
 
-/// `nouveau` : un shell ou Claude dans un dossier connu ; `nouveau/g/<groupe>` (menu d'un bandeau) : la même chose
-/// dans ce groupe, ses dossiers d'abord.
+/// `nouveau` : un shell ou Claude dans un dossier connu, ou dans un autre choisi dans les dossiers du PC ;
+/// `nouveau/g/<groupe>` (menu d'un bandeau) : la même chose dans ce groupe, ses dossiers d'abord.
 fn new_terminal(st: &AppState, group: Option<&Group>) -> Screen {
     let subtitle = match group {
         Some(g) => format!("Dans le groupe « {} », sur le PC", g.name),
         None => "Il s'ouvre dans Fawkes, sur le PC".to_string(),
     };
     let mut s = Screen::new("Nouveau terminal").subtitle(subtitle);
+    let dirs = known_dirs(st, group);
     let mut section = None;
-    for (d, mine) in known_dirs(st, group) {
-        if section != Some(mine) {
-            s.section(if mine { "Dossiers du groupe" } else { "Dossiers récents" }, "");
-            section = Some(mine);
+    for (d, mine) in &dirs {
+        if section != Some(*mine) {
+            s.section(if *mine { "Dossiers du groupe" } else { "Dossiers récents" }, "");
+            section = Some(*mine);
         }
-        let key = dir_key(&d);
+        let key = dir_key(d);
         s.row(
-            Row::new(dir_name(&d))
+            Row::new(dir_name(d))
                 .key(key.clone())
                 .subtitle(d.clone())
                 .glyph("📁")
@@ -420,11 +421,27 @@ fn new_terminal(st: &AppState, group: Option<&Group>) -> Screen {
                 .act(Act::new(format!("claude:{key}"), "Ouvrir Claude ici").glyph("✳️")),
         );
     }
+    // Le sélecteur de dossiers du PC, ouvert dans le dépôt du groupe s'il y en a un, avec les dossiers que Fawkes
+    // connaît en raccourcis ; une application plus ancienne montre un champ de texte. Le chemin choisi est contrôlé
+    // comme une demande `ouvrir` (`target_dir`).
+    let spec = FolderInput {
+        want: FOLDER_ANY,
+        start: group.and_then(|g| g.repo.clone()).unwrap_or_default(),
+        places: dirs.iter().map(|(d, _)| Place { label: dir_name(d), path: d.clone(), glyph: "📁".into() }).collect(),
+        ..Default::default()
+    };
+    let pick = |id: &str, label: &str| {
+        Act::new(id, label).input("Dossier sur le PC", r"C:\Users\…\projet").folder("Dossier sur le PC", spec.clone())
+    };
     s.section("Ailleurs", "");
     s.row(
         Row::new("Autre dossier…")
-            .glyph("⌨️")
-            .tap(Act::new("shell:saisi", "Ouvrir").input("Dossier sur le PC", r"C:\Users\…\projet")),
+            .key("autre")
+            .subtitle("Choisir un dossier du PC")
+            .glyph("📂")
+            .tap(pick("shell:saisi", "Ouvrir un shell").glyph("›_"))
+            .act(pick("shell:saisi", "Ouvrir un shell").glyph("›_"))
+            .act(pick("claude:saisi", "Ouvrir Claude ici").glyph("✳️")),
     );
     s
 }
@@ -1111,6 +1128,45 @@ mod tests {
         assert!(
             plain.blocks.iter().all(|b| !matches!(b, Block::Section { title, .. } if title == "Dossiers du groupe"))
         );
+    }
+
+    /// « Autre dossier… » ouvre le sélecteur de dossiers du PC (n'importe quel dossier), dans le dépôt du groupe s'il y
+    /// en a un, avec les dossiers que Fawkes connaît en raccourcis ; une application plus ancienne montre un champ de
+    /// texte. Le chemin choisi reste contrôlé comme une demande `ouvrir`.
+    #[test]
+    fn another_folder_is_picked_among_the_pc_folders() {
+        let here = env!("CARGO_MANIFEST_DIR");
+        let (mut st, _) = three_groups();
+        st.groups[1].repo = Some(here.into());
+        st.recent_dirs = vec![r"C:\DEV\Ozmo".into()];
+        let other = |s: &Screen| {
+            s.blocks
+                .iter()
+                .find_map(|b| match b {
+                    Block::Row(r) if r.key == "autre" => Some(r.clone()),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let row = other(&new_terminal(&st, st.group(5)));
+        let acts: Vec<Act> = row.tap.into_iter().chain(row.acts).collect();
+        assert_eq!(
+            acts.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(),
+            ["shell:saisi", "shell:saisi", "claude:saisi"]
+        );
+        for a in &acts {
+            let input = a.input.as_ref().unwrap();
+            let folder = input.folder.as_ref().expect("sélecteur de dossiers du PC");
+            assert_eq!((folder.want, folder.start.as_str()), (FOLDER_ANY, here));
+            let places: Vec<&str> = folder.places.iter().map(|p| p.path.as_str()).collect();
+            assert_eq!(places, [here, r"C:\DEV\Eyrie", r"C:\DEV\Ozmo"], "les dossiers proposés au-dessus");
+            assert!(!input.placeholder.is_empty(), "le champ de texte d'une application plus ancienne");
+        }
+        let plain = other(&new_terminal(&st, None));
+        assert_eq!(plain.tap.unwrap().input.unwrap().folder.unwrap().start, "", "hors groupe : la racine du sélecteur");
+        assert!(target_dir(&st, "nouveau", "saisi", Some(r"\\hote.invalid\partage")).is_err(), "chemin réseau");
+        assert!(target_dir(&st, "nouveau", "saisi", Some("  ")).is_err(), "rien de choisi");
+        assert_eq!(target_dir(&st, "nouveau", "saisi", Some(here)).map(|(d, _)| d), Ok(here.to_string()));
     }
 
     #[test]
