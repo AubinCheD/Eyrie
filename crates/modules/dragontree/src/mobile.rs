@@ -25,6 +25,10 @@
 //! lecture ratée de DragonTree (état, branches) se dit sur le téléphone. Un onglet que le téléphone a ouvert lui-même
 //! (un dépôt regardé, ou ajouté d'ici : `add_repo`, en fond) est refermé par DragonTree après 15 min sans regard ni
 //! opération (`close_repo_tab`) ; jamais un onglet que l'utilisateur a ouvert, ou affiché, sur le PC.
+//!
+//! « Cloner un dépôt… » ouvre un brouillon (`clonage.rs`, écran `cloner/<n>`) que DragonTree clone sans fenêtre
+//! (`clone_remote`) ; ses clonages en cours et ce qu'ils ont donné s'affichent en tête de la liste, avec « Annuler ».
+//! Le dépôt cloné est ouvert par DragonTree dans un onglet de fond : celui du téléphone, refermé comme les autres.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -33,6 +37,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
 
 use dragontree_app::DragonTreeApp;
+use dragontree_app::clone::HostJob;
 use dragontree_app::repo::{Refresh, RemoteOp, RepoTab};
 use dragontree_app::repo_list::{QuickStatus, RepoDirectory};
 use dragontree_app::settings::{Settings, long_path_key, path_key};
@@ -42,9 +47,12 @@ use dragontree_git::{
     LogOrder, LogScope, Oid, Repo, StatusEntry, StatusSnapshot,
 };
 use suite_sdk::mobile::msg::OPEN_PREFIX;
-use suite_sdk::mobile::ui::{Act, Block, FOLDER_REPO, FolderInput, GraphCell, PROGRESS_UNKNOWN, Place, Screen, Tone};
+use suite_sdk::mobile::ui::{
+    Act, Block, FOLDER_PARENT, FOLDER_REPO, FolderInput, GraphCell, PROGRESS_UNKNOWN, Place, Screen, Tone,
+};
 
 use crate::branches;
+use crate::clonage::{self, JobView};
 use crate::depot::{self, RepoView, file_key};
 use crate::historique::{self, LogPage, LogView, Marks};
 use crate::liste::{self, Entry, JOB_SHOWN, Job, Listed, RepoState, repo_key};
@@ -97,7 +105,7 @@ fn job_block(j: Job) -> Block {
 
 // --- Ce que DragonTree sait ---
 
-fn short_error(e: &str) -> String {
+pub(crate) fn short_error(e: &str) -> String {
     let e = e.trim();
     if e.chars().count() <= ERROR_MAX {
         return e.to_string();
@@ -477,12 +485,44 @@ fn inside(p: &Path, zone: &Path) -> bool {
     !z.is_empty() && (p == z || p.starts_with(&format!("{z}/")))
 }
 
-/// Un dossier de dépôt désigné depuis le téléphone, contrôlé ici même si le pont l'a fait avant (`docs/mobile.md` §5,
-/// à venir) : un chemin `X:\…` d'un disque du PC ([`drive_path`]) ; résolu (noms courts, jonctions, liens), un dossier
-/// local, hors des dossiers interdits `forbidden` et des [`FORBIDDEN_NAMES`] ; un dépôt git (un `.git`, dossier ou
-/// fichier d'un worktree). Rend le chemin résolu : c'est lui que DragonTree ouvre, pas l'endroit où une jonction
-/// changée entre-temps mènerait. (Le pont vérifie de plus que le lecteur est un disque fixe.)
+/// Un dossier de dépôt désigné depuis le téléphone, contrôlé ici même si le pont l'a fait avant (`docs/mobile.md` §5) :
+/// un dossier du PC ([`check_pc_dir`]), et un dépôt git (un `.git`, dossier ou fichier d'un worktree). Rend le chemin
+/// résolu : c'est lui que DragonTree ouvre, pas l'endroit où une jonction changée entre-temps mènerait.
 fn check_repo_dir(dir: &Path, forbidden: &[PathBuf]) -> Result<PathBuf, String> {
+    let full = check_pc_dir(dir, forbidden)?;
+    if !full.join(".git").exists() {
+        return Err(format!("{} n'est pas un dépôt git.", dir.display()));
+    }
+    Ok(full)
+}
+
+/// La destination d'un clonage demandé depuis le téléphone : le dossier parent, un dossier du PC ([`check_pc_dir`]), et
+/// le dossier `folder` dedans, hors des dossiers protégés, absent ou vide (un clone crée sa destination). Rend le
+/// dossier parent résolu : c'est lui que DragonTree reçoit.
+pub(crate) fn check_clone_target(parent: &Path, folder: &str, forbidden: &[PathBuf]) -> Result<PathBuf, String> {
+    let full = check_pc_dir(parent, forbidden)?;
+    let target = full.join(folder);
+    let named = FORBIDDEN_NAMES.contains(&folder.to_lowercase().as_str());
+    if named || forbidden.iter().any(|z| inside(&target, z) || resolved(z).is_some_and(|z| inside(&target, &z))) {
+        return Err(format!("{} : dossier protégé, refusé depuis le téléphone.", target.display()));
+    }
+    match std::fs::symlink_metadata(&target) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(full),
+        Err(e) => Err(format!("{} : {e}", target.display())),
+        Ok(m) if m.is_dir() => match std::fs::read_dir(&target).map(|mut r| r.next().is_none()) {
+            Ok(true) => Ok(full),
+            Ok(false) => Err(format!("{} existe déjà et n'est pas vide.", target.display())),
+            Err(e) => Err(format!("{} : {e}", target.display())),
+        },
+        Ok(_) => Err(format!("{} existe déjà.", target.display())),
+    }
+}
+
+/// Un dossier désigné depuis le téléphone, contrôlé ici même si le pont l'a fait avant (`docs/mobile.md` §5) : un chemin
+/// `X:\…` d'un disque du PC ([`drive_path`]) ; résolu (noms courts, jonctions, liens), un dossier local, hors des
+/// dossiers interdits `forbidden` et des [`FORBIDDEN_NAMES`]. Rend le chemin résolu. (Le pont vérifie de plus que le
+/// lecteur est un disque fixe.)
+fn check_pc_dir(dir: &Path, forbidden: &[PathBuf]) -> Result<PathBuf, String> {
     let refused = || "Chemin refusé : un dossier d'un disque du PC est attendu (C:\\…).".to_string();
     if !drive_path(&dir.to_string_lossy()) {
         return Err(refused());
@@ -503,9 +543,6 @@ fn check_repo_dir(dir: &Path, forbidden: &[PathBuf]) -> Result<PathBuf, String> 
     }
     if !full.is_dir() {
         return Err(format!("{} n'est pas un dossier du PC.", dir.display()));
-    }
-    if !full.join(".git").exists() {
-        return Err(format!("{} n'est pas un dépôt git.", dir.display()));
     }
     Ok(full)
 }
@@ -571,6 +608,11 @@ pub struct Phone {
     /// Par dépôt : la suppression sur le serveur d'une branche distante lancée d'ici (numéro de l'opération dans
     /// DragonTree, branche `origin/x`), montrée en cours sur son détail tant qu'elle tourne.
     deleting: HashMap<String, (u64, String)>,
+    /// Les brouillons de clonage (`cloner/<n>`), et le numéro du dernier.
+    drafts: HashMap<u64, clonage::Draft>,
+    next_draft: u64,
+    /// Les clonages finis de DragonTree dont l'onglet de fond a été pris parmi ceux du téléphone.
+    adopted: HashSet<u64>,
 }
 
 impl Phone {
@@ -595,6 +637,9 @@ impl Phone {
             waiting: HashMap::new(),
             failed: HashMap::new(),
             deleting: HashMap::new(),
+            drafts: HashMap::new(),
+            next_draft: 0,
+            adopted: HashSet::new(),
         }
     }
 
@@ -733,13 +778,23 @@ impl Phone {
         };
         let entries: Vec<Entry> = repos.into_iter().map(|r| self.entry(app, &dir, r)).collect();
         let add = self.add_act(&entries, &dir);
-        liste::home(&entries, busy, Some(add))
+        let mut s = liste::home(&entries, busy, Some(add));
+        // « Cloner un dépôt… » juste après « Ajouter » (les deux en icônes dans la barre), et sur la liste vide.
+        s.acts.insert(1, clonage::clone_act());
+        if let Some(Block::Buttons { acts }) = s.blocks.iter_mut().find(|b| matches!(b, Block::Buttons { .. })) {
+            acts.push(clonage::clone_act());
+        }
+        // Les clonages de DragonTree, en tête : en cours (avec « Annuler »), ou finis depuis moins d'une minute.
+        let listed: HashSet<String> = entries.iter().map(|e| repo_key(&e.repo.path)).collect();
+        let jobs = app.host_jobs().iter().filter(|j| j.result.is_none() || j.at.elapsed() < JOB_SHOWN);
+        let notes: Vec<Block> = jobs.map(|j| clone_note(j, &listed)).collect();
+        s.blocks.splice(0..0, notes);
+        s
     }
 
-    /// « Ajouter un dépôt existant… » : un dossier du PC, choisi dans le sélecteur du téléphone, qui doit être un dépôt
-    /// git. Raccourcis : le dossier de clonage et les dossiers analysés de DragonTree, puis les dossiers où sont déjà
-    /// ses dépôts ; ceux-ci sont marqués « déjà là ».
-    fn add_act(&self, entries: &[Entry], dir: &RepoDirectory) -> Act {
+    /// Les raccourcis du sélecteur de dossiers : le dossier de clonage `clone_dir` et les dossiers analysés de
+    /// DragonTree, puis les dossiers où sont déjà ses dépôts (`repos`, six au plus), sans doublon.
+    fn places<'a>(clone_dir: Option<&Path>, dir: &RepoDirectory, repos: impl Iterator<Item = &'a Path>) -> Vec<Place> {
         let mut places = Vec::new();
         let mut seen = HashSet::new();
         let mut place = |label: String, path: &Path, glyph: &str| {
@@ -749,24 +804,150 @@ impl Phone {
             }
             fresh
         };
-        if let Some(clone_dir) = &self.settings.default_clone_dir {
+        if let Some(clone_dir) = clone_dir {
             place("Dossier de clonage".into(), clone_dir, "📥");
         }
         for root in &dir.roots {
             place(format!("Dossier analysé : {}", liste::repo_name(root)), root, "📁");
         }
         let mut parents = 0;
-        for p in entries.iter().filter_map(|e| e.repo.path.parent()) {
+        for p in repos.filter_map(Path::parent) {
             if parents < PLACES_OF_REPOS && place(format!("Dépôts de {}", liste::repo_name(p)), p, "🗂️") {
                 parents += 1;
             }
         }
+        places
+    }
+
+    /// « Ajouter un dépôt existant… » : un dossier du PC, choisi dans le sélecteur du téléphone, qui doit être un dépôt
+    /// git. Raccourcis : le dossier de clonage et les dossiers analysés de DragonTree, puis les dossiers où sont déjà
+    /// ses dépôts ; ceux-ci sont marqués « déjà là ».
+    fn add_act(&self, entries: &[Entry], dir: &RepoDirectory) -> Act {
+        let repos = entries.iter().map(|e| e.repo.path.as_path());
+        let places = Self::places(self.settings.default_clone_dir.as_deref(), dir, repos);
         let known = entries.iter().map(|e| e.repo.path.display().to_string()).collect();
         let spec = FolderInput { want: FOLDER_REPO, places, known, ..Default::default() };
         Act::new("ajouter", "Ajouter un dépôt existant…")
             .glyph("➕")
             .input("Dépôt à ajouter", r"C:\…\mon-depot")
             .folder("Dépôt à ajouter", spec)
+    }
+
+    /// Un brouillon de clonage neuf, dans le dossier parent que propose DragonTree ; au-delà de
+    /// [`clonage::DRAFTS_MAX`], le plus ancien est oublié (sauf pendant son clonage).
+    fn new_draft(&mut self, app: &DragonTreeApp) -> u64 {
+        while self.drafts.len() >= clonage::DRAFTS_MAX {
+            let idle = self.drafts.iter().filter(|(_, d)| !cloning(app, d.job));
+            let Some(oldest) = idle.min_by_key(|(_, d)| d.seen).map(|(n, _)| *n) else { break };
+            self.drafts.remove(&oldest);
+        }
+        self.next_draft += 1;
+        self.drafts.insert(self.next_draft, clonage::Draft::new(app.clone_defaults().parent));
+        self.next_draft
+    }
+
+    /// L'écran d'un brouillon de clonage (`cloner/<n>`) : ce qui y est saisi, avec ce que DragonTree propose (son
+    /// dossier de clonage et ses dossiers en raccourcis du sélecteur, ses comptes, celui de l'URL) et son clonage.
+    fn clone_screen(&mut self, app: &mut DragonTreeApp, path: &str) -> Option<Screen> {
+        let n = clonage::draft_of(path)?;
+        let Some(draft) = self.drafts.get_mut(&n) else { return Some(clonage::lost()) };
+        draft.seen = Instant::now();
+        let draft = draft.clone();
+        let defaults = app.clone_defaults();
+        let job = draft.job.and_then(|id| app.host_jobs().iter().find(|j| j.id == id)).map(JobView::from);
+        let dir = app.repo_directory();
+        let repos: Vec<PathBuf> = self.repos_in(app, &dir).into_iter().map(|r| r.path).collect();
+        let open = job.as_ref().filter(|j| j.result == Some(Ok(()))).map(|j| repo_key(&j.dest));
+        let open = open.filter(|k| repos.iter().any(|r| repo_key(r) == *k)).map(|k| format!("depot/{k}"));
+        let places = Self::places(Some(&defaults.parent), &dir, repos.iter().map(PathBuf::as_path));
+        let known = repos.iter().map(|r| r.display().to_string()).collect();
+        let folders = FolderInput { want: FOLDER_PARENT, places, known, ..Default::default() };
+        let preselected = (!draft.url.is_empty()).then(|| app.account_for_url(&draft.url)).flatten();
+        let view = clonage::DraftView { accounts: &defaults.accounts, preselected, job: job.as_ref(), open, folders };
+        Some(clonage::screen(&draft, &view))
+    }
+
+    /// Les actions du clonage : « Cloner un dépôt… » (`cloner`, de la liste ou d'un brouillon) ouvre un brouillon
+    /// neuf ; `annuler-clone:<n>` (liste ou brouillon) annule un clonage de DragonTree, comme son « Annuler » ; les
+    /// autres, d'un brouillon (`cloner/<n>`), le remplissent pas à pas, chaque saisie contrôlée ici, puis « Cloner »
+    /// (`lancer`) le confie à DragonTree (`clone_remote`), qui la contrôle à son tour.
+    fn clone_action(
+        &mut self,
+        app: &mut DragonTreeApp,
+        path: &str,
+        action: &str,
+        input: Option<&str>,
+    ) -> Result<(String, bool), String> {
+        if action == "cloner" {
+            let n = self.new_draft(app);
+            return Ok((format!("{OPEN_PREFIX}cloner/{n}"), false));
+        }
+        if let Some(id) = action.strip_prefix("annuler-clone:") {
+            let id: u64 = id.parse().map_err(|_| "action inconnue")?;
+            if !app.cancel_host_job(id) {
+                return Err("Ce clonage est déjà fini.".into());
+            }
+            return Ok(("Annulation demandée à DragonTree".into(), false));
+        }
+        let n = clonage::draft_of(path).ok_or("action inconnue")?;
+        let lost = "Ce brouillon n'est plus sur le PC : recommencez « Cloner un dépôt… ».";
+        let d = self.drafts.get_mut(&n).ok_or(lost)?;
+        d.seen = Instant::now();
+        if cloning(app, d.job) {
+            return Err("Ce clonage est en cours : attendez sa fin, ou annulez-le.".into());
+        }
+        let forbidden = &self.forbidden;
+        let text = input.map(str::trim).unwrap_or_default();
+        match action {
+            "url" => d.set_url(text, |url| app.account_for_url(url))?,
+            "branche" => d.set_branch(text)?,
+            "nom" => d.set_folder(text)?,
+            "dossier" => {
+                if text.is_empty() {
+                    return Err("Aucun dossier choisi.".into());
+                }
+                let parent = check_pc_dir(Path::new(text), forbidden)?;
+                if !d.folder.is_empty() {
+                    check_clone_target(&parent, &d.folder, forbidden)?;
+                }
+                d.parent = parent;
+            }
+            "sous-modules" => d.recurse = !d.recurse,
+            "lancer" => {
+                // Contrôlée de nouveau : le disque a pu changer depuis la dernière saisie.
+                d.target = (!d.folder.is_empty()).then(|| check_clone_target(&d.parent, &d.folder, forbidden));
+                let req = d.request()?;
+                let folder = req.folder.clone();
+                let id = app
+                    .clone_remote(req)
+                    .map_err(|e| format!("DragonTree ne lance pas le clonage : {}", short_error(&e)))?;
+                d.job = Some(id);
+                return Ok((format!("Clonage de {folder} lancé dans DragonTree"), false));
+            }
+            other => {
+                let id = other.strip_prefix("compte:").ok_or("action inconnue")?;
+                d.set_account((!id.is_empty()).then_some(id), &app.clone_defaults().accounts)?;
+            }
+        }
+        d.target = (!d.folder.is_empty()).then(|| check_clone_target(&d.parent, &d.folder, forbidden));
+        Ok((String::new(), false))
+    }
+
+    /// Les dépôts que DragonTree a fini de cloner pour le téléphone sont dans des onglets de fond : ceux du téléphone,
+    /// rangés parmi les récents et refermés comme les autres après 15 min sans regard (sauf affichés sur le PC
+    /// entre-temps). Les brouillons que le téléphone ne regarde plus depuis une heure sont oubliés, sauf pendant leur
+    /// clonage.
+    fn follow_clones(&mut self, app: &DragonTreeApp) {
+        let jobs = app.host_jobs();
+        self.adopted.retain(|id| jobs.iter().any(|j| j.id == *id));
+        let shown = app.active_repo_dir().map(path_key);
+        for j in jobs.iter().filter(|j| j.result == Some(Ok(()))) {
+            let background = app.repo_tab(&j.dest).is_some() && shown.as_deref() != Some(path_key(&j.dest).as_str());
+            if self.adopted.insert(j.id) && background {
+                self.opened.insert(repo_key(&j.dest), (j.dest.clone(), Instant::now()));
+            }
+        }
+        self.drafts.retain(|_, d| d.seen.elapsed() < clonage::DRAFT_KEPT || cloning(app, d.job));
     }
 
     /// Ajoute à DragonTree le dépôt du dossier `input` (choisi sur le PC dans le sélecteur du téléphone, contrôlé par
@@ -1003,6 +1184,9 @@ impl Phone {
         if path.is_empty() {
             return Some(self.home(app));
         }
+        if path.starts_with("cloner/") {
+            return self.clone_screen(app, path);
+        }
         let rest = path.strip_prefix("depot/")?;
         let (key, sub) = rest.split_once('/').unwrap_or((rest, ""));
         let listed = self.find(app, key)?;
@@ -1104,6 +1288,9 @@ impl Phone {
         action: &str,
         input: Option<&str>,
     ) -> Result<(String, bool), String> {
+        if action == "cloner" || action.starts_with("annuler-clone:") || path.starts_with("cloner/") {
+            return self.clone_action(app, path, action, input);
+        }
         let in_repo = path.strip_prefix("depot/").map(|r| r.split_once('/').map_or(r, |(k, _)| k).to_string());
         if action == "ajouter" && in_repo.is_none() {
             return self.add(app, input);
@@ -1190,14 +1377,15 @@ impl Phone {
     }
 
     /// À chaque image : le dépôt que le téléphone ne regarde plus (aucun de ses écrans demandé depuis 3 s) cesse d'être
-    /// le foyer distant de DragonTree ; les onglets que le téléphone a ouverts et laissés 15 min sont refermés ; les
-    /// opérations qui attendaient l'ouverture de leur dépôt partent quand DragonTree l'a ouvert (ou sont abandonnées
-    /// s'il n'y arrive pas).
+    /// le foyer distant de DragonTree ; un dépôt cloné pour le téléphone devient l'un de ses onglets ; les onglets que
+    /// le téléphone a ouverts et laissés 15 min sont refermés ; les opérations qui attendaient l'ouverture de leur dépôt
+    /// partent quand DragonTree l'a ouvert (ou sont abandonnées s'il n'y arrive pas).
     pub fn after_logic(&mut self, app: &mut DragonTreeApp) {
         if self.focus.is_some_and(|t| t.elapsed() >= FOCUS_FOR) {
             app.set_remote_focus(None);
             self.focus = None;
         }
+        self.follow_clones(app);
         self.close_idle(app);
         if self.waiting.is_empty() {
             return;
@@ -1266,6 +1454,19 @@ impl Phone {
         let screens = format!("depot/{key}");
         self.cells.retain(|path, _| path != &screens && !path.starts_with(&format!("{screens}/")));
     }
+}
+
+/// Le clonage `job` de DragonTree tourne encore.
+fn cloning(app: &DragonTreeApp, job: Option<u64>) -> bool {
+    job.is_some_and(|id| app.host_jobs().iter().any(|j| j.id == id && j.result.is_none()))
+}
+
+/// Un clonage de DragonTree en tête de la liste ; fini, il mène au dépôt cloné s'il est dans la liste (`listed` : les
+/// clés de ses dépôts).
+fn clone_note(j: &HostJob, listed: &HashSet<String>) -> Block {
+    let key = repo_key(&j.dest);
+    let open = (j.result == Some(Ok(())) && listed.contains(&key)).then(|| format!("depot/{key}"));
+    clonage::job_block(&JobView::from(j), open.as_deref())
 }
 
 #[cfg(test)]
@@ -2285,6 +2486,193 @@ mod tests {
             .output()
             .unwrap();
         assert!(!on_server.status.success(), "plus sur le serveur");
+        drop(h);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Un compte GitHub de la suite, sans jeton, dans les comptes du profil d'essai de DragonTree.
+    fn seed_github(profile: &Path, id: &str) -> dragontree_forges::Account {
+        let account = dragontree_forges::Account {
+            id: id.into(),
+            kind: dragontree_forges::ForgeKind::GitHub,
+            host: "github.com".into(),
+            username: "ada".into(),
+            display_name: String::new(),
+            orgs: Vec::new(),
+            avatar_url: None,
+        };
+        let store =
+            suite_accounts::Store::new(&profile.join("comptes"), Arc::new(suite_accounts::MemoryVault::default()));
+        store.adopt((&account).into(), None).unwrap();
+        account
+    }
+
+    fn ids(s: &Screen) -> Vec<String> {
+        s.action_ids().into_iter().collect()
+    }
+
+    /// Fait tourner DragonTree jusqu'à ce que `cond` soit vraie (20 s au plus).
+    fn step_until(h: &mut H, mut cond: impl FnMut(&H) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !cond(h) && Instant::now() < deadline {
+            h.step();
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    /// « Cloner un dépôt… » ouvre un brouillon rempli pas à pas sur le PC, chaque saisie contrôlée (URL du téléphone,
+    /// dossier parent hors des dossiers protégés, nom, branche) ; DragonTree propose son dossier et le compte de l'URL.
+    /// « Cloner » le confie à DragonTree : sa progression, puis le dépôt cloné, ouvert dans un onglet de fond (l'onglet
+    /// du PC ne change pas) qui devient celui du téléphone, rangé parmi les récents ; le compte choisi reste celui du
+    /// dépôt.
+    #[test]
+    fn a_repo_is_cloned_by_dragontree_from_the_phone() {
+        let Ok(git) = Git::discover() else { return };
+        let dir = std::env::temp_dir().join(format!("suite-dragontree-clonage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (source, shown, parent) = (dir.join("source"), dir.join("affiche"), dir.join("clones"));
+        new_repo(&git, &source);
+        new_repo(&git, &shown);
+        let occupied = parent.join("occupe");
+        std::fs::create_dir_all(&occupied).unwrap();
+        std::fs::write(occupied.join("x.txt"), "x").unwrap();
+        let protected = dir.join("protege");
+        std::fs::create_dir_all(&protected).unwrap();
+        let profile = dir.join("profil");
+        let mut phone = phone_for(&profile, &shown);
+        let ada = seed_github(&profile, "aaaaaaaaaaaaaaaa");
+        let mut h = dragontree(&profile);
+        h.state_mut().show_repo(&shown);
+        // Le dossier temporaire est sous les données des applications : seul `protected` est protégé ici.
+        phone.forbidden = vec![protected.clone()];
+        step_until(&mut h, |h| !h.state().clone_defaults().accounts.is_empty());
+
+        let home = phone.screen(h.state_mut(), "").unwrap();
+        let bar: Vec<&str> = home.acts.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(bar[..2], ["ajouter", "cloner"], "à côté d'« Ajouter », en icône");
+        let (open, show) = phone.action(h.state_mut(), "", "cloner", None).unwrap();
+        assert_eq!((open.as_str(), show), (format!("{OPEN_PREFIX}cloner/1").as_str(), false));
+        let path = "cloner/1";
+        let s = phone.screen(h.state_mut(), path).unwrap();
+        let spec = s.all_acts().into_iter().find(|a| a.id == "dossier").and_then(|a| a.input.clone()?.folder).unwrap();
+        let proposed = h.state().clone_defaults().parent.display().to_string();
+        assert_eq!((spec.want, spec.start), (FOLDER_PARENT, proposed), "le dossier que propose DragonTree");
+        assert!(!ids(&s).contains(&"lancer".to_string()), "rien de saisi");
+
+        let act = |phone: &mut Phone, h: &mut H, action: &str, input: &str| {
+            phone.action(h.state_mut(), path, action, Some(input))
+        };
+        for (action, bad) in [
+            ("url", source.display().to_string()),
+            ("url", format!("file:///{}", source.display())),
+            ("url", "ext::sh -c x".to_string()),
+            ("dossier", "clones".to_string()),
+            ("dossier", protected.display().to_string()),
+            ("nom", "CON".to_string()),
+            ("nom", r"a\b".to_string()),
+            ("branche", "-x".to_string()),
+        ] {
+            assert!(act(&mut phone, &mut h, action, &bad).is_err(), "{action} {bad}");
+        }
+        let (text, _) = act(&mut phone, &mut h, "url", "https://github.com/ada/depot.git").unwrap();
+        assert!(text.is_empty(), "pas de bulle : l'écran change");
+        assert_eq!(phone.drafts[&1].folder, "depot", "déduit de l'URL");
+        assert_eq!(
+            phone.drafts[&1].account.as_deref(),
+            Some(ada.id.as_str()),
+            "le compte de l'URL, que propose DragonTree"
+        );
+        act(&mut phone, &mut h, "dossier", &parent.display().to_string()).unwrap();
+        act(&mut phone, &mut h, "nom", "occupe").unwrap();
+        let s = phone.screen(h.state_mut(), path).unwrap();
+        assert!(!ids(&s).contains(&"lancer".to_string()) && format!("{s:?}").contains("n'est pas vide"), "{s:?}");
+        assert!(act(&mut phone, &mut h, "lancer", "").is_err(), "destination occupée");
+        act(&mut phone, &mut h, "nom", "copie").unwrap();
+        act(&mut phone, &mut h, "branche", "main").unwrap();
+        // Le dépôt d'essai est sur le disque : son URL est mise à la main (le téléphone n'en saisit pas de telle).
+        phone.drafts.get_mut(&1).unwrap().url = source.display().to_string();
+        let s = phone.screen(h.state_mut(), path).unwrap();
+        assert!(ids(&s).contains(&"lancer".to_string()), "{s:?}");
+
+        let (text, show) = act(&mut phone, &mut h, "lancer", "").unwrap();
+        assert!(text.contains("Clonage de copie lancé dans DragonTree") && !show, "{text}");
+        let s = phone.screen(h.state_mut(), path).unwrap();
+        let running = ids(&s);
+        assert!(running.len() <= 1 && running.iter().all(|a| a.starts_with("annuler-clone:")), "en cours : {s:?}");
+        let s = wait_screen(&mut h, &mut phone, path, "Dépôt cloné dans");
+        let dest = resolved(&parent).unwrap().join("copie");
+        let key = repo_key(&dest);
+        assert!(s.opens().contains(&format!("depot/{key}")), "mène au dépôt cloné : {s:?}");
+        assert!(h.state().repo_tab(&dest).is_some(), "ouvert par DragonTree");
+        assert_eq!(h.state().active_repo_dir().map(path_key), Some(path_key(&shown)), "l'onglet du PC ne change pas");
+        assert!(phone.opened.contains_key(&key), "un onglet du téléphone, refermé comme les autres");
+        let home = phone.screen(h.state_mut(), "").unwrap();
+        assert_eq!(band_of(&home, &key), Some("Récents".into()), "{home:?}");
+        assert!(format!("{home:?}").contains("Dépôt cloné dans"), "dit en tête de la liste");
+        let file = profile.join("settings.json");
+        let account = |file: &Path| Settings::load_from(file).repo_accounts.get(&long_path_key(&dest)).cloned();
+        step_until(&mut h, |_| account(&file).is_some());
+        assert_eq!(account(&file), Some(ada.id.clone()), "le compte du clonage reste celui du dépôt");
+        drop(h);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Un clonage qui ne répond pas s'annule depuis la liste ou son brouillon, comme son « Annuler » dans DragonTree :
+    /// le dossier commencé est supprimé, et le brouillon se change de nouveau pour réessayer. Un brouillon oublié (une
+    /// heure sans regard, ou Eyrie redémarrée) propose de recommencer.
+    #[test]
+    fn a_clone_is_cancelled_from_the_phone_and_the_draft_comes_back() {
+        if Git::discover().is_err() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("suite-dragontree-annulation-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let parent = dir.join("clones");
+        std::fs::create_dir_all(&parent).unwrap();
+        // Un serveur qui accepte et ne répond jamais : git attend.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for c in listener.incoming() {
+                held.push(c);
+            }
+        });
+        let profile = dir.join("profil");
+        let mut phone = phone_for(&profile, &dir.join("aucun"));
+        let mut h = dragontree(&profile);
+        h.step();
+        phone.forbidden.clear();
+        phone.action(h.state_mut(), "", "cloner", None).unwrap();
+        let path = "cloner/1";
+        let act = |phone: &mut Phone, h: &mut H, action: &str, input: &str| {
+            phone.action(h.state_mut(), path, action, Some(input))
+        };
+        act(&mut phone, &mut h, "url", &format!("http://127.0.0.1:{port}/muet.git")).unwrap();
+        act(&mut phone, &mut h, "dossier", &parent.display().to_string()).unwrap();
+        act(&mut phone, &mut h, "lancer", "").unwrap();
+        let id = phone.drafts[&1].job.unwrap();
+        let cancel = format!("annuler-clone:{id}");
+        assert!(
+            act(&mut phone, &mut h, "url", "https://exemple.org/x.git").is_err(),
+            "pendant le clonage, rien ne change"
+        );
+        let home = phone.screen(h.state_mut(), "").unwrap();
+        assert!(ids(&home).contains(&cancel), "en cours, en tête de la liste : {home:?}");
+        let (text, _) = phone.action(h.state_mut(), "", &cancel, None).unwrap();
+        assert!(text.contains("Annulation"), "{text}");
+        let s = wait_screen(&mut h, &mut phone, path, "Clonage annulé");
+        assert!(ids(&s).contains(&"lancer".to_string()) && ids(&s).contains(&"url".to_string()), "à réessayer : {s:?}");
+        assert!(!resolved(&parent).unwrap().join("muet").exists(), "dossier commencé supprimé");
+        assert!(phone.action(h.state_mut(), path, &cancel, None).is_err(), "déjà fini");
+
+        // Une heure sans regard : oublié ; son écran propose de recommencer.
+        phone.drafts.get_mut(&1).unwrap().seen = Instant::now().checked_sub(clonage::DRAFT_KEPT).expect("un PC allumé");
+        phone.after_logic(h.state_mut());
+        assert!(phone.drafts.is_empty());
+        let s = phone.screen(h.state_mut(), path).unwrap();
+        assert_eq!(ids(&s), ["cloner"], "{s:?}");
+        assert!(act(&mut phone, &mut h, "url", "https://exemple.org/x.git").is_err());
         drop(h);
         let _ = std::fs::remove_dir_all(&dir);
     }
