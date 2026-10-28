@@ -307,7 +307,7 @@ fn serve(mut stream: TcpStream, shared: Arc<Shared>) {
             Err(_) => return,
         };
         match first {
-            ToPc::Hello { protocol, app, device, model } => {
+            ToPc::Hello { protocol, app, device, model, .. } => {
                 if protocol != PROTOCOL {
                     shared.log(&device, "refus", format!("protocole {protocol} (Eyrie : {PROTOCOL})"));
                     refuse(&mut tx, "L'application et Eyrie n'ont pas la même version : mettez-les à jour.");
@@ -332,6 +332,7 @@ fn serve(mut stream: TcpStream, shared: Arc<Shared>) {
                     pc: shared.pc_name.clone(),
                     eyrie: shared.eyrie.clone(),
                     rights: dev.rights,
+                    wake: None,
                 };
                 if tx.send(&welcome).is_err() {
                     return;

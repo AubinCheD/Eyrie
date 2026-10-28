@@ -572,7 +572,9 @@ mod tests {
         let s = screen(&mut app, &phone, "docker/abc").unwrap();
         assert!(s.action_ids().is_empty());
         assert!(
-            s.blocks.iter().any(|b| matches!(b, Block::Note { tone: Tone::Info, text } if text == "db : en cours…"))
+            s.blocks
+                .iter()
+                .any(|b| matches!(b, Block::Note { tone: Tone::Info, text, .. } if text == "db : en cours…"))
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

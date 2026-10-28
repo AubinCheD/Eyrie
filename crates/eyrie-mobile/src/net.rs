@@ -177,7 +177,7 @@ fn run(
             // Les messages reçus d'abord (le réveil `Kick` n'est qu'un signal).
             while let Ok(r) = msg_rx.try_recv() {
                 match r {
-                    Ok(ToPhone::Bye { reason: why }) => {
+                    Ok(ToPhone::Bye { reason: why, .. }) => {
                         reason = why;
                         break 'online;
                     }
@@ -302,8 +302,13 @@ mod tests {
             let (t, _) = channel::accept(&mut s, &pc).unwrap();
             let (mut r, mut w) = t.split(s.try_clone().unwrap(), s);
             let _hello: ToPc = r.recv().unwrap();
-            let welcome =
-                ToPhone::Welcome { protocol: PROTOCOL, pc: "PC".into(), eyrie: "x".into(), rights: Rights::default() };
+            let welcome = ToPhone::Welcome {
+                protocol: PROTOCOL,
+                pc: "PC".into(),
+                eyrie: "x".into(),
+                rights: Rights::default(),
+                wake: None,
+            };
             w.send(&welcome).unwrap();
             // Plus rien : ni `Pong`, ni fermeture.
             std::thread::sleep(Duration::from_secs(3));

@@ -78,18 +78,18 @@ pub fn rows(s: &Screen) -> Vec<UiRow> {
         .iter()
         .enumerate()
         .flat_map(|(i, b)| match b {
-            Block::Section { title, aside } => {
+            Block::Section { title, aside, .. } => {
                 vec![UiRow { detail: aside.as_str().into(), ..empty(0, &title.to_uppercase()) }]
             }
             Block::Row(r) => vec![row(r, i == 0 || !is_row(i - 1), !is_row(i + 1))],
-            Block::Note { text, tone: t } => vec![UiRow { tone: tone(Some(*t)), ..empty(2, text) }],
+            Block::Note { text, tone: t, .. } => vec![UiRow { tone: tone(Some(*t)), ..empty(2, text) }],
             Block::Meter { label, value, text, tone: t } => {
                 vec![UiRow { detail: text.as_str().into(), value: *value, tone: tone(Some(*t)), ..empty(3, label) }]
             }
             Block::Text { text, mono } => vec![UiRow { mono: *mono, ..empty(4, text) }],
             Block::Empty { text } => vec![empty(5, text)],
             Block::Buttons { acts: list } => vec![UiRow { acts: acts(list), ..empty(6, "") }],
-            Block::Diff { lines } => lines
+            Block::Diff { lines, .. } => lines
                 .iter()
                 .enumerate()
                 .map(|(n, (kind, text))| UiRow {

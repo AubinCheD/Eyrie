@@ -24,11 +24,19 @@ pub struct Rights {
     pub act: bool,
     /// Saisir dans les terminaux et en créer.
     pub terminals: bool,
+    /// Parcourir les dossiers du PC pour une action qui en demande un (en plus d'`act`). Absent d'un appareil
+    /// appairé avant ce droit : accordé, comme les autres.
+    #[serde(default = "yes")]
+    pub files: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Default for Rights {
     fn default() -> Self {
-        Rights { see: true, act: true, terminals: true }
+        Rights { see: true, act: true, terminals: true, files: true }
     }
 }
 
@@ -41,6 +49,9 @@ pub enum ToPc {
         app: String,
         device: String,
         model: String,
+        /// Ce que l'application sait faire en plus du protocole de base (pour qu'un PC plus récent s'y adapte).
+        #[serde(default)]
+        features: Vec<String>,
     },
     /// Premier message d'un appareil qui s'appaire : la preuve qu'il connaît le secret du ticket.
     Pair {
@@ -74,6 +85,22 @@ pub enum ToPc {
     },
     NotesRead,
     Ping,
+    /// Lister un dossier du PC pour l'action `action` de l'écran suivi `(module, path)`, qui demande un dossier
+    /// ([`crate::ui::Input::folder`]). `dir: None` : la racine (raccourcis, lecteurs). Envoyé seulement pour une
+    /// action qui porte `folder` : un PC qui ne sait pas lister ne le propose pas.
+    Browse {
+        req: u32,
+        module: String,
+        path: String,
+        action: String,
+        dir: Option<String>,
+        #[serde(default)]
+        filter: String,
+        #[serde(default)]
+        offset: u32,
+        #[serde(default)]
+        hidden: bool,
+    },
 }
 
 /// Une carte de module : ce que montre la barre de navigation.
@@ -120,6 +147,9 @@ pub struct Note {
     /// Secondes depuis l'époque Unix.
     pub at: u64,
     pub read: bool,
+    /// L'écran du module où elle mène (`t/12` : la session Claude qui attend).
+    #[serde(default)]
+    pub path: Option<String>,
 }
 
 /// Une commande de la palette du PC.
@@ -138,6 +168,10 @@ pub enum ToPhone {
         pc: String,
         eyrie: String,
         rights: Rights,
+        /// Le veilleur du PC est actif : de quoi lui demander de démarrer Eyrie quand elle est fermée (voir
+        /// [`crate::veille`]). Absent : le PC ne se démarre pas à distance.
+        #[serde(default)]
+        wake: Option<WakeKey>,
     },
     /// La preuve du PC a été vérifiée par lui ; il attend le clic de l'utilisateur. Le téléphone vérifie la preuve du
     /// PC et affiche `sas`, que le PC affiche aussi.
@@ -199,8 +233,102 @@ pub enum ToPhone {
     /// Le PC coupe l'accès mobile ou révoque l'appareil.
     Bye {
         reason: String,
+        /// Eyrie se ferme (le PC reste allumé) : le téléphone dit « Eyrie est fermée » plutôt que « hors ligne ».
+        #[serde(default)]
+        closing: bool,
     },
     Pong,
+    /// Réponse à [`ToPc::Browse`].
+    Folder {
+        req: u32,
+        listing: Listing,
+    },
+}
+
+/// De quoi demander au veilleur du PC de démarrer Eyrie : son port sur le tailnet et le secret de cet appareil.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WakeKey {
+    pub port: u16,
+    pub secret: Vec<u8>,
+}
+
+/// Drapeaux d'un [`FolderEntry`].
+pub const ENTRY_REPO: u8 = 1;
+/// Déjà connu du module (un dépôt déjà dans DragonTree).
+pub const ENTRY_KNOWN: u8 = 2;
+pub const ENTRY_HIDDEN: u8 = 4;
+/// Lien ou jonction.
+pub const ENTRY_LINK: u8 = 8;
+/// Accès refusé.
+pub const ENTRY_DENIED: u8 = 16;
+/// Fichiers en ligne seulement (OneDrive).
+pub const ENTRY_CLOUD: u8 = 32;
+/// Un lecteur.
+pub const ENTRY_DRIVE: u8 = 64;
+
+/// Un dossier dans une liste du sélecteur.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FolderEntry {
+    pub name: String,
+    /// Chemin complet, à renvoyer tel quel dans `Browse` ou dans la saisie de l'action.
+    pub path: String,
+    #[serde(default)]
+    pub flags: u8,
+    /// Texte court (« dépôt git », « déjà dans DragonTree »).
+    #[serde(default)]
+    pub detail: String,
+}
+
+/// Un groupe de raccourcis à la racine du sélecteur (« Récents », « DragonTree », « Accès rapide », « Lecteurs »).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlaceGroup {
+    pub title: String,
+    pub places: Vec<FolderEntry>,
+}
+
+/// Le contenu d'un dossier du PC, tel que le sélecteur le montre : des dossiers seulement, jamais de fichier.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Listing {
+    /// Dossier listé ; vide : la racine.
+    pub dir: String,
+    pub title: String,
+    /// Fil d'Ariane : (libellé, chemin), de la racine au dossier.
+    #[serde(default)]
+    pub crumbs: Vec<(String, String)>,
+    /// À la racine : les raccourcis.
+    #[serde(default)]
+    pub groups: Vec<PlaceGroup>,
+    #[serde(default)]
+    pub entries: Vec<FolderEntry>,
+    /// Pagination : position de la première entrée, nombre total, et s'il en reste.
+    #[serde(default)]
+    pub offset: u32,
+    #[serde(default)]
+    pub total: u32,
+    #[serde(default)]
+    pub more: bool,
+    /// Le dossier est trop grand pour être lu en entier : filtrer.
+    #[serde(default)]
+    pub truncated: bool,
+    /// Fichiers et dossiers cachés non montrés (comptés seulement).
+    #[serde(default)]
+    pub files: u32,
+    #[serde(default)]
+    pub hidden: u32,
+    /// Libellé du bouton de choix (« Choisir ce dossier », « Cloner ici ») ; `None` : ce dossier ne peut pas être
+    /// choisi, `why_not` dit pourquoi.
+    #[serde(default)]
+    pub choose: Option<String>,
+    #[serde(default)]
+    pub why_not: String,
+    /// Ce que donnera le choix (« C:\DEV\Ozmo : sera créé »).
+    #[serde(default)]
+    pub target: String,
+    #[serde(default)]
+    pub target_tone: Tone,
+    /// Le dossier n'a pas pu être lu (ou la demande est refusée).
+    #[serde(default)]
+    pub error: String,
 }
 
 #[cfg(test)]
@@ -223,5 +351,52 @@ mod tests {
         let back = ToPhone::Screen { module: "fawkes".into(), path: "".into(), screen };
         let bytes = rmp_serde::to_vec_named(&back).unwrap();
         assert_eq!(rmp_serde::from_slice::<ToPhone>(&bytes).unwrap(), back);
+    }
+
+    /// Un appareil appairé avant le droit « dossiers » (appareils.json, `Welcome` d'un PC plus ancien) le reçoit,
+    /// comme les autres droits.
+    #[test]
+    fn rights_written_before_the_folder_right_grant_it() {
+        #[derive(Serialize)]
+        struct OldRights {
+            see: bool,
+            act: bool,
+            terminals: bool,
+        }
+        let bytes = rmp_serde::to_vec_named(&OldRights { see: true, act: false, terminals: true }).unwrap();
+        let r: Rights = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(r, Rights { see: true, act: false, terminals: true, files: true });
+    }
+
+    #[test]
+    fn a_folder_listing_and_the_new_fields_survive_messagepack() {
+        let ask = ToPc::Browse {
+            req: 3,
+            module: "dragontree".into(),
+            path: "".into(),
+            action: "ajouter".into(),
+            dir: Some(r"C:\DEV".into()),
+            filter: "oz".into(),
+            offset: 200,
+            hidden: false,
+        };
+        assert_eq!(rmp_serde::from_slice::<ToPc>(&rmp_serde::to_vec_named(&ask).unwrap()).unwrap(), ask);
+        let listing = Listing {
+            dir: r"C:\DEV".into(),
+            title: "DEV".into(),
+            crumbs: vec![("Ce PC".into(), String::new()), ("C:".into(), "C:\\".into())],
+            entries: vec![FolderEntry {
+                name: "Ozmo".into(),
+                path: r"C:\DEV\Ozmo".into(),
+                flags: ENTRY_REPO,
+                ..Default::default()
+            }],
+            choose: Some("Ajouter ce dépôt".into()),
+            ..Default::default()
+        };
+        let back = ToPhone::Folder { req: 3, listing };
+        assert_eq!(rmp_serde::from_slice::<ToPhone>(&rmp_serde::to_vec_named(&back).unwrap()).unwrap(), back);
+        let bye = ToPhone::Bye { reason: "Eyrie se ferme.".into(), closing: true };
+        assert_eq!(rmp_serde::from_slice::<ToPhone>(&rmp_serde::to_vec_named(&bye).unwrap()).unwrap(), bye);
     }
 }

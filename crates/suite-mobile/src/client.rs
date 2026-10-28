@@ -6,7 +6,7 @@ use std::net::{Shutdown, TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 use crate::channel::{self, Keypair, Peer, Receiver, Sender};
-use crate::msg::{PROTOCOL, Rights, ToPc, ToPhone};
+use crate::msg::{PROTOCOL, Rights, ToPc, ToPhone, WakeKey};
 use crate::pairing::{self, Role};
 
 /// Le flux d'une connexion vers le PC : TCP (le bureau, les essais), ou un bout de paire de sockets Unix dont
@@ -112,7 +112,12 @@ pub struct Welcome {
     pub pc: String,
     pub eyrie: String,
     pub rights: Rights,
+    /// De quoi démarrer Eyrie à distance quand elle est fermée (le veilleur du PC est actif).
+    pub wake: Option<WakeKey>,
 }
+
+/// Ce que l'application sait faire en plus du protocole de base, annoncé dans `Hello`.
+pub const FEATURES: &[&str] = &["bandeaux", "onglets", "recherche", "graphe", "dossiers", "veille"];
 
 /// Se connecte en TCP à `addr` (`hôte:port`), première adresse résolue qui répond, en `timeout` au plus chacune.
 pub fn dial_tcp(addr: &str, timeout: Duration) -> Result<Stream, String> {
@@ -171,14 +176,17 @@ pub fn hello(conn: &mut Connection, pc_key: &[u8; 32], device: &str, model: &str
             app: env!("CARGO_PKG_VERSION").into(),
             device: device.into(),
             model: model.into(),
+            features: FEATURES.iter().map(|f| f.to_string()).collect(),
         })
         .map_err(broken)?;
     match conn.rx.recv::<ToPhone>().map_err(broken)? {
-        ToPhone::Welcome { protocol, pc, eyrie, rights } if protocol == PROTOCOL => Ok(Welcome { pc, eyrie, rights }),
+        ToPhone::Welcome { protocol, pc, eyrie, rights, wake } if protocol == PROTOCOL => {
+            Ok(Welcome { pc, eyrie, rights, wake })
+        }
         ToPhone::Welcome { .. } => {
             Err(Failure::Refused("Eyrie et l'application n'ont pas la même version du protocole".into()))
         }
-        ToPhone::Refused { reason } | ToPhone::Bye { reason } => Err(Failure::Refused(reason)),
+        ToPhone::Refused { reason } | ToPhone::Bye { reason, .. } => Err(Failure::Refused(reason)),
         other => Err(broken(format!("réponse inattendue : {other:?}"))),
     }
 }
@@ -211,7 +219,7 @@ pub fn pair(
             }
             Ok(sas)
         }
-        ToPhone::Refused { reason } | ToPhone::Bye { reason } => Err(Failure::Refused(reason)),
+        ToPhone::Refused { reason } | ToPhone::Bye { reason, .. } => Err(Failure::Refused(reason)),
         other => Err(broken(format!("réponse inattendue : {other:?}"))),
     }
 }
@@ -220,7 +228,7 @@ pub fn pair(
 pub fn wait_paired(conn: &mut Connection) -> Result<String, Failure> {
     match conn.rx.recv::<ToPhone>().map_err(broken)? {
         ToPhone::Paired { pc } => Ok(pc),
-        ToPhone::Refused { reason } | ToPhone::Bye { reason } => Err(Failure::Refused(reason)),
+        ToPhone::Refused { reason } | ToPhone::Bye { reason, .. } => Err(Failure::Refused(reason)),
         other => Err(broken(format!("réponse inattendue : {other:?}"))),
     }
 }

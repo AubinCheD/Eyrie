@@ -323,7 +323,7 @@ mod tests {
             .blocks
             .iter()
             .filter_map(|b| match b {
-                Block::Section { title, aside } => Some((title.as_str(), aside.as_str())),
+                Block::Section { title, aside, .. } => Some((title.as_str(), aside.as_str())),
                 _ => None,
             })
             .collect();

@@ -202,6 +202,7 @@ pub fn play(ui: &AppWindow, scene: &str) {
                 tone: Tone::Warn,
                 at: now() - 60,
                 read: false,
+                path: None,
             },
             Note {
                 module: "patronus".into(),
@@ -210,6 +211,7 @@ pub fn play(ui: &AppWindow, scene: &str) {
                 tone: Tone::Danger,
                 at: now() - 3600 * 9,
                 read: false,
+                path: None,
             },
             Note {
                 module: "owlery".into(),
@@ -218,6 +220,7 @@ pub fn play(ui: &AppWindow, scene: &str) {
                 tone: Tone::Info,
                 at: now() - 3600 * 26,
                 read: true,
+                path: None,
             },
         ],
         unread: 2,

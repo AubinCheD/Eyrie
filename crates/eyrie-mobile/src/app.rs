@@ -405,11 +405,12 @@ impl Controller {
             }
             ToPhone::Open { module, path } => self.open_module_path(&module, &path),
             ToPhone::Toast { text, tone } => self.toast(&text, view::tone(Some(tone))),
-            ToPhone::Bye { reason } => self.set_link(2, &reason),
+            ToPhone::Bye { reason, .. } => self.set_link(2, &reason),
             ToPhone::Welcome { .. }
             | ToPhone::PairPending { .. }
             | ToPhone::Paired { .. }
             | ToPhone::Refused { .. }
+            | ToPhone::Folder { .. }
             | ToPhone::Pong => {}
         }
     }
@@ -1346,7 +1347,7 @@ mod tests {
     use super::*;
 
     fn note(title: &str, body: &str, tone: Tone, at: u64) -> Note {
-        Note { module: "patronus".into(), title: title.into(), body: body.into(), tone, at, read: false }
+        Note { module: "patronus".into(), title: title.into(), body: body.into(), tone, at, read: false, path: None }
     }
 
     #[test]

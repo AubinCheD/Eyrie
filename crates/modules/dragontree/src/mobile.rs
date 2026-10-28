@@ -725,7 +725,7 @@ impl Phone {
         };
         // Ce que fait DragonTree, ou ce qu'a donné sa dernière opération, en tête de chaque écran du dépôt.
         if let Some(j) = job {
-            screen.blocks.insert(0, Block::Note { text: j.text, tone: j.tone });
+            screen.blocks.insert(0, Block::Note { text: j.text, tone: j.tone, progress: None, acts: Vec::new() });
         }
         if stoppable {
             screen.acts.push(stop_act());
@@ -981,7 +981,7 @@ mod tests {
         assert!(
             s.blocks
                 .iter()
-                .any(|b| matches!(b, Block::Note { tone: Tone::Danger, text } if text.starts_with("Fetch : "))),
+                .any(|b| matches!(b, Block::Note { tone: Tone::Danger, text, .. } if text.starts_with("Fetch : "))),
             "pas un dépôt git : {s:?}"
         );
         drop(h);

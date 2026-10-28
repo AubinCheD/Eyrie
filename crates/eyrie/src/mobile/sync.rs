@@ -79,7 +79,7 @@ impl Session {
     }
 
     pub fn close(&self, reason: &str) {
-        let _ = self.sender.send(ToPhone::Bye { reason: reason.to_string() });
+        let _ = self.sender.send(ToPhone::Bye { reason: reason.to_string(), closing: false });
         // Laisse le fil d'envoi écrire l'adieu, puis coupe : le fil de lecture s'arrête.
         let stream = self.stream.try_clone();
         std::thread::spawn(move || {
@@ -279,6 +279,14 @@ fn message(
             s.send(ToPhone::Pong);
         }
         ToPc::Hello { .. } | ToPc::Pair { .. } => {}
+        // Le sélecteur de dossiers n'est proposé par aucun écran tant que le pont ne sait pas lister.
+        ToPc::Browse { req, .. } => {
+            let listing = suite_mobile::msg::Listing {
+                error: "Ce PC ne sait pas encore lister ses dossiers.".into(),
+                ..Default::default()
+            };
+            s.send(ToPhone::Folder { req, listing });
+        }
         ToPc::NotesRead => {
             core.notes.mark_all_read();
             core.mobile.sync.at = None;
@@ -488,6 +496,7 @@ fn push_light(core: &mut Core) {
                 tone: tone(n.tone),
                 at: n.at.duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
                 read: *read,
+                path: None,
             })
             .collect();
         let unread = core.notes.unread() as u32;

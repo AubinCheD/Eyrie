@@ -9,7 +9,8 @@
 //! - [`msg`] : les messages dans les deux sens ;
 //! - [`pairing`] : ticket du QR code, code à saisir, preuves mutuelles, code de vérification ;
 //! - [`channel`] : poignée de main et trames chiffrées ;
-//! - [`client`] : la connexion côté téléphone (application, essais d'Eyrie).
+//! - [`client`] : la connexion côté téléphone (application, essais d'Eyrie) ;
+//! - [`veille`] : demander au veilleur du PC de démarrer Eyrie quand elle est fermée.
 
 pub mod channel;
 pub mod client;
@@ -17,6 +18,7 @@ pub mod msg;
 pub mod pairing;
 pub mod term;
 pub mod ui;
+pub mod veille;
 
 pub use msg::{PROTOCOL, ToPc, ToPhone};
 
