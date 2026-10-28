@@ -81,7 +81,8 @@ pub struct RepoView {
     pub last_message: String,
     /// Le dernier fetch a été refusé par le serveur (authentification) : ce qu'a dit git.
     pub auth_error: Option<String>,
-    /// DragonTree n'a toujours pas lu le dépôt après un long moment.
+    /// DragonTree n'a toujours pas lu l'état ou les branches du dépôt, 15 s après que le téléphone les attend (ce que
+    /// le téléphone lit lui-même n'y entre pas).
     pub slow: bool,
     /// L'historique montré (`None` : pas encore lu).
     pub log: Option<Result<LogView, String>>,
@@ -1246,6 +1247,27 @@ mod tests {
         assert_eq!(rows, 2 * PAGE + 1);
         assert_eq!(safe_url("git@exemple.org:a/b.git"), "git@exemple.org:a/b.git");
         assert_eq!(safe_url("https://moi:secret@exemple.org/a"), "https://exemple.org/a");
+    }
+
+    /// Ce qui n'est pas encore lu le dit ; une longue attente de DragonTree le dit aussi (peut-être une lecture ratée),
+    /// jamais avant ; un dépôt que DragonTree n'a pas pu ouvrir dit pourquoi.
+    #[test]
+    fn a_long_wait_for_dragontree_is_said_only_when_it_is_long() {
+        let tones = |v: &RepoView| {
+            let mut s = Screen::new("Historique");
+            reading(&mut s, "Lecture…", v);
+            let notes = s.blocks.iter().filter_map(|b| match b {
+                Block::Note { tone, .. } => Some(*tone),
+                _ => None,
+            });
+            notes.collect::<Vec<Tone>>()
+        };
+        let mut v = RepoView::default();
+        assert!(tones(&v).is_empty());
+        v.slow = true;
+        assert_eq!(tones(&v), [Tone::Warn]);
+        v.status = Some(Err("pas un dépôt git".into()));
+        assert_eq!(tones(&v), [Tone::Danger]);
     }
 
     #[test]

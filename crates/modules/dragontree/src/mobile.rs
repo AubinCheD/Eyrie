@@ -440,7 +440,8 @@ pub struct Phone {
     reads: SharedReads,
     /// Par dépôt : quand DragonTree l'a relu à la demande du téléphone.
     refreshed: HashMap<String, Instant>,
-    /// Par dépôt : depuis quand le téléphone attend que DragonTree le lise (une lecture ratée ne se dit que sur le PC).
+    /// Par dépôt : depuis quand le téléphone attend que DragonTree lise son état et ses branches (une lecture ratée ne
+    /// se dit que sur le PC) ; oublié dès qu'il les a lus.
     since: HashMap<String, Instant>,
     /// Par chemin d'écran : les lignes demandées de sa liste par pages (« plus »).
     pages: HashMap<String, usize>,
@@ -664,11 +665,20 @@ impl Phone {
             self.since.insert(key, Instant::now());
             return;
         }
-        self.since.entry(key.clone()).or_insert_with(Instant::now);
         if self.refreshed.get(&key).is_none_or(|t| t.elapsed() >= REFRESH_EVERY) {
             app.refresh_repo(repo, Refresh::REFS.with_extras());
             self.refreshed.insert(key, Instant::now());
         }
+    }
+
+    /// DragonTree n'a toujours pas lu l'état ou les branches de l'onglet `t` (dépôt `key`) 15 s après que le téléphone
+    /// les attend : sa lecture est longue, ou a raté. Ce que le téléphone lit lui-même (un historique) n'y entre pas.
+    fn slow(&mut self, key: &str, t: &RepoTab) -> bool {
+        if t.open_error.is_some() || (t.status.is_some() && t.refs.is_some()) {
+            self.since.remove(key);
+            return false;
+        }
+        self.since.entry(key.to_string()).or_insert_with(Instant::now).elapsed() >= SLOW_AFTER
     }
 
     /// Lit `what` pour le dépôt `key` dans un fil, s'il est dû.
@@ -806,7 +816,6 @@ impl Phone {
             remotes: t.remotes.clone(),
             op: t.status.is_some().then_some(t.op_state),
             auth_error: t.fetch_auth_error().map(short_error),
-            slow: self.since.get(key).is_some_and(|at| at.elapsed() >= SLOW_AFTER),
             count: self.pages.get(path).copied().unwrap_or(depot::PAGE),
             ..Default::default()
         };
@@ -886,7 +895,8 @@ impl Phone {
                 }
             }
         }
-        let mut view = self.view(key, t, &parts, path);
+        let slow = self.slow(key, t);
+        let mut view = RepoView { slow, ..self.view(key, t, &parts, path) };
         match parts.as_slice() {
             ["historique"] => view.log = self.log_view(key, path, "HEAD", count, t),
             ["historique", "tout"] => view.log = self.graph_view(path, count, t),
@@ -1473,6 +1483,18 @@ mod tests {
         let row = rows(&list).into_iter().find(|r| r.title == "autre").expect("autre");
         assert_eq!(row.open, Some(format!("{base}/branche/{other}")));
         assert!(row.tap.is_none(), "pas de bascule d'un toucher");
+        // DragonTree a lu le dépôt : l'historique que le téléphone lit encore à part n'est pas une lecture « peut-être
+        // ratée », même dans un dépôt regardé depuis longtemps (le défaut : l'alerte venait 15 s après la première
+        // visite, sur chaque historique pas encore lu).
+        let key = repo_key(&repo);
+        let long_ago = Instant::now().checked_sub(SLOW_AFTER * 2).expect("un PC allumé depuis plus de 30 s");
+        phone.since.insert(key.clone(), long_ago);
+        let unread = format!("log:refs/heads/autre:{}", depot::PAGE);
+        lock(&phone.reads).entry(key.clone()).or_default().loading.insert(unread.clone());
+        let d = phone.screen(h.state_mut(), &format!("{base}/branche/{other}")).unwrap();
+        assert!(format!("{d:?}").contains("Lecture de l'historique"), "{d:?}");
+        assert!(!d.blocks.iter().any(|b| matches!(b, Block::Note { tone: Tone::Warn, .. })), "pas d'alerte : {d:?}");
+        lock(&phone.reads).get_mut(&key).unwrap().loading.remove(&unread);
         let d = wait_screen(&mut h, &mut phone, &format!("{base}/branche/{other}"), "Premier commit");
         assert!(format!("{d:?}").contains("Premier commit") && !format!("{d:?}").contains("Second commit"), "{d:?}");
         assert!(d.action_ids().contains("basculer:autre"));
