@@ -112,36 +112,58 @@ pub fn run() -> Result<(), slint::PlatformError> {
     ui.run()
 }
 
-/// Les touchers à simuler avant une capture : `EYRIE_MOBILE_TAP=x,y;x,y` (pixels logiques de la fenêtre).
+/// Un geste simulé : du point de départ au point d'arrivée (le même pour un toucher).
 #[cfg(not(target_os = "android"))]
-fn taps(spec: &str) -> Vec<(f32, f32)> {
-    let tap = |t: &str| {
+type Gesture = ((f32, f32), (f32, f32));
+
+/// Les gestes à simuler avant une capture : `EYRIE_MOBILE_TAP=x,y;x,y>x2,y2` (pixels logiques de la fenêtre), un
+/// toucher en (x, y), ou un glissé de (x, y) à (x2, y2).
+#[cfg(not(target_os = "android"))]
+fn gestures(spec: &str) -> Vec<Gesture> {
+    let point = |t: &str| {
         let (x, y) = t.trim().split_once(',')?;
         Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
     };
-    spec.split(';').filter_map(tap).collect()
+    let gesture = |g: &str| match g.split_once('>') {
+        Some((from, to)) => Some((point(from)?, point(to)?)),
+        None => point(g).map(|p| (p, p)),
+    };
+    spec.split(';').filter_map(gesture).collect()
 }
 
-/// Capture de la fenêtre puis fermeture (essais, documentation). Avant, les touchers de `EYRIE_MOBILE_TAP`, un toutes
-/// les 400 ms à partir de 700 ms : la capture montre ce qu'ils ont ouvert (le vrai chemin des événements, sans
-/// téléphone).
+/// Capture de la fenêtre puis fermeture (essais, documentation). Avant, les gestes de `EYRIE_MOBILE_TAP`, un toutes
+/// les 400 ms à partir de 700 ms (un glissé dure 200 ms) : la capture montre ce qu'ils ont ouvert ou fait défiler (le
+/// vrai chemin des événements, sans téléphone).
 #[cfg(not(target_os = "android"))]
 fn capture(ui: &AppWindow, path: std::path::PathBuf) {
     use slint::platform::{PointerEventButton, WindowEvent};
-    let taps = taps(&std::env::var("EYRIE_MOBILE_TAP").unwrap_or_default());
-    for (i, (x, y)) in taps.iter().copied().enumerate() {
+    let gestures = gestures(&std::env::var("EYRIE_MOBILE_TAP").unwrap_or_default());
+    let at = |ms: u64, event: WindowEvent| {
         let weak = ui.as_weak();
-        slint::Timer::single_shot(std::time::Duration::from_millis(700 + 400 * i as u64), move || {
-            let Some(ui) = weak.upgrade() else { return };
-            let position = slint::LogicalPosition::new(x, y);
-            let button = PointerEventButton::Left;
-            ui.window().dispatch_event(WindowEvent::PointerMoved { position });
-            ui.window().dispatch_event(WindowEvent::PointerPressed { position, button });
-            ui.window().dispatch_event(WindowEvent::PointerReleased { position, button });
+        slint::Timer::single_shot(std::time::Duration::from_millis(ms), move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.window().dispatch_event(event);
+            }
         });
+    };
+    let button = PointerEventButton::Left;
+    for (i, ((x, y), (x2, y2))) in gestures.iter().copied().enumerate() {
+        // Des instants distincts : les événements arrivent dans l'ordre.
+        let start = 700 + 400 * i as u64;
+        let position = slint::LogicalPosition::new(x, y);
+        at(start, WindowEvent::PointerMoved { position });
+        at(start + 10, WindowEvent::PointerPressed { position, button });
+        let steps: u64 = if (x, y) == (x2, y2) { 0 } else { 10 };
+        for k in 1..=steps {
+            let f = k as f32 / steps as f32;
+            let position = slint::LogicalPosition::new(x + (x2 - x) * f, y + (y2 - y) * f);
+            at(start + 10 + 20 * k, WindowEvent::PointerMoved { position });
+        }
+        let position = slint::LogicalPosition::new(x2, y2);
+        at(start + 30 + 20 * steps, WindowEvent::PointerReleased { position, button });
     }
     let weak = ui.as_weak();
-    let after_taps = 700 + 400 * taps.len() as u64 + 500;
+    let after_taps = 700 + 400 * gestures.len() as u64 + 500;
     let delay = std::env::var("EYRIE_MOBILE_CAPTURE_AFTER_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1500);
     slint::Timer::single_shot(std::time::Duration::from_millis(delay.max(after_taps)), move || {
         let Some(ui) = weak.upgrade() else { return };
