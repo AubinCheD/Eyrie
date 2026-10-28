@@ -19,7 +19,7 @@ use suite_sdk::i18n::{self, Lang};
 use suite_sdk::module::DataMode;
 use suite_sdk::shortcut::{Owner, Registry, Shortcut};
 use suite_sdk::theme::{self, ThemeChoice, ThemeId};
-use suite_sdk::{Host, Request, Tone, Unavailable};
+use suite_sdk::{Host, Notification, Request, Tone, Unavailable};
 
 use crate::accounts::Accounts;
 use crate::core::{self, CallKind, Focus, Journal, Notifications, Slot, SlotState};
@@ -423,6 +423,19 @@ impl Suite {
             suite.capture_scene(&scene);
         }
         suite
+    }
+
+    /// Le veilleur a démarré Eyrie à la demande du téléphone `device` (`EYRIE_DEMARRE_PAR`) : au journal, et dans une
+    /// bulle.
+    pub fn started_from(&mut self, device: &str) {
+        let text = format!("{} {device}", tr("Eyrie démarrée depuis"));
+        self.core.journal.push("suite", Tone::Info, text.clone());
+        self.core.notes.push(Notification::new(
+            "suite",
+            format!("📱 {text}"),
+            tr("Le veilleur du PC l'a démarrée à la demande du téléphone."),
+            Tone::Info,
+        ));
     }
 
     /// La fenêtre détachée qui montre ce module (`None` : la principale, ou nulle part).

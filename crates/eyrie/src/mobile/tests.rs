@@ -614,3 +614,15 @@ fn a_connected_phone_gets_its_wake_key_and_hears_eyrie_close() {
     assert_eq!(wake.secret, suite_mobile::veille::device_secret(&[5; 32], &public).to_vec());
     assert!(closing, "{reason}");
 }
+
+/// Démarrée par le veilleur à la demande d'un téléphone (`EYRIE_DEMARRE_PAR`) : Eyrie le dit au journal et dans une
+/// bulle.
+#[test]
+fn eyrie_started_from_a_phone_says_so() {
+    let mut h = suite();
+    h.state_mut().started_from("Pixel 8");
+    let text = format!("{} Pixel 8", crate::i18n::tr("Eyrie démarrée depuis"));
+    let s = h.state();
+    assert!(s.core.journal.lines.iter().any(|l| l.text == text), "journal");
+    assert!(s.core.notes.toasts.iter().any(|(n, _)| n.title.ends_with(&text)), "bulle");
+}

@@ -1079,6 +1079,13 @@ mod tests {
         );
     }
 
+    /// Démarrée réduite par le veilleur, Eyrie relancée depuis le PC (réglages) s'ouvre à l'écran.
+    #[test]
+    fn a_restart_does_not_open_minimized_again() {
+        let args = ["--reduite", "--apres=12", "lancer"].map(String::from);
+        assert_eq!(crate::restart_args(args.into_iter(), 34), ["lancer", "--apres=34"]);
+    }
+
     #[test]
     fn a_standby_failure_is_read_from_its_file() {
         let dir = tempfile::tempdir().unwrap();

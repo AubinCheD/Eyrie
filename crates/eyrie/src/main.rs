@@ -3,7 +3,8 @@
 //! `eyrie.exe` ouvre la suite. Les arguments que les modules embarqués donnent à leur propre
 //! exécutable quand ils se relancent eux-mêmes (`current_exe()`) sont pris en charge ici :
 //! `--relais …` (Menagerie), `lancer <tâche>` et `planifie <tâche>` (Patronus, Planificateur de
-//! Windows).
+//! Windows). Le veilleur démarre Eyrie à la demande d'un téléphone avec `--reduite` (elle s'ouvre
+//! réduite) et `EYRIE_DEMARRE_PAR=<appareil>` (`veille`).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod accounts;
@@ -38,12 +39,32 @@ use std::time::Duration;
 
 use eframe::egui;
 
+/// Eyrie démarrée à distance s'ouvre réduite (`veille`).
+pub const MINIMIZED: &str = "--reduite";
+/// Le nom de l'appareil qui a demandé au veilleur de démarrer Eyrie.
+const STARTED_BY: &str = "EYRIE_DEMARRE_PAR";
+
 /// Relance la suite une fois celle-ci fermée (le nouveau processus attend la fin de celui-ci).
 pub fn restart() {
     let Ok(exe) = std::env::current_exe() else { return };
-    let mut args: Vec<String> = std::env::args().skip(1).filter(|a| !a.starts_with("--apres=")).collect();
-    args.push(format!("--apres={}", std::process::id()));
+    let args = restart_args(std::env::args().skip(1), std::process::id());
     let _ = std::process::Command::new(exe).args(args).spawn();
+}
+
+/// Les arguments de la relance : ceux du lancement, sans l'attente d'une suite précédente ni `--reduite` (une relance
+/// demandée sur le PC s'ouvre à l'écran), puis l'attente de celle-ci.
+pub fn restart_args(args: impl Iterator<Item = String>, pid: u32) -> Vec<String> {
+    let mut args: Vec<String> = args.filter(|a| !a.starts_with("--apres=") && a != MINIMIZED).collect();
+    args.push(format!("--apres={pid}"));
+    args
+}
+
+/// L'appareil qui a fait démarrer Eyrie (le veilleur pose `EYRIE_DEMARRE_PAR`) ; la variable est retirée, pour que
+/// les terminaux des modules n'en héritent pas. Appelé avant le moindre fil.
+fn started_by() -> Option<String> {
+    let by = std::env::var(STARTED_BY).ok().map(|d| d.trim().to_string()).filter(|d| !d.is_empty());
+    unsafe { std::env::remove_var(STARTED_BY) };
+    by
 }
 
 /// `--apres=<pid>` : attendre la fin de l'ancienne suite (elle tient le verrou de chaque module).
@@ -108,6 +129,8 @@ fn main() -> eframe::Result {
     if let Some(code) = suite_patronus::cli(&args) {
         std::process::exit(code);
     }
+    let started_by = started_by();
+    let minimized = args.iter().any(|a| a == MINIMIZED);
     wait_for_previous(&args);
 
     let dir = persist::data_dir();
@@ -161,7 +184,13 @@ fn main() -> eframe::Result {
         app::TITLE,
         options,
         Box::new(move |cc| {
-            let app = app::Suite::new(cc, dir, loaded);
+            let mut app = app::Suite::new(cc, dir, loaded);
+            if let Some(device) = &started_by {
+                app.started_from(device);
+            }
+            if minimized {
+                cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            }
             cc.egui_ctx.request_repaint_after(Duration::from_millis(16));
             Ok(Box::new(app))
         }),
