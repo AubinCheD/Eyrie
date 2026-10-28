@@ -81,9 +81,15 @@ pub struct RepoView {
     pub last_message: String,
     /// Le dernier fetch a été refusé par le serveur (authentification) : ce qu'a dit git.
     pub auth_error: Option<String>,
-    /// DragonTree n'a toujours pas lu l'état ou les branches du dépôt, 15 s après que le téléphone les attend (ce que
-    /// le téléphone lit lui-même n'y entre pas).
+    /// DragonTree n'a toujours pas lu l'état ou les branches du dépôt, sans erreur, 15 s après que le téléphone les
+    /// attend (ce que le téléphone lit lui-même n'y entre pas).
     pub slow: bool,
+    /// La dernière lecture de l'état par DragonTree a échoué : pourquoi (`status` garde la lecture d'avant, s'il y en
+    /// a une).
+    pub status_error: Option<String>,
+    /// La dernière lecture des branches par DragonTree a échoué : pourquoi (`refs` garde la lecture d'avant, s'il y en
+    /// a une).
+    pub refs_error: Option<String>,
     /// L'historique montré (`None` : pas encore lu).
     pub log: Option<Result<LogView, String>>,
     /// Les commits pointés par les branches et les étiquettes (date, titre), lus à part.
@@ -218,18 +224,48 @@ pub fn render_diff(d: &FileDiff) -> Vec<(u8, String)> {
     out
 }
 
-/// Ce qui n'est pas encore lu : pourquoi, si DragonTree n'a pas pu ouvrir le dépôt ; sinon `text`, et un mot de plus
-/// s'il le lit depuis longtemps, peut-être en vain (sa lecture ratée ne se dit que sur le PC).
+/// Les lectures ratées de DragonTree : `missing`, celles dont rien n'a été lu avant (l'écran les attendrait en vain) ;
+/// sinon, celles dont l'écran montre la lecture d'avant.
+fn failed_reads(v: &RepoView, missing: bool) -> Vec<String> {
+    let (again, hint) = if missing {
+        ("", "« Actualiser » relance la lecture")
+    } else {
+        ("re", "ce qui est montré date de sa lecture d'avant")
+    };
+    let mut out = Vec::new();
+    if let Some(e) = v.status_error.as_ref().filter(|_| v.status.is_none() == missing) {
+        out.push(format!("DragonTree n'a pas pu {again}lire l'état du dépôt ({hint}) : {e}"));
+    }
+    if let Some(e) = v.refs_error.as_ref().filter(|_| v.refs.is_none() == missing) {
+        out.push(format!("DragonTree n'a pas pu {again}lire les branches ({hint}) : {e}"));
+    }
+    out
+}
+
+/// Les lectures ratées de DragonTree dont l'écran montre la lecture d'avant : en tête de chaque écran du dépôt.
+pub fn stale_reads(v: &RepoView) -> Vec<String> {
+    failed_reads(v, false)
+}
+
+/// Ce qui n'est pas encore lu : pourquoi, si DragonTree n'a pas pu ouvrir le dépôt ou le lire (« Actualiser » relance
+/// la lecture) ; sinon `text`, et un mot de plus s'il le lit depuis longtemps sans erreur.
 pub fn reading(s: &mut Screen, text: &str, v: &RepoView) {
     if let Some(Err(e)) = &v.status {
         s.note(e, Tone::Danger);
         return;
     }
+    let failed = failed_reads(v, true);
+    if !failed.is_empty() {
+        for e in failed {
+            s.note(e, Tone::Danger);
+        }
+        return;
+    }
     s.empty(text);
     if v.slow {
         s.note(
-            "DragonTree n'a pas encore lu ce dépôt : il est peut-être très gros, ou sa lecture a échoué (voir ses \
-             notifications sur le PC). « Actualiser » le fait relire.",
+            "DragonTree n'a pas encore lu ce dépôt : il est peut-être très gros (voir DragonTree sur le PC). \
+             « Actualiser » le fait relire.",
             Tone::Warn,
         );
     }
@@ -1277,6 +1313,40 @@ mod tests {
         assert_eq!(tones(&v), [Tone::Warn]);
         v.status = Some(Err("pas un dépôt git".into()));
         assert_eq!(tones(&v), [Tone::Danger]);
+    }
+
+    /// Une lecture ratée de DragonTree se dit : à la place de « Lecture… » si rien n'avait été lu avant, sinon en tête
+    /// de l'écran, qui montre la lecture d'avant. Chaque erreur une seule fois.
+    #[test]
+    fn a_failed_read_of_dragontree_says_why() {
+        let notes = |v: &RepoView| {
+            let mut s = Screen::new("Branches");
+            reading(&mut s, "Lecture des branches…", v);
+            let text = format!("{s:?}");
+            let notes = s.blocks.into_iter().filter_map(|b| match b {
+                Block::Note { text, tone, .. } => Some((tone, text)),
+                _ => None,
+            });
+            (notes.collect::<Vec<(Tone, String)>>(), text.contains("Lecture des branches…"))
+        };
+        let mut v = RepoView {
+            refs_error: Some("HEAD illisible".into()),
+            status_error: Some("index corrompu".into()),
+            ..Default::default()
+        };
+        let (shown, waiting) = notes(&v);
+        assert!(!waiting, "pas de « Lecture… » sans fin : {shown:?}");
+        assert_eq!(shown.iter().map(|(t, _)| *t).collect::<Vec<_>>(), [Tone::Danger, Tone::Danger]);
+        assert!(shown[0].1.contains("l'état du dépôt") && shown[0].1.ends_with("index corrompu"), "{shown:?}");
+        assert!(shown[1].1.contains("les branches") && shown[1].1.contains("« Actualiser »"), "{shown:?}");
+        assert!(stale_reads(&v).is_empty(), "rien de lu avant : rien en tête");
+        // Les branches lues avant : leur erreur passe en tête, l'écran les montre.
+        v.refs = view().refs;
+        let (shown, _) = notes(&v);
+        assert_eq!(shown.len(), 1, "{shown:?}");
+        let stale = stale_reads(&v);
+        assert_eq!(stale.len(), 1);
+        assert!(stale[0].contains("relire les branches") && stale[0].contains("lecture d'avant"), "{stale:?}");
     }
 
     #[test]
