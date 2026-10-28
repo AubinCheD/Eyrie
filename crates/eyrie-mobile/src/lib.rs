@@ -116,31 +116,50 @@ pub fn run() -> Result<(), slint::PlatformError> {
     ui.run()
 }
 
-/// Un geste simulé : du point de départ au point d'arrivée (le même pour un toucher).
+/// Un geste simulé : du point de départ au point d'arrivée (le même pour un toucher), un appui tenu (ms), ou du texte
+/// tapé au clavier.
 #[cfg(not(target_os = "android"))]
-type Gesture = ((f32, f32), (f32, f32));
+enum Gesture {
+    Drag((f32, f32), (f32, f32)),
+    Hold((f32, f32), u64),
+    /// La molette (pixels logiques ; positif : vers le haut du texte).
+    Wheel((f32, f32), f32),
+    Type(String),
+}
 
-/// Les gestes à simuler avant une capture : `EYRIE_MOBILE_TAP=x,y;x,y>x2,y2` (pixels logiques de la fenêtre), un
-/// toucher en (x, y), ou un glissé de (x, y) à (x2, y2).
+/// Les gestes à simuler avant une capture : `EYRIE_MOBILE_TAP=x,y;x,y>x2,y2;x,y@700;x,y^300;=texte` (pixels logiques
+/// de la fenêtre), un toucher en (x, y), un glissé de (x, y) à (x2, y2), un appui tenu 700 ms, la molette (300 px vers
+/// le haut), ou du texte tapé (`⏎` : Entrée, `⌫` : Effacer, `⎋` : Échap).
 #[cfg(not(target_os = "android"))]
 fn gestures(spec: &str) -> Vec<Gesture> {
     let point = |t: &str| {
         let (x, y) = t.trim().split_once(',')?;
         Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
     };
-    let gesture = |g: &str| match g.split_once('>') {
-        Some((from, to)) => Some((point(from)?, point(to)?)),
-        None => point(g).map(|p| (p, p)),
+    let gesture = |g: &str| {
+        if let Some(text) = g.strip_prefix('=') {
+            return Some(Gesture::Type(text.to_string()));
+        }
+        if let Some((at, ms)) = g.split_once('@') {
+            return Some(Gesture::Hold(point(at)?, ms.trim().parse().ok()?));
+        }
+        if let Some((at, dy)) = g.split_once('^') {
+            return Some(Gesture::Wheel(point(at)?, dy.trim().parse().ok()?));
+        }
+        match g.split_once('>') {
+            Some((from, to)) => Some(Gesture::Drag(point(from)?, point(to)?)),
+            None => point(g).map(|p| Gesture::Drag(p, p)),
+        }
     };
     spec.split(';').filter_map(gesture).collect()
 }
 
-/// Capture de la fenêtre puis fermeture (essais, documentation). Avant, les gestes de `EYRIE_MOBILE_TAP`, un toutes
-/// les 400 ms à partir de 700 ms (un glissé dure 200 ms) : la capture montre ce qu'ils ont ouvert ou fait défiler (le
-/// vrai chemin des événements, sans téléphone).
+/// Capture de la fenêtre puis fermeture (essais, documentation). Avant, les gestes de `EYRIE_MOBILE_TAP`, à partir de
+/// 700 ms, l'un après l'autre (400 ms chacun au moins ; un glissé dure 200 ms) : la capture montre ce qu'ils ont ouvert
+/// ou fait défiler (le vrai chemin des événements, sans téléphone).
 #[cfg(not(target_os = "android"))]
 fn capture(ui: &AppWindow, path: std::path::PathBuf) {
-    use slint::platform::{PointerEventButton, WindowEvent};
+    use slint::platform::{Key, PointerEventButton, WindowEvent};
     let gestures = gestures(&std::env::var("EYRIE_MOBILE_TAP").unwrap_or_default());
     let at = |ms: u64, event: WindowEvent| {
         let weak = ui.as_weak();
@@ -151,9 +170,35 @@ fn capture(ui: &AppWindow, path: std::path::PathBuf) {
         });
     };
     let button = PointerEventButton::Left;
-    for (i, ((x, y), (x2, y2))) in gestures.iter().copied().enumerate() {
-        // Des instants distincts : les événements arrivent dans l'ordre.
-        let start = 700 + 400 * i as u64;
+    // Des instants distincts : les événements arrivent dans l'ordre.
+    let mut start = 700;
+    for g in &gestures {
+        let ((x, y), (x2, y2), hold) = match g {
+            Gesture::Drag(from, to) => (*from, *to, 0),
+            Gesture::Hold(p, ms) => (*p, *p, *ms),
+            Gesture::Wheel((x, y), dy) => {
+                let position = slint::LogicalPosition::new(*x, *y);
+                at(start, WindowEvent::PointerMoved { position });
+                at(start + 10, WindowEvent::PointerScrolled { position, delta_x: 0.0, delta_y: *dy });
+                start += 400;
+                continue;
+            }
+            Gesture::Type(text) => {
+                for (k, c) in text.chars().enumerate() {
+                    let text: slint::SharedString = match c {
+                        '⏎' => Key::Return.into(),
+                        '⌫' => Key::Backspace.into(),
+                        '⎋' => Key::Escape.into(),
+                        c => c.to_string().into(),
+                    };
+                    let at_ms = start + 30 * k as u64;
+                    at(at_ms, WindowEvent::KeyPressed { text: text.clone() });
+                    at(at_ms + 10, WindowEvent::KeyReleased { text });
+                }
+                start += (30 * text.chars().count() as u64).max(400);
+                continue;
+            }
+        };
         let position = slint::LogicalPosition::new(x, y);
         at(start, WindowEvent::PointerMoved { position });
         at(start + 10, WindowEvent::PointerPressed { position, button });
@@ -164,10 +209,12 @@ fn capture(ui: &AppWindow, path: std::path::PathBuf) {
             at(start + 10 + 20 * k, WindowEvent::PointerMoved { position });
         }
         let position = slint::LogicalPosition::new(x2, y2);
-        at(start + 30 + 20 * steps, WindowEvent::PointerReleased { position, button });
+        let release = start + 30 + 20 * steps + hold;
+        at(release, WindowEvent::PointerReleased { position, button });
+        start = (release + 100).max(start + 400);
     }
     let weak = ui.as_weak();
-    let after_taps = 700 + 400 * gestures.len() as u64 + 500;
+    let after_taps = start + 500;
     let delay = std::env::var("EYRIE_MOBILE_CAPTURE_AFTER_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1500);
     slint::Timer::single_shot(std::time::Duration::from_millis(delay.max(after_taps)), move || {
         let Some(ui) = weak.upgrade() else { return };
