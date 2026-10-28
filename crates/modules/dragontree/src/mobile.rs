@@ -687,16 +687,18 @@ impl Phone {
         let mut all = lock(&self.reads);
         let r = all.entry(key.to_string()).or_default();
         let fresh = r.loaded.get(&k).is_some_and(|t| what.every().is_none_or(|every| t.elapsed() < every));
-        if fresh || !r.loading.insert(k.clone()) {
+        if fresh || r.loading.contains(&k) {
             return;
         }
+        // Le diff d'un fichier d'un commit attend le commit (ses fichiers, son parent) : demandé à un appel suivant.
         let known = match &what {
             Load::CommitDiff(id, _) => match r.commits.get(id) {
                 Some(Ok(c)) => Some(c.clone()),
-                _ => None,
+                _ => return,
             },
             _ => None,
         };
+        r.loading.insert(k.clone());
         drop(all);
         let (reads, repo, key) = (self.reads.clone(), repo.clone(), key.to_string());
         std::thread::spawn(move || {
@@ -1466,6 +1468,11 @@ mod tests {
             !head.key.is_empty() && head.open.as_deref().is_some_and(|o| o.starts_with(&format!("{base}/commit/")))
         );
         assert!(!s.action_ids().contains("plus"), "deux commits : pas de suite");
+        // Le diff d'un fichier d'un commit demandé d'emblée (le téléphone revient sur cet écran), avant le commit
+        // lui-même : il arrive (le défaut : « Lecture du diff… » sans fin).
+        let diff = format!("{base}/commit/{}/{}", commits[1].key, file_key("lisez-moi.txt"));
+        let d = wait_screen(&mut h, &mut phone, &diff, "+un");
+        assert!(format!("{d:?}").contains("+un"), "{d:?}");
 
         let all = wait_screen(&mut h, &mut phone, &format!("{base}/historique/tout"), "Sur une autre branche");
         assert!(format!("{all:?}").contains("Sur une autre branche"), "{all:?}");
