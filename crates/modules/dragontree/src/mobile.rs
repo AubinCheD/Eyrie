@@ -31,7 +31,7 @@ use dragontree_git::discovery::{FoundRepo, repo_head};
 use dragontree_git::{
     CommitInfo, DiffOptions, FileChange, FileState, Git, HeadState, Oid, Repo, StatusEntry, StatusSnapshot,
 };
-use suite_sdk::mobile::ui::{Act, Block, Screen, Tone};
+use suite_sdk::mobile::ui::{Act, Block, PROGRESS_UNKNOWN, Screen, Tone};
 
 use crate::depot::{self, RepoView, file_key};
 use crate::liste::{self, Entry, JOB_SHOWN, Job, Listed, RepoState, repo_key};
@@ -49,6 +49,8 @@ const REFRESH_EVERY: Duration = Duration::from_secs(20);
 const DIFF_EVERY: Duration = Duration::from_secs(15);
 /// Une opération attend au plus 30 s que DragonTree ait ouvert son dépôt.
 const OPEN_WAIT: Duration = Duration::from_secs(30);
+/// Au-delà, un dépôt que DragonTree n'a toujours pas lu le dit (lecture longue, ou ratée).
+const SLOW_AFTER: Duration = Duration::from_secs(15);
 /// Une erreur de git montrée est coupée au-delà (caractères).
 const ERROR_MAX: usize = 400;
 
@@ -59,6 +61,16 @@ fn stop_act() -> Act {
         .glyph("⏹️")
         .danger()
         .confirm("Annuler l'opération en cours dans DragonTree ?")
+}
+
+/// Ce que fait DragonTree sur le dépôt, en tête de ses écrans : une opération en cours, avec sa progression et son
+/// « Annuler », ou ce qu'a donné la dernière.
+fn job_block(j: Job) -> Block {
+    if !j.running() {
+        return Block::Note { text: j.text, tone: j.tone, progress: None, acts: Vec::new() };
+    }
+    let acts = j.stoppable.then(stop_act).into_iter().collect();
+    Block::Note { text: j.text, tone: Tone::Info, progress: Some(j.percent.unwrap_or(PROGRESS_UNKNOWN)), acts }
 }
 
 // --- Ce que DragonTree sait ---
@@ -322,6 +334,10 @@ pub struct Phone {
     reads: SharedReads,
     /// Par dépôt : quand DragonTree l'a relu à la demande du téléphone.
     refreshed: HashMap<String, Instant>,
+    /// Par dépôt : depuis quand le téléphone attend que DragonTree le lise (une lecture ratée ne se dit que sur le PC).
+    since: HashMap<String, Instant>,
+    /// Par chemin d'écran : les lignes demandées de sa liste par pages (« plus »).
+    pages: HashMap<String, usize>,
     waiting: HashMap<String, Waiting>,
     /// Par dépôt : une opération qui n'a pas pu partir (dépôt impossible à ouvrir).
     failed: HashMap<String, Job>,
@@ -344,6 +360,8 @@ impl Phone {
             git: GitCell::default(),
             reads: SharedReads::default(),
             refreshed: HashMap::new(),
+            since: HashMap::new(),
+            pages: HashMap::new(),
             waiting: HashMap::new(),
             failed: HashMap::new(),
         }
@@ -480,9 +498,11 @@ impl Phone {
             // L'ouverture lit tout.
             app.open_repo_tab(repo);
             self.opened.insert(key.clone());
-            self.refreshed.insert(key, Instant::now());
+            self.refreshed.insert(key.clone(), Instant::now());
+            self.since.insert(key, Instant::now());
             return;
         }
+        self.since.entry(key.clone()).or_insert_with(Instant::now);
         if self.refreshed.get(&key).is_none_or(|t| t.elapsed() >= REFRESH_EVERY) {
             app.refresh_repo(repo, Refresh::REFS.with_extras());
             self.refreshed.insert(key, Instant::now());
@@ -534,8 +554,9 @@ impl Phone {
         }
     }
 
-    /// Ce que DragonTree sait du dépôt, et ce qui en a été lu à part pour l'écran `parts`.
-    fn view(&self, key: &str, t: &RepoTab, parts: &[&str]) -> RepoView {
+    /// Ce que DragonTree sait du dépôt (partagé, sans copie), et ce qui en a été lu à part pour l'écran `parts`
+    /// (chemin complet : `path`).
+    fn view(&self, key: &str, t: &RepoTab, parts: &[&str], path: &str) -> RepoView {
         let status = match (&t.open_error, &t.status) {
             (Some(e), _) => Some(Err(e.to_string())),
             (None, Some(s)) => {
@@ -548,11 +569,14 @@ impl Phone {
         };
         let mut v = RepoView {
             status,
-            refs: t.refs.as_deref().cloned(),
-            stashes: t.stashes.to_vec(),
-            worktrees: t.worktrees.to_vec(),
-            remotes: t.remotes.iter().map(|r| r.name.clone()).collect(),
+            refs: t.refs.clone(),
+            stashes: t.stashes.clone(),
+            worktrees: t.worktrees.clone(),
+            remotes: t.remotes.clone(),
             op: t.status.is_some().then_some(t.op_state),
+            auth_error: t.fetch_auth_error().map(short_error),
+            slow: self.since.get(key).is_some_and(|at| at.elapsed() >= SLOW_AFTER),
+            count: self.pages.get(path).copied().unwrap_or(depot::PAGE),
             ..Default::default()
         };
         if parts == ["historique"] {
@@ -608,39 +632,28 @@ impl Phone {
                 _ => {}
             }
         }
-        let view = self.view(key, t, &parts);
+        let view = self.view(key, t, &parts, path);
         let job = self.job(key, Some(t));
-        let busy = job.as_ref().is_some_and(|j| j.tone == Tone::Info);
-        let stoppable = t.running.iter().any(|o| !o.silent);
+        let busy = job.as_ref().is_some_and(Job::running);
         let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
         // Les chemins des sous-écrans sont absolus dans le module : le téléphone les demande tels quels.
         let base = format!("depot/{key}");
         let mut screen = match parts.as_slice() {
-            [""] => {
-                let j = job.as_ref().map(|j| (j.text.as_str(), j.tone));
-                let mut s = depot::overview(&base, &listed.title, &repo.display().to_string(), &view, j, busy);
-                if stoppable {
-                    s.acts.push(stop_act());
-                }
-                return Some(s);
-            }
+            [""] => depot::overview(&base, &listed.title, &repo.display().to_string(), &view, busy),
             ["modifs"] => depot::changes(&base, &view, busy),
             ["fichier", f] => depot::file(&view, f, busy)?,
             ["historique"] => depot::history(&base, &view, now),
             ["commit", id] => depot::commit(&base, &view, id, now, busy),
             ["commit", id, f] => depot::commit_file(&view, id, f)?,
-            ["branches"] => depot::branches(&view, busy),
-            ["remises"] => depot::stashes(&view, now, busy),
-            ["etiquettes"] => depot::tags(&base, &view, busy),
-            ["worktrees"] => depot::worktrees(&view, busy),
+            ["branches"] => depot::branches(&base, &view, busy),
+            ["plus"] => depot::more(&base, &view, now, busy),
+            ["etiquettes"] => depot::tags(&base, &view, now, busy),
             _ => return None,
         };
-        // Ce que fait DragonTree, ou ce qu'a donné sa dernière opération, en tête de chaque écran du dépôt.
+        // Ce que fait DragonTree (sa progression, et son « Annuler »), ou ce qu'a donné sa dernière opération, en tête
+        // de chaque écran du dépôt.
         if let Some(j) = job {
-            screen.blocks.insert(0, Block::Note { text: j.text, tone: j.tone, progress: None, acts: Vec::new() });
-        }
-        if stoppable {
-            screen.acts.push(stop_act());
+            screen.blocks.insert(0, job_block(j));
         }
         Some(screen)
     }
@@ -697,12 +710,19 @@ impl Phone {
                 app.refresh_repo(&repo, Refresh::ALL.with_extras());
             }
             self.refreshed.insert(key.clone(), Instant::now());
+            self.since.insert(key.clone(), Instant::now());
             lock(&self.reads).remove(&key);
             return Ok(("DragonTree relit le dépôt…".into(), false));
         }
+        if verb == "plus" {
+            // La page suivante de la liste de l'écran (étiquettes, commits, branches).
+            let n = self.pages.entry(path.to_string()).or_insert(depot::PAGE);
+            *n = (*n + depot::PAGE).min(depot::PAGE_MAX);
+            return Ok((String::new(), false));
+        }
         // Le geste vient du dernier écran du dépôt, fait de ce que DragonTree en savait (`view` : sans ce qui est lu
         // à part, inutile ici).
-        let view = app.repo_tab(&repo).map(|t| self.view(&key, t, &[])).unwrap_or_default();
+        let view = app.repo_tab(&repo).map(|t| self.view(&key, t, &[], "")).unwrap_or_default();
         let (op, label) = depot::parse(&view, &verb, input)?;
         self.failed.remove(&key);
         if app.repo_tab(&repo).is_none() {
@@ -759,6 +779,34 @@ mod tests {
     use super::*;
 
     type H = Harness<'static, DragonTreeApp>;
+
+    /// Une opération en cours se montre avec sa progression, arrondie à 5 % (un écran ne repart pas au téléphone à
+    /// chaque pour cent), et le moyen de l'arrêter ; une opération qui attend l'ouverture du dépôt n'a ni l'un ni
+    /// l'autre.
+    #[test]
+    fn a_running_operation_shows_its_rounded_progress_and_how_to_stop_it() {
+        assert_eq!(
+            (rounded(Some(47)), rounded(Some(100)), rounded(Some(250)), rounded(None)),
+            (Some(45), Some(100), Some(100), None)
+        );
+        let job = |percent, stoppable| Job {
+            text: "Fetch en cours…".into(),
+            tone: Tone::Info,
+            at: Instant::now(),
+            percent,
+            stoppable,
+        };
+        match job_block(job(rounded(Some(47)), true)) {
+            Block::Note { progress: Some(45), acts, .. } => assert_eq!(acts[0].id, "stopper"),
+            b => panic!("{b:?}"),
+        }
+        match job_block(job(None, false)) {
+            Block::Note { progress: Some(PROGRESS_UNKNOWN), acts, .. } => assert!(acts.is_empty()),
+            b => panic!("{b:?}"),
+        }
+        let failed = Job { tone: Tone::Danger, ..job(None, false) };
+        assert!(matches!(job_block(failed), Block::Note { progress: None, tone: Tone::Danger, .. }));
+    }
 
     /// DragonTree dans un profil d'essai, sans le coffre de Windows.
     fn dragontree(profile: &Path) -> H {
@@ -962,11 +1010,17 @@ mod tests {
         let repo = dir.join("depot");
         new_repo(&git, &repo);
         let sh = |args: &[&str]| sh(&git, &repo, args);
-        sh(&["tag", "v1"]);
+        // Assez d'étiquettes et de modifications pour que l'onglet Plus et l'onglet État en coupent la liste.
+        for i in 0..11 {
+            sh(&["tag", &format!("v{i}")]);
+        }
         sh(&["branch", "feature/essai"]);
         std::fs::write(repo.join("remise.txt"), "de côté\n").unwrap();
         sh(&["add", "remise.txt"]);
         sh(&["stash", "push", "-q", "-m", "Une remise", "--", "remise.txt"]);
+        for i in 0..31 {
+            std::fs::write(repo.join(format!("neuf-{i}.txt")), "neuf\n").unwrap();
+        }
 
         // Le dépôt n'est que dans la liste du scan de DragonTree (ni onglet, ni récent).
         let profile = dir.join("profil");
@@ -975,10 +1029,10 @@ mod tests {
         let base = format!("depot/{}", repo_key(&repo));
         let home = wait_screen(&mut h, &mut phone, "", "depot");
         assert!(home.opens().contains(&base), "{home:?}");
-        wait_screen(&mut h, &mut phone, &base, "fichier(s)");
+        wait_screen(&mut h, &mut phone, &base, "Non indexé");
         let seen = walk(&mut h, &mut phone, "", 80);
         let has = |p: &str| seen.iter().any(|s| s.starts_with(&format!("{base}/{p}")));
-        for p in ["modifs", "fichier/", "historique", "commit/", "branches"] {
+        for p in ["modifs", "fichier/", "historique", "commit/", "branches", "plus", "etiquettes"] {
             assert!(has(p), "{p} visité : {seen:?}");
         }
         assert!(
@@ -1004,8 +1058,8 @@ mod tests {
         let mut h = dragontree(&profile);
         let key = repo_key(&repo);
         let base = format!("depot/{key}");
-        let s = wait_screen(&mut h, &mut phone, &base, "1 fichier(s), dont 0 indexé(s)");
-        assert!(format!("{s:?}").contains("1 fichier(s), dont 0 indexé(s)"), "{s:?}");
+        let s = wait_screen(&mut h, &mut phone, &base, "lisez-moi.txt");
+        assert!(format!("{s:?}").contains("Non indexé") && s.tabs.len() == 4, "{s:?}");
         assert!(h.state().repo_tab(&repo).is_some() && h.state().active_repo_dir().is_none(), "onglet de fond");
         let f = file_key("lisez-moi.txt");
         let diff = wait_screen(&mut h, &mut phone, &format!("{base}/fichier/{f}"), "+deux");
@@ -1028,7 +1082,7 @@ mod tests {
             phone.action(h.state_mut(), &base, "actualiser", None).unwrap();
             let out = Path::new(&out);
             for (name, path, wait) in [
-                ("depot", base.clone(), "fichier(s)"),
+                ("depot", base.clone(), "Non indexé"),
                 ("modifs", format!("{base}/modifs"), "Non indexé"),
                 ("diff", format!("{base}/fichier/{f}"), "+trois"),
                 ("historique", format!("{base}/historique"), "Ajoute deux"),

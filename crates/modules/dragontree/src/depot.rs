@@ -1,35 +1,49 @@
 //! Un dépôt sur le téléphone : un client git presque complet, mené par DragonTree sur le PC.
 //!
 //! Les écrans, tous sous `depot/<clé>` (chemins absolus dans le module : le téléphone demande au PC le chemin tel
-//! quel, `base` est `depot/<clé>`) :
-//! - l'accueil du dépôt : branche, suivi, opération en cours (fusion, rebase…) à poursuivre ou abandonner, fetch,
-//!   pull, push, et les rubriques ;
-//! - `modifs` : conflits (garder une version, marquer résolu), indexé, non indexé ; indexer, désindexer, annuler,
-//!   valider (ou corriger le dernier commit), mettre de côté ; `fichier/<f>` : le diff d'un fichier ;
-//! - `historique` : les derniers commits ; `commit/<id>` : message, fichiers, cherry-pick, revert, branche ou
-//!   étiquette ici, reset, sortir ce commit ; `commit/<id>/<f>` : le diff d'un fichier du commit ;
-//! - `branches` : basculer, fusionner, rebaser, pousser, renommer, supprimer, nouvelle branche, suivre une branche
-//!   distante ;
-//! - `remises` (stash) : appliquer, appliquer et retirer, jeter ; `etiquettes` : pousser, supprimer, créer ;
-//!   `worktrees` : supprimer, élaguer.
+//! quel, `base` est `depot/<clé>`). Quatre onglets, entre lesquels on passe sans empiler :
+//! - **État** (`depot/<clé>`) : opération en cours (fusion, rebase…) à poursuivre ou abandonner, branche et suivi,
+//!   fetch, pull, push, et les modifications (conflits, indexé, non indexé ; les 30 premières, puis « Tout voir ») ;
+//! - **Historique** (`historique`) : les derniers commits ;
+//! - **Branches** (`branches`) : basculer, fusionner, rebaser, pousser, renommer, supprimer, nouvelle branche, suivre
+//!   une branche distante ;
+//! - **Plus** (`plus`) : remises (appliquer, appliquer et retirer, jeter), étiquettes (les plus récentes ; toutes dans
+//!   `etiquettes`, par pages), worktrees (supprimer, élaguer), remotes et leurs URL, afficher sur le PC.
+//!
+//! Les détails s'empilent : `modifs` (toutes les modifications ; indexer, désindexer, annuler, valider ou corriger le
+//! dernier commit, mettre de côté), `fichier/<f>` (le diff d'un fichier), `commit/<id>` (message, fichiers,
+//! cherry-pick, revert, branche ou étiquette ici, reset, sortir ce commit), `commit/<id>/<f>` (le diff d'un fichier du
+//! commit).
 //!
 //! Ce module ne fait qu'écrire les écrans à partir de ce que DragonTree sait du dépôt ([`RepoView`]) et traduire une
 //! action en opération de DragonTree ([`RemoteOp`]) ; `mobile.rs` la lui confie. Un fichier est désigné par une
 //! empreinte de son chemin, un commit par son identifiant, une branche ou une étiquette par son nom (git interdit `:`
-//! dans un nom de référence).
+//! dans un nom de référence). Les listes longues sont coupées : un écran reste petit, même sur un dépôt de 2 000
+//! étiquettes.
 
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::Arc;
 
 use dragontree_app::repo::RemoteOp;
 use dragontree_git::{
-    ChangeKind, Commit, CommitInfo, FileChange, FileDiff, FileState, LineKind, Oid, OpState, RefsSnapshot, ResetMode,
-    StashEntry, StatusEntry, StatusSnapshot, Worktree,
+    ChangeKind, Commit, CommitInfo, FileChange, FileDiff, FileState, LineKind, Oid, OpState, RefsSnapshot, Remote,
+    ResetMode, StashEntry, StatusEntry, StatusSnapshot, TagRef, Worktree,
 };
-use suite_sdk::mobile::ui::{Act, DIFF_ADDED, DIFF_CONTEXT, DIFF_HEADER, DIFF_REMOVED, Row, Screen, Tone};
+use suite_sdk::mobile::ui::{Act, Band, DIFF_ADDED, DIFF_CONTEXT, DIFF_HEADER, DIFF_REMOVED, Row, Screen, Tab, Tone};
 
 /// Commits montrés dans l'historique.
 pub const LOG_COUNT: usize = 60;
+/// Une liste par pages (étiquettes, historique, branches) : sa première page, et ce que « plus » ajoute.
+pub const PAGE: usize = 100;
+/// … et jusqu'où « plus » va.
+pub const PAGE_MAX: usize = 2000;
+/// Modifications montrées dans l'onglet État (toutes : `modifs`).
+const CHANGES_INLINE: usize = 30;
+/// Fichiers montrés par section (modifications, fichiers d'un commit) : au-delà, sur le PC.
+const FILES_MAX: usize = 300;
+/// Étiquettes montrées dans l'onglet Plus (toutes : `etiquettes`).
+const TAGS_INLINE: usize = 10;
 /// Un diff montré est coupé au-delà.
 const DIFF_LINES: usize = 600;
 
@@ -40,17 +54,38 @@ pub fn file_key(path: &str) -> String {
     format!("{:x}", h.finish() & 0xffff_ffff)
 }
 
-/// Ce qu'on sait d'un dépôt : ce que DragonTree en a lu, et ce qui a été lu à part pour l'écran (diff, commit).
+/// Une URL de remote sans ce qui identifie (`https://jeton@hôte/…` → `https://hôte/…`) : le téléphone ne voit jamais
+/// d'identifiants.
+pub fn safe_url(url: &str) -> String {
+    if let Some((scheme, rest)) = url.split_once("://") {
+        let host_end = rest.find('/').unwrap_or(rest.len());
+        if let Some(at) = rest[..host_end].rfind('@') {
+            return format!("{scheme}://{}", &rest[at + 1..]);
+        }
+    }
+    url.to_string()
+}
+
+/// Ce qu'on sait d'un dépôt : ce que DragonTree en a lu (partagé avec lui, sans copie), et ce qui a été lu à part pour
+/// l'écran (diff, commit).
 #[derive(Clone, Debug, Default)]
 pub struct RepoView {
     pub status: Option<Result<StatusSnapshot, String>>,
-    pub refs: Option<RefsSnapshot>,
-    pub stashes: Vec<StashEntry>,
-    pub worktrees: Vec<Worktree>,
-    pub remotes: Vec<String>,
+    pub refs: Option<Arc<RefsSnapshot>>,
+    pub stashes: Arc<Vec<StashEntry>>,
+    pub worktrees: Arc<Vec<Worktree>>,
+    pub remotes: Arc<Vec<Remote>>,
     pub op: Option<OpState>,
     pub last_message: String,
+    /// Le dernier fetch a été refusé par le serveur (authentification) : ce qu'a dit git.
+    pub auth_error: Option<String>,
+    /// DragonTree n'a toujours pas lu le dépôt après un long moment.
+    pub slow: bool,
     pub log: Option<Result<Vec<Commit>, String>>,
+    /// Date (secondes) des commits pointés par les branches et les étiquettes, lue à part.
+    pub tips: Arc<HashMap<Oid, i64>>,
+    /// Lignes demandées de la liste par pages de l'écran.
+    pub count: usize,
     /// Commit (identifiant complet) → ses informations et ses fichiers.
     pub commits: HashMap<String, Result<(CommitInfo, Vec<FileChange>), String>>,
     /// Diff rendu : `w:<fichier>` (dossier de travail) ou `c:<commit>:<fichier>`.
@@ -74,12 +109,18 @@ impl RepoView {
     /// Le remote où pousser une branche sans suivi ou une étiquette : celui de la branche suivie, `origin`, le premier.
     pub fn default_remote(&self) -> Option<String> {
         let upstream = self.status().and_then(|s| s.upstream.clone());
-        let from_upstream = upstream.and_then(|u| {
-            self.remotes.iter().filter(|r| u.starts_with(&format!("{r}/"))).max_by_key(|r| r.len()).cloned()
-        });
-        from_upstream
-            .or_else(|| self.remotes.iter().find(|r| *r == "origin").cloned())
-            .or(self.remotes.first().cloned())
+        let names = || self.remotes.iter().map(|r| &r.name);
+        let from_upstream =
+            upstream.and_then(|u| names().filter(|r| u.starts_with(&format!("{r}/"))).max_by_key(|r| r.len()).cloned());
+        from_upstream.or_else(|| names().find(|r| *r == "origin").cloned()).or(names().next().cloned())
+    }
+
+    /// Les étiquettes, les plus récentes d'abord (date de leur commit, une fois lue ; sinon l'ordre inverse des noms).
+    pub fn tags_by_date(&self) -> Vec<&TagRef> {
+        let Some(refs) = &self.refs else { return Vec::new() };
+        let mut tags: Vec<&TagRef> = refs.tags.iter().rev().collect();
+        tags.sort_by_key(|t| std::cmp::Reverse(self.tips.get(&t.oid).copied().unwrap_or(i64::MIN)));
+        tags
     }
 }
 
@@ -123,7 +164,7 @@ fn change_letter(c: &FileChange) -> char {
     }
 }
 
-fn ago(t: i64, now: i64) -> String {
+pub fn ago(t: i64, now: i64) -> String {
     match now.saturating_sub(t) {
         s if s < 60 => "à l'instant".into(),
         s if s < 3600 => format!("il y a {} min", s / 60),
@@ -132,7 +173,7 @@ fn ago(t: i64, now: i64) -> String {
     }
 }
 
-fn sync(ahead: u32, behind: u32) -> String {
+pub fn sync(ahead: u32, behind: u32) -> String {
     match (ahead, behind) {
         (0, 0) => "à jour".into(),
         (a, 0) => format!("↑{a}"),
@@ -171,6 +212,53 @@ pub fn render_diff(d: &FileDiff) -> Vec<(u8, String)> {
     out
 }
 
+/// Ce qui n'est pas encore lu ; `slow` : DragonTree le lit depuis longtemps, peut-être en vain (sa lecture ratée ne se
+/// dit que sur le PC).
+pub fn reading(s: &mut Screen, text: &str, slow: bool) {
+    s.empty(text);
+    if slow {
+        s.note(
+            "DragonTree n'a pas encore lu ce dépôt : il est peut-être très gros, ou sa lecture a échoué (voir ses \
+             notifications sur le PC). « Actualiser » le fait relire.",
+            Tone::Warn,
+        );
+    }
+}
+
+/// La ligne qui allonge une liste par pages : `shown` lignes montrées sur `total` ; rien si tout est montré. Au-delà de
+/// [`PAGE_MAX`], la suite est sur le PC.
+pub fn more_row(shown: usize, total: usize, what: &str) -> Option<Row> {
+    if shown >= total {
+        return None;
+    }
+    let left = total - shown;
+    if shown >= PAGE_MAX {
+        return Some(Row::new(format!("… et {left} {what} de plus : voir sur le PC")).glyph("🖥️").key("plus"));
+    }
+    let next = left.min(PAGE).min(PAGE_MAX - shown);
+    Some(
+        Row::new(format!("{next} {what} de plus"))
+            .subtitle(format!("{shown} sur {total}"))
+            .glyph("⬇️")
+            .key("plus")
+            .tap(Act::new("plus", "Afficher la suite")),
+    )
+}
+
+/// Les quatre onglets d'un dépôt ; `history` : le chemin de l'historique montré (celui de la branche courante, ou de
+/// toutes). L'onglet État compte les modifications.
+pub fn with_tabs(mut s: Screen, base: &str, history: &str, v: &RepoView) -> Screen {
+    let changes = v.status().map_or(0, |st| st.entries.len());
+    let tab = |label: &str, path: String, badge: String| Tab { label: label.into(), path, badge };
+    s.tabs = vec![
+        tab("État", base.into(), if changes > 0 { changes.to_string() } else { String::new() }),
+        tab("Historique", history.into(), String::new()),
+        tab("Branches", format!("{base}/branches"), String::new()),
+        tab("Plus", format!("{base}/plus"), String::new()),
+    ];
+    s
+}
+
 /// Le bandeau d'une opération en cours, et ses boutons (comme celui de DragonTree : continuer une fois les conflits
 /// résolus).
 fn op_block(s: &mut Screen, base: &str, v: &RepoView) {
@@ -178,7 +266,7 @@ fn op_block(s: &mut Screen, base: &str, v: &RepoView) {
     let conflicts = v.status().map_or(0, |st| st.conflicted().len());
     let text = if conflicts > 0 {
         format!(
-            "{} en cours : {conflicts} conflit(s) à résoudre (Modifications, ou dans DragonTree sur le PC), puis continuer.",
+            "{} en cours : {conflicts} conflit(s) à résoudre (ci-dessous, ou dans DragonTree sur le PC), puis continuer.",
             op_name(&op)
         )
     } else {
@@ -208,17 +296,85 @@ fn op_block(s: &mut Screen, base: &str, v: &RepoView) {
     s.buttons(acts);
 }
 
-/// L'accueil d'un dépôt. `job` : ce qu'a donné la dernière opération (ou celle en cours, `busy`).
-pub fn overview(base: &str, name: &str, path: &str, v: &RepoView, job: Option<(&str, Tone)>, busy: bool) -> Screen {
-    let mut s = Screen::new(name).subtitle(path);
-    s.acts.push(Act::new("actualiser", "Actualiser").glyph("🔄"));
-    s.acts.push(Act::new("pc", "Ouvrir dans DragonTree sur le PC").glyph("🖥️"));
-    if let Some((text, tone)) = job {
-        s.note(text, tone);
+fn commit_act() -> Act {
+    Act::new("valider", "Valider…")
+        .glyph("✅")
+        .primary()
+        .input("Message du commit", "Ce que fait ce commit")
+        .multiline()
+}
+
+/// Ce qu'on fait des modifications (barre du haut) : valider, corriger le dernier commit, tout indexer ou désindexer,
+/// mettre de côté, tout annuler.
+fn change_acts(v: &RepoView, st: &StatusSnapshot) -> Vec<Act> {
+    let (staged, unstaged) = (st.staged(), st.unstaged());
+    let mut acts = Vec::new();
+    if !staged.is_empty() {
+        acts.push(commit_act());
     }
+    if !v.last_message.is_empty() {
+        acts.push(
+            Act::new("corriger", "Corriger le dernier commit…")
+                .glyph("✏️")
+                .input("Message du commit corrigé", "")
+                .input_value(v.last_message.trim())
+                .multiline(),
+        );
+    }
+    if !unstaged.is_empty() {
+        acts.push(Act::new("tout-indexer", "Tout indexer").glyph("➕"));
+    }
+    if !staged.is_empty() {
+        acts.push(Act::new("tout-desindexer", "Tout désindexer").glyph("➖"));
+    }
+    if !st.entries.is_empty() {
+        acts.push(Act::new("mettre-de-cote", "Mettre de côté (stash)…").glyph("📦").input("Message (facultatif)", ""));
+        acts.push(
+            Act::new("tout-annuler", "Tout annuler")
+                .glyph("↩️")
+                .danger()
+                .confirm("Annuler toutes les modifications ? Elles seront perdues, fichiers non suivis compris."),
+        );
+    }
+    acts
+}
+
+/// Le bouton du bas : valider ce qui est indexé, sinon tout indexer.
+fn commit_buttons(s: &mut Screen, st: &StatusSnapshot) {
+    if !st.staged().is_empty() {
+        s.buttons(vec![commit_act()]);
+    } else if !st.unstaged().is_empty() {
+        s.buttons(vec![Act::new("tout-indexer", "Tout indexer").primary()]);
+    }
+}
+
+/// Fetch, pull et push selon le suivi ; le push forcé n'est jamais un bouton (menu de l'écran, avec confirmation).
+fn net_buttons(st: &StatusSnapshot) -> Vec<Act> {
+    let mut acts = vec![Act::new("fetch", "Fetch").glyph("⬇️")];
+    let diverged = st.ahead > 0 && st.behind > 0;
+    if st.upstream.is_some() && diverged {
+        acts.push(
+            Act::new("pull-fusion", "Pull (fusion)")
+                .confirm("Fusionner la branche distante dans la vôtre (un commit de fusion) ?"),
+        );
+        acts.push(Act::new("pull-rebase", "Pull (rebase)").confirm("Rejouer vos commits sur la branche distante ?"));
+    } else if st.upstream.is_some() {
+        acts.push(Act::new("pull", "Pull"));
+        acts.push(Act::new("push", "Push").primary().confirm("Pousser la branche vers sa branche distante ?"));
+    } else if let Some(b) = &st.branch {
+        acts.push(Act::new(format!("publier:{b}"), "Publier la branche").primary());
+    }
+    acts
+}
+
+/// L'onglet État d'un dépôt.
+pub fn overview(base: &str, name: &str, path: &str, v: &RepoView, busy: bool) -> Screen {
+    let mut s = with_tabs(Screen::new(name).subtitle(path), base, &format!("{base}/historique"), v);
+    s.acts.push(Act::new("actualiser", "Actualiser").glyph("🔄"));
+    s.acts.push(Act::new("pc", "Afficher dans DragonTree sur le PC").glyph("🖥️"));
     let st = match &v.status {
         None => {
-            s.empty("Lecture du dépôt…");
+            reading(&mut s, "Lecture du dépôt…", v.slow);
             return s;
         }
         Some(Err(e)) => {
@@ -227,6 +383,19 @@ pub fn overview(base: &str, name: &str, path: &str, v: &RepoView, job: Option<(&
         }
         Some(Ok(st)) => st,
     };
+    if let Some(e) = &v.auth_error {
+        s.note(format!("Le dernier fetch a été refusé par le serveur : {e}"), Tone::Warn);
+    }
+    if !busy {
+        s.acts.extend(change_acts(v, st));
+        if let Some(u) = st.upstream.as_ref().filter(|_| st.ahead > 0 && st.behind > 0) {
+            s.acts.push(Act::new("push-force", "Push forcé…").glyph("⚠️").danger().confirm(format!(
+                "Écraser {u} par votre branche ? Ses {} commit(s) que vous n'avez pas seront perdus (refusé si elle a \
+                 bougé depuis le dernier fetch).",
+                st.behind
+            )));
+        }
+    }
     op_block(&mut s, base, v);
     let branch = st.branch.clone().unwrap_or_else(|| "HEAD détachée".into());
     s.row(Row::new("Branche").detail(branch).glyph("🌿").open(format!("{base}/branches")));
@@ -234,71 +403,42 @@ pub fn overview(base: &str, name: &str, path: &str, v: &RepoView, job: Option<(&
     let tone = if st.ahead > 0 && st.behind > 0 { Tone::Warn } else { Tone::Ok };
     s.row(Row::new("Suivi").subtitle(upstream).detail(sync(st.ahead, st.behind)).glyph("🔁").tone(tone));
     if !busy {
-        let mut acts = vec![Act::new("fetch", "Fetch").glyph("⬇️")];
-        if st.ahead > 0 && st.behind > 0 {
-            acts.push(
-                Act::new("pull-fusion", "Pull (fusion)")
-                    .confirm("Fusionner la branche distante dans la vôtre (un commit de fusion) ?"),
-            );
-            acts.push(
-                Act::new("pull-rebase", "Pull (rebase)").confirm("Rejouer vos commits sur la branche distante ?"),
-            );
-        } else if st.upstream.is_some() {
-            acts.push(Act::new("pull", "Pull"));
-        }
-        if st.upstream.is_some() && st.behind > 0 && st.ahead > 0 {
-            acts.push(
-                Act::new("push-force", "Push forcé").danger().confirm(
-                    "Écraser la branche distante (avec bail : refusé si elle a bougé depuis le dernier fetch) ?",
-                ),
-            );
-        } else if st.upstream.is_some() {
-            acts.push(Act::new("push", "Push").primary().confirm("Pousser la branche vers sa branche distante ?"));
-        } else if let Some(b) = &st.branch {
-            acts.push(Act::new(format!("publier:{b}"), "Publier la branche").primary());
-        }
-        s.buttons(acts);
-    } else {
-        s.note("Une opération est en cours sur ce dépôt.", Tone::Info);
+        s.buttons(net_buttons(st));
     }
-    let staged = st.staged().len();
-    let changes = st.entries.iter().filter(|e| e.worktree != FileState::Ignored).count();
-    s.section("Le dépôt", "");
-    let sub = if changes == 0 {
-        "rien à valider".to_string()
-    } else {
-        format!("{changes} fichier(s), dont {staged} indexé(s)")
-    };
-    let mut row = Row::new("Modifications").subtitle(sub).glyph("✏️").open(format!("{base}/modifs"));
-    if changes > 0 {
-        row = row.badge(changes.to_string());
+    if st.entries.is_empty() {
+        s.band(Band::new("", "Modifications"));
+        s.empty("Rien à valider : le dossier de travail est propre.");
+        return s;
     }
-    s.row(row);
-    s.row(Row::new("Historique").subtitle("Les derniers commits").glyph("🕘").open(format!("{base}/historique")));
-    let (locals, remotes) = v.refs.as_ref().map_or((0, 0), |r| (r.locals.len(), r.remotes.len()));
-    s.row(
-        Row::new("Branches")
-            .subtitle(format!("{locals} locale(s), {remotes} distante(s)"))
-            .glyph("🌿")
-            .open(format!("{base}/branches")),
-    );
-    s.row(
-        Row::new("Remises")
-            .subtitle(format!("{} remise(s) (stash)", v.stashes.len()))
-            .glyph("📦")
-            .open(format!("{base}/remises")),
-    );
-    let tags = v.refs.as_ref().map_or(0, |r| r.tags.len());
-    s.row(
-        Row::new("Étiquettes").subtitle(format!("{tags} étiquette(s)")).glyph("🏷️").open(format!("{base}/etiquettes")),
-    );
-    if v.worktrees.len() > 1 {
+    let mut left = CHANGES_INLINE;
+    for (key, title, files, staged, tone) in [
+        ("conflits", "Conflits", st.conflicted(), false, Some(Tone::Danger)),
+        ("indexe", "Indexé", st.staged(), true, None),
+        ("non-indexe", "Non indexé", st.unstaged(), false, None),
+    ] {
+        if files.is_empty() || left == 0 {
+            continue;
+        }
+        let mut band = Band::new(key, title).aside(files.len().to_string());
+        if let Some(t) = tone {
+            band = band.tone(t);
+        }
+        s.band(band);
+        for e in files.iter().take(left) {
+            s.row(quiet(file_row(base, v, e, staged), busy));
+        }
+        left = left.saturating_sub(files.len());
+    }
+    if st.entries.len() > CHANGES_INLINE {
         s.row(
-            Row::new("Worktrees")
-                .subtitle(format!("{} worktree(s)", v.worktrees.len()))
-                .glyph("🌳")
-                .open(format!("{base}/worktrees")),
+            Row::new(format!("Tout voir ({} fichiers)", st.entries.len()))
+                .glyph("📋")
+                .key("tout-voir")
+                .open(format!("{base}/modifs")),
         );
+    }
+    if !busy {
+        commit_buttons(&mut s, st);
     }
     s
 }
@@ -328,7 +468,11 @@ fn conflict_acts(v: &RepoView, e: &StatusEntry) -> Vec<Act> {
 
 fn file_row(base: &str, v: &RepoView, e: &StatusEntry, staged: bool) -> Row {
     let key = file_key(&e.path);
-    let mut row = Row::new(&e.path).glyph(letter(e, staged).to_string()).open(format!("{base}/fichier/{key}"));
+    // Un fichier en partie indexé est dans les deux listes : sa ligne a une clé par liste.
+    let mut row = Row::new(&e.path)
+        .key(format!("{}:{key}", if staged { "i" } else { "w" }))
+        .glyph(letter(e, staged).to_string())
+        .open(format!("{base}/fichier/{key}"));
     if let Some(old) = &e.orig_path {
         row = row.subtitle(format!("renommé depuis {old}"));
     }
@@ -358,11 +502,11 @@ fn quiet(mut row: Row, busy: bool) -> Row {
     row
 }
 
-/// Les modifications : conflits, indexé, non indexé, et ce qu'on peut en faire.
+/// Toutes les modifications : conflits, indexé, non indexé, et ce qu'on peut en faire.
 pub fn changes(base: &str, v: &RepoView, busy: bool) -> Screen {
-    let mut s = Screen::new("Modifications");
+    let mut s = Screen::new("Modifications").search("Chercher un fichier");
     let Some(st) = v.status() else {
-        s.empty("Lecture du dépôt…");
+        reading(&mut s, "Lecture du dépôt…", v.slow);
         return s;
     };
     let conflicts = st.conflicted();
@@ -370,70 +514,30 @@ pub fn changes(base: &str, v: &RepoView, busy: bool) -> Screen {
     let unstaged = st.unstaged();
     s.subtitle = format!("{} indexé(s), {} non indexé(s)", staged.len(), unstaged.len());
     if !busy {
-        if !staged.is_empty() {
-            s.acts.push(
-                Act::new("valider", "Valider…")
-                    .glyph("✅")
-                    .primary()
-                    .input("Message du commit", "Ce que fait ce commit")
-                    .multiline(),
-            );
-        }
-        if !v.last_message.is_empty() {
-            s.acts.push(
-                Act::new("corriger", "Corriger le dernier commit…")
-                    .glyph("✏️")
-                    .input("Message du commit corrigé", "")
-                    .input_value(v.last_message.trim())
-                    .multiline(),
-            );
-        }
-        if !unstaged.is_empty() {
-            s.acts.push(Act::new("tout-indexer", "Tout indexer").glyph("➕"));
-        }
-        if !staged.is_empty() {
-            s.acts.push(Act::new("tout-desindexer", "Tout désindexer").glyph("➖"));
-        }
-        if !st.entries.is_empty() {
-            s.acts.push(
-                Act::new("mettre-de-cote", "Mettre de côté (stash)…").glyph("📦").input("Message (facultatif)", ""),
-            );
-            s.acts.push(
-                Act::new("tout-annuler", "Tout annuler")
-                    .glyph("↩️")
-                    .danger()
-                    .confirm("Annuler toutes les modifications ? Elles seront perdues, fichiers non suivis compris."),
-            );
-        }
+        s.acts = change_acts(v, st);
     }
     if st.entries.is_empty() {
         s.empty("Rien à valider : le dossier de travail est propre.");
         return s;
     }
-    if !conflicts.is_empty() {
-        s.section("Conflits", conflicts.len().to_string());
-        for e in conflicts {
-            s.row(quiet(file_row(base, v, e, false), busy));
+    for (key, title, files, is_staged) in [
+        ("conflits", "Conflits", conflicts, false),
+        ("indexe", "Indexé", staged, true),
+        ("non-indexe", "Non indexé", unstaged, false),
+    ] {
+        if files.is_empty() {
+            continue;
+        }
+        s.band(Band::new(key, title).aside(files.len().to_string()));
+        for e in files.iter().take(FILES_MAX) {
+            s.row(quiet(file_row(base, v, e, is_staged), busy));
+        }
+        if files.len() > FILES_MAX {
+            s.note(format!("… et {} autres : voir sur le PC.", files.len() - FILES_MAX), Tone::Info);
         }
     }
-    if !staged.is_empty() {
-        s.section("Indexé", staged.len().to_string());
-        for e in staged {
-            s.row(quiet(file_row(base, v, e, true), busy));
-        }
-    }
-    if !unstaged.is_empty() {
-        s.section("Non indexé", unstaged.len().to_string());
-        for e in unstaged {
-            s.row(quiet(file_row(base, v, e, false), busy));
-        }
-    }
-    if !busy && !st.staged().is_empty() {
-        s.buttons(vec![
-            Act::new("valider", "Valider…").primary().input("Message du commit", "Ce que fait ce commit").multiline(),
-        ]);
-    } else if !busy && !st.unstaged().is_empty() {
-        s.buttons(vec![Act::new("tout-indexer", "Tout indexer").primary()]);
+    if !busy {
+        commit_buttons(&mut s, st);
     }
     s
 }
@@ -442,7 +546,7 @@ pub fn changes(base: &str, v: &RepoView, busy: bool) -> Screen {
 pub fn file(v: &RepoView, key: &str, busy: bool) -> Option<Screen> {
     if v.status().is_none() {
         let mut s = Screen::new("Fichier");
-        s.empty("Lecture du dépôt…");
+        reading(&mut s, "Lecture du dépôt…", v.slow);
         return Some(s);
     }
     let e = v.entry(key)?;
@@ -478,11 +582,12 @@ pub fn file(v: &RepoView, key: &str, busy: bool) -> Option<Screen> {
 
 /// L'historique de la branche courante.
 pub fn history(base: &str, v: &RepoView, now: i64) -> Screen {
-    let mut s = Screen::new("Historique").subtitle(v.current_branch().unwrap_or_else(|| "HEAD détachée".into()));
+    let s = Screen::new("Historique").subtitle(v.current_branch().unwrap_or_else(|| "HEAD détachée".into()));
+    let mut s = with_tabs(s, base, &format!("{base}/historique"), v);
     s.acts.push(Act::new("actualiser", "Actualiser").glyph("🔄"));
     match &v.log {
         None => {
-            s.empty("Lecture de l'historique…");
+            reading(&mut s, "Lecture de l'historique…", v.slow);
         }
         Some(Err(e)) => {
             s.note(e, Tone::Danger);
@@ -498,6 +603,7 @@ pub fn history(base: &str, v: &RepoView, now: i64) -> Screen {
                         .subtitle(format!("{} · {}", c.author, ago(c.author_time, now)))
                         .detail(c.id.short())
                         .glyph(glyph)
+                        .key(c.id.to_hex())
                         .open(format!("{base}/commit/{}", c.id.to_hex())),
                 );
             }
@@ -577,14 +683,19 @@ pub fn commit(base: &str, v: &RepoView, id: &str, now: i64, busy: bool) -> Scree
                 );
             }
             s.section("Fichiers", files.len().to_string());
-            for f in files {
+            for f in files.iter().take(FILES_MAX) {
+                let key = file_key(&f.path);
                 let mut row = Row::new(&f.path)
                     .glyph(change_letter(f).to_string())
-                    .open(format!("{base}/commit/{id}/{}", file_key(&f.path)));
+                    .key(&key)
+                    .open(format!("{base}/commit/{id}/{key}"));
                 if let Some(old) = &f.old_path {
                     row = row.subtitle(format!("depuis {old}"));
                 }
                 s.row(row);
+            }
+            if files.len() > FILES_MAX {
+                s.note(format!("… et {} autres : voir sur le PC.", files.len() - FILES_MAX), Tone::Info);
             }
         }
     }
@@ -617,10 +728,10 @@ pub fn commit_file(v: &RepoView, id: &str, key: &str) -> Option<Screen> {
 }
 
 /// Les branches locales et distantes.
-pub fn branches(v: &RepoView, busy: bool) -> Screen {
-    let mut s = Screen::new("Branches");
+pub fn branches(base: &str, v: &RepoView, busy: bool) -> Screen {
+    let mut s = with_tabs(Screen::new("Branches"), base, &format!("{base}/historique"), v);
     let Some(refs) = &v.refs else {
-        s.empty("Lecture des branches…");
+        reading(&mut s, "Lecture des branches…", v.slow);
         return s;
     };
     let current = refs.current_branch().map(str::to_string);
@@ -722,89 +833,154 @@ pub fn branches(v: &RepoView, busy: bool) -> Screen {
     s
 }
 
-/// Les remises (stash).
-pub fn stashes(v: &RepoView, now: i64, busy: bool) -> Screen {
-    let mut s = Screen::new("Remises").subtitle("git stash");
+fn stash_row(st: &StashEntry, now: i64, busy: bool) -> Row {
+    let id = st.oid.to_hex();
+    let mut row = Row::new(&st.message).subtitle(ago(st.time, now)).glyph("📦").key(format!("s:{id}"));
+    if !busy {
+        row = row
+            .act(Act::new(format!("appliquer:{id}"), "Appliquer").glyph("📥"))
+            .act(Act::new(format!("depiler:{id}"), "Appliquer et retirer").glyph("📤"))
+            .act(
+                Act::new(format!("jeter:{id}"), "Jeter")
+                    .glyph("🗑️")
+                    .danger()
+                    .confirm("Jeter cette remise ? Son contenu sera perdu."),
+            );
+    }
+    row
+}
+
+fn tag_row(base: &str, t: &TagRef, v: &RepoView, now: i64, busy: bool) -> Row {
+    let mut row = Row::new(&t.name)
+        .detail(t.oid.short())
+        .glyph("🏷️")
+        .key(format!("t:{}", t.name))
+        .open(format!("{base}/commit/{}", t.oid.to_hex()));
+    let mut sub = Vec::new();
+    if t.annotated {
+        sub.push("annotée".to_string());
+    }
+    if let Some(at) = v.tips.get(&t.oid) {
+        sub.push(ago(*at, now));
+    }
+    row = row.subtitle(sub.join(" · "));
+    if !busy {
+        row = row.act(Act::new(format!("pousser-etiquette:{}", t.name), "Pousser").glyph("⬆️")).act(
+            Act::new(format!("supprimer-etiquette:{}", t.name), "Supprimer (en local)")
+                .glyph("🗑️")
+                .danger()
+                .confirm(format!("Supprimer l'étiquette {} de ce dépôt ?", t.name)),
+        );
+    }
+    row
+}
+
+fn worktree_row(w: &Worktree, busy: bool) -> Row {
+    let name = w.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut row = Row::new(name)
+        .subtitle(w.branch.clone().unwrap_or_else(|| "HEAD détachée".into()))
+        .detail(if w.is_main { "principal" } else { "" })
+        .glyph("🌳")
+        .key(format!("w:{}", file_key(&w.path.to_string_lossy())));
+    if w.is_current {
+        row = row.badge("celui-ci");
+    }
+    if w.prunable {
+        row = row.tone(Tone::Warn).subtitle("dossier disparu");
+    }
+    if !busy && !w.is_main && !w.is_current && !w.locked {
+        row = row.act(
+            Act::new(format!("supprimer-worktree:{}", file_key(&w.path.to_string_lossy())), "Supprimer")
+                .glyph("🗑️")
+                .danger()
+                .confirm(format!("Supprimer le worktree {} ? (refusé s'il a des modifications)", w.path.display())),
+        );
+    }
+    row
+}
+
+/// L'onglet Plus : remises, étiquettes récentes, worktrees, remotes, et DragonTree sur le PC.
+pub fn more(base: &str, v: &RepoView, now: i64, busy: bool) -> Screen {
+    let mut s = with_tabs(Screen::new("Plus"), base, &format!("{base}/historique"), v);
+    s.acts.push(Act::new("pc", "Afficher dans DragonTree sur le PC").glyph("🖥️"));
     if !busy {
         s.acts.push(Act::new("mettre-de-cote", "Mettre de côté…").glyph("📦").input("Message (facultatif)", ""));
+        s.acts.push(Act::new("nouvelle-etiquette", "Nouvelle étiquette sur HEAD…").glyph("🏷️").input("Nom", "v1.2.0"));
+        if v.worktrees.iter().any(|w| w.prunable) {
+            s.acts.push(Act::new("elaguer", "Élaguer les worktrees disparus").glyph("🧹"));
+        }
     }
+    s.band(Band::new("remises", "Remises (stash)").glyph("📦").aside(v.stashes.len().to_string()));
     if v.stashes.is_empty() {
         s.empty("Aucune remise.");
     }
-    for st in &v.stashes {
-        let id = st.oid.to_hex();
-        let mut row = Row::new(&st.message).subtitle(ago(st.time, now)).glyph("📦");
-        if !busy {
-            row = row
-                .act(Act::new(format!("appliquer:{id}"), "Appliquer").glyph("📥"))
-                .act(Act::new(format!("depiler:{id}"), "Appliquer et retirer").glyph("📤"))
-                .act(
-                    Act::new(format!("jeter:{id}"), "Jeter")
-                        .glyph("🗑️")
-                        .danger()
-                        .confirm("Jeter cette remise ? Son contenu sera perdu."),
-                );
+    for st in v.stashes.iter() {
+        s.row(stash_row(st, now, busy));
+    }
+    let tags = v.tags_by_date();
+    s.band(Band::new("etiquettes", "Étiquettes").glyph("🏷️").aside(tags.len().to_string()));
+    if v.refs.is_none() {
+        reading(&mut s, "Lecture des étiquettes…", v.slow);
+    } else if tags.is_empty() {
+        s.empty("Aucune étiquette.");
+    }
+    for t in tags.iter().take(TAGS_INLINE) {
+        s.row(tag_row(base, t, v, now, busy));
+    }
+    if tags.len() > TAGS_INLINE {
+        s.row(
+            Row::new(format!("Toutes les étiquettes ({})", tags.len()))
+                .glyph("🏷️")
+                .key("toutes-etiquettes")
+                .open(format!("{base}/etiquettes")),
+        );
+    }
+    if v.worktrees.len() > 1 {
+        s.band(Band::new("worktrees", "Worktrees").glyph("🌳").aside(v.worktrees.len().to_string()));
+        for w in v.worktrees.iter() {
+            s.row(worktree_row(w, busy));
+        }
+    }
+    s.band(Band::new("remotes", "Remotes").glyph("☁️").aside(v.remotes.len().to_string()));
+    if v.remotes.is_empty() {
+        s.empty("Aucun remote : ce dépôt n'est publié nulle part.");
+    }
+    for r in v.remotes.iter() {
+        let mut row = Row::new(&r.name).subtitle(safe_url(&r.fetch_url)).glyph("☁️").key(format!("r:{}", r.name));
+        if !r.push_url.is_empty() && r.push_url != r.fetch_url {
+            row = row.detail("push à part").subtitle(format!(
+                "{} · push : {}",
+                safe_url(&r.fetch_url),
+                safe_url(&r.push_url)
+            ));
         }
         s.row(row);
     }
+    s.band(Band::new("", "DragonTree"));
+    s.buttons(vec![Act::new("pc", "Afficher dans DragonTree sur le PC").glyph("🖥️")]);
     s
 }
 
-/// Les étiquettes.
-pub fn tags(base: &str, v: &RepoView, busy: bool) -> Screen {
-    let mut s = Screen::new("Étiquettes");
+/// Toutes les étiquettes, les plus récentes d'abord, par pages de [`PAGE`].
+pub fn tags(base: &str, v: &RepoView, now: i64, busy: bool) -> Screen {
+    let mut s = Screen::new("Étiquettes").search("Chercher une étiquette");
     if !busy {
         s.acts.push(Act::new("nouvelle-etiquette", "Nouvelle étiquette sur HEAD…").glyph("🏷️").input("Nom", "v1.2.0"));
     }
-    let list = v.refs.as_ref().map(|r| r.tags.clone()).unwrap_or_default();
+    if v.refs.is_none() {
+        reading(&mut s, "Lecture des étiquettes…", v.slow);
+        return s;
+    }
+    let list = v.tags_by_date();
+    s.subtitle = format!("{} étiquette(s), les plus récentes d'abord", list.len());
     if list.is_empty() {
         s.empty("Aucune étiquette.");
     }
-    for t in list.iter().rev() {
-        let mut row =
-            Row::new(&t.name).detail(t.oid.short()).glyph("🏷️").open(format!("{base}/commit/{}", t.oid.to_hex()));
-        if t.annotated {
-            row = row.subtitle("annotée");
-        }
-        if !busy {
-            row = row.act(Act::new(format!("pousser-etiquette:{}", t.name), "Pousser").glyph("⬆️")).act(
-                Act::new(format!("supprimer-etiquette:{}", t.name), "Supprimer (en local)")
-                    .glyph("🗑️")
-                    .danger()
-                    .confirm(format!("Supprimer l'étiquette {} de ce dépôt ?", t.name)),
-            );
-        }
-        s.row(row);
+    let shown = v.count.max(PAGE).min(list.len());
+    for t in &list[..shown] {
+        s.row(tag_row(base, t, v, now, busy));
     }
-    s
-}
-
-/// Les worktrees.
-pub fn worktrees(v: &RepoView, busy: bool) -> Screen {
-    let mut s = Screen::new("Worktrees");
-    if !busy && v.worktrees.iter().any(|w| w.prunable) {
-        s.acts.push(Act::new("elaguer", "Élaguer les disparus").glyph("🧹"));
-    }
-    for w in &v.worktrees {
-        let name = w.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let mut row = Row::new(name)
-            .subtitle(w.branch.clone().unwrap_or_else(|| "HEAD détachée".into()))
-            .detail(if w.is_main { "principal" } else { "" })
-            .glyph("🌳");
-        if w.is_current {
-            row = row.badge("celui-ci");
-        }
-        if w.prunable {
-            row = row.tone(Tone::Warn).subtitle("dossier disparu");
-        }
-        if !busy && !w.is_main && !w.is_current && !w.locked {
-            row = row.act(
-                Act::new(format!("supprimer-worktree:{}", file_key(&w.path.to_string_lossy())), "Supprimer")
-                    .glyph("🗑️")
-                    .danger()
-                    .confirm(format!("Supprimer le worktree {} ? (refusé s'il a des modifications)", w.path.display())),
-            );
-        }
+    if let Some(row) = more_row(shown, list.len(), "étiquettes") {
         s.row(row);
     }
     s
@@ -975,6 +1151,10 @@ mod tests {
         StatusEntry { path: path.into(), orig_path: None, index, worktree, conflict: None, is_submodule: false }
     }
 
+    fn oid_of(c: char) -> Oid {
+        Oid::from_hex(&c.to_string().repeat(40)).unwrap()
+    }
+
     fn view() -> RepoView {
         let status = StatusSnapshot {
             branch: Some("main".into()),
@@ -992,14 +1172,13 @@ mod tests {
                 },
             ],
         };
-        let oid = |c: char| Oid::from_hex(&c.to_string().repeat(40)).unwrap();
         let refs = RefsSnapshot {
             head: HeadState::Branch("main".into()),
-            head_oid: Some(oid('a')),
+            head_oid: Some(oid_of('a')),
             locals: vec![
                 LocalBranch {
                     name: "main".into(),
-                    oid: oid('a'),
+                    oid: oid_of('a'),
                     upstream: Some("origin/main".into()),
                     ahead: 1,
                     behind: 0,
@@ -1008,7 +1187,7 @@ mod tests {
                 },
                 LocalBranch {
                     name: "feature/x".into(),
-                    oid: oid('b'),
+                    oid: oid_of('b'),
                     upstream: None,
                     ahead: 0,
                     behind: 0,
@@ -1020,35 +1199,42 @@ mod tests {
                 remote: "origin".into(),
                 name: "autre".into(),
                 full: "refs/remotes/origin/autre".into(),
-                oid: oid('c'),
+                oid: oid_of('c'),
                 is_symbolic: false,
             }],
             tags: Vec::new(),
             labels: Default::default(),
         };
+        let origin = Remote {
+            name: "origin".into(),
+            fetch_url: "https://jeton@exemple.org/depot.git".into(),
+            push_url: "https://jeton@exemple.org/depot.git".into(),
+        };
         RepoView {
             status: Some(Ok(status)),
-            refs: Some(refs),
-            remotes: vec!["origin".into()],
+            refs: Some(Arc::new(refs)),
+            remotes: Arc::new(vec![origin]),
             op: Some(OpState::None),
             last_message: "Premier jet".into(),
             ..Default::default()
         }
     }
 
-    #[test]
-    fn changes_are_split_and_each_file_has_its_gestures() {
-        let v = view();
-        let s = changes("depot/k", &v, false);
-        let sections: Vec<&str> = s
-            .blocks
+    fn titles(s: &Screen) -> Vec<&str> {
+        s.blocks
             .iter()
             .filter_map(|b| match b {
                 Block::Section { title, .. } => Some(title.as_str()),
                 _ => None,
             })
-            .collect();
-        assert_eq!(sections, ["Conflits", "Indexé", "Non indexé"]);
+            .collect()
+    }
+
+    #[test]
+    fn changes_are_split_and_each_file_has_its_gestures() {
+        let v = view();
+        let s = changes("depot/k", &v, false);
+        assert_eq!(titles(&s), ["Conflits", "Indexé", "Non indexé"]);
         let ids = s.action_ids();
         let a = file_key("src/a.rs");
         let b = file_key("src/b.rs");
@@ -1093,7 +1279,7 @@ mod tests {
     #[test]
     fn branches_offer_switch_merge_rebase_and_tracking() {
         let v = view();
-        let s = branches(&v, false);
+        let s = branches("depot/k", &v, false);
         let ids = s.action_ids();
         for id in ["basculer:feature/x", "fusionner:feature/x", "rebaser:feature/x", "supprimer-branche:feature/x"] {
             assert!(ids.contains(id), "{id}");
@@ -1106,7 +1292,7 @@ mod tests {
     fn an_operation_in_progress_can_be_continued_or_aborted() {
         let mut v = view();
         v.op = Some(OpState::Rebase { interactive: false });
-        let s = overview("depot/k", "ozmo", r"C:\dev\ozmo", &v, None, false);
+        let s = overview("depot/k", "ozmo", r"C:\dev\ozmo", &v, false);
         let ids = s.action_ids();
         // Un conflit reste : comme dans DragonTree, pas de « Continuer » avant sa résolution.
         assert!(!ids.contains("continuer") && ids.contains("abandonner") && ids.contains("passer"));
@@ -1116,10 +1302,78 @@ mod tests {
         if let Some(Ok(st)) = &mut v.status {
             st.entries.retain(|e| e.conflict.is_none());
         }
-        assert!(
-            overview("depot/k", "ozmo", "", &v, None, false).action_ids().contains("continuer"),
-            "résolu : continuer"
+        assert!(overview("depot/k", "ozmo", "", &v, false).action_ids().contains("continuer"), "résolu : continuer");
+    }
+
+    /// L'onglet État : quatre onglets aux chemins absolus, les modifications sur place (30 au plus, puis « Tout
+    /// voir »), et le push forcé seulement dans le menu de l'écran, avec une question qui dit ce qui sera perdu.
+    #[test]
+    fn the_state_tab_shows_changes_in_place_and_keeps_force_push_in_the_menu() {
+        let mut v = view();
+        let s = overview("depot/k", "ozmo", "", &v, false);
+        let tabs: Vec<(&str, &str)> = s.tabs.iter().map(|t| (t.label.as_str(), t.path.as_str())).collect();
+        assert_eq!(
+            tabs,
+            [
+                ("État", "depot/k"),
+                ("Historique", "depot/k/historique"),
+                ("Branches", "depot/k/branches"),
+                ("Plus", "depot/k/plus")
+            ]
         );
+        assert_eq!(s.tabs[0].badge, "4");
+        assert_eq!(titles(&s), ["Conflits", "Indexé", "Non indexé"]);
+        assert!(!s.opens().contains("depot/k/modifs"), "tout tient : pas de « Tout voir »");
+        if let Some(Ok(st)) = &mut v.status {
+            st.ahead = 2;
+            st.behind = 3;
+            for i in 0..40 {
+                st.entries.push(entry(&format!("f{i}.txt"), FileState::Untracked, FileState::Untracked));
+            }
+        }
+        let s = overview("depot/k", "ozmo", "", &v, false);
+        let files = s
+            .blocks
+            .iter()
+            .filter(|b| matches!(b, Block::Row(r) if r.open.as_deref().is_some_and(|o| o.contains("/fichier/"))))
+            .count();
+        assert_eq!(files, CHANGES_INLINE);
+        assert!(s.opens().contains("depot/k/modifs"), "Tout voir");
+        let buttons: Vec<&str> = s
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::Buttons { acts } => Some(acts.iter().map(|a| a.id.as_str())),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert!(!buttons.contains(&"push-force"), "jamais un bouton : {buttons:?}");
+        let force = s.acts.iter().find(|a| a.id == "push-force").expect("dans le menu");
+        assert!(force.confirm.as_deref().is_some_and(|q| q.contains("3 commit(s)")), "{force:?}");
+    }
+
+    /// L'onglet Plus : remises, étiquettes récentes (puis toutes, par pages), remotes sans identifiants.
+    #[test]
+    fn the_more_tab_lists_stashes_tags_and_remotes_without_credentials() {
+        let mut v = view();
+        let mut refs = (**v.refs.as_ref().unwrap()).clone();
+        refs.tags = (0..250).map(|i| TagRef { name: format!("v{i}"), oid: oid_of('d'), annotated: false }).collect();
+        v.refs = Some(Arc::new(refs));
+        let s = more("depot/k", &v, 0, false);
+        assert_eq!(titles(&s), ["Remises (stash)", "Étiquettes", "Remotes", "DragonTree"]);
+        assert!(s.opens().contains("depot/k/etiquettes"));
+        let text = format!("{s:?}");
+        assert!(text.contains("https://exemple.org/depot.git") && !text.contains("jeton"), "{text}");
+        let all = tags("depot/k", &v, 0, false);
+        let rows = all.blocks.iter().filter(|b| matches!(b, Block::Row(_))).count();
+        assert_eq!(rows, PAGE + 1, "une page, et « plus »");
+        assert!(all.action_ids().contains("plus"));
+        v.count = 2 * PAGE;
+        let rows = tags("depot/k", &v, 0, false).blocks.iter().filter(|b| matches!(b, Block::Row(_))).count();
+        assert_eq!(rows, 2 * PAGE + 1);
+        assert_eq!(safe_url("git@exemple.org:a/b.git"), "git@exemple.org:a/b.git");
+        assert_eq!(safe_url("https://moi:secret@exemple.org/a"), "https://exemple.org/a");
     }
 
     #[test]
