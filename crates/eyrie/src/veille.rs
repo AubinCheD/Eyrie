@@ -367,6 +367,8 @@ pub trait Os: Send + Sync {
     fn unseal(&self, sealed: &[u8]) -> Result<Vec<u8>, String>;
     /// L'exécutable et son dossier sont-ils à l'abri des autres comptes du poste ? Sinon, pourquoi.
     fn place_safe(&self, exe: &Path) -> Result<(), String>;
+    /// Eyrie tourne-t-elle en administrateur (jeton élevé) ? Le veilleur qu'elle lancerait le serait aussi.
+    fn elevated(&self) -> bool;
 }
 
 /// Le vrai système.
@@ -508,6 +510,13 @@ impl Os for System {
     fn place_safe(&self, exe: &Path) -> Result<(), String> {
         fawkes::exeplace::check(exe)
     }
+
+    fn elevated(&self) -> bool {
+        #[cfg(windows)]
+        return win::elevated();
+        #[cfg(not(windows))]
+        false
+    }
 }
 
 #[cfg(windows)]
@@ -521,7 +530,9 @@ mod win {
     use std::time::Duration;
 
     use windows_sys::Win32::Foundation::{CloseHandle, ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, HANDLE};
-    use windows_sys::Win32::Security::{EqualSid, GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser};
+    use windows_sys::Win32::Security::{
+        EqualSid, GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TOKEN_USER, TokenElevation, TokenUser,
+    };
     use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle};
     use windows_sys::Win32::System::Pipes::{GetNamedPipeServerProcessId, PeekNamedPipe};
     use windows_sys::Win32::System::Registry::{
@@ -555,6 +566,28 @@ mod win {
                 return Err(io::Error::last_os_error().to_string());
             }
             Ok(buf)
+        }
+    }
+
+    /// Le jeton d'Eyrie est-il élevé (lancée « en tant qu'administrateur ») ? Illisible : on le suppose, par prudence.
+    pub fn elevated() -> bool {
+        // SAFETY : jeton de notre processus, fermé avant de sortir ; structure de la taille annoncée.
+        unsafe {
+            let mut token: HANDLE = std::ptr::null_mut();
+            if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+                return true;
+            }
+            let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+            let mut len = 0u32;
+            let ok = GetTokenInformation(
+                token,
+                TokenElevation,
+                (&mut elevation as *mut TOKEN_ELEVATION).cast(),
+                std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+                &mut len,
+            );
+            CloseHandle(token);
+            ok == 0 || elevation.TokenIsElevated != 0
         }
     }
 
@@ -814,6 +847,8 @@ pub mod fake {
         pub unsafe_place: Mutex<Option<String>>,
         /// Le veilleur lancé sort aussitôt sans prendre le nœud (son échec est dans veille-echec.json).
         pub standby_fails: Mutex<bool>,
+        /// Eyrie tourne en administrateur.
+        pub elevated: Mutex<bool>,
         pub standby_launches: Mutex<Vec<(PathBuf, Vec<OsString>)>>,
         pub companion_launches: Mutex<Vec<(PathBuf, Vec<OsString>)>>,
         /// Les bouts des tubes du veilleur, puis ceux des compagnons, dans l'ordre d'ouverture.
@@ -942,6 +977,10 @@ pub mod fake {
 
         fn place_safe(&self, _exe: &Path) -> Result<(), String> {
             self.unsafe_place.lock().unwrap().clone().map_or(Ok(()), Err)
+        }
+
+        fn elevated(&self) -> bool {
+            *self.elevated.lock().unwrap()
         }
     }
 }

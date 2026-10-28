@@ -43,6 +43,9 @@ const RETRY: Duration = Duration::from_millis(200);
 /// Un veilleur arrêté de l'extérieur n'est pas relancé tout de suite : `tools\compagnon.ps1` l'arrête avant de
 /// recompiler son exécutable, qu'un compagnon relancé verrouillerait.
 const STANDBY_GONE: Duration = Duration::from_secs(30);
+/// Pourquoi une Eyrie en administrateur ne lance pas le veilleur.
+const ELEVATED: &str = "Eyrie tourne en administrateur : elle ne lance pas le veilleur, qui démarrerait Eyrie en \
+                        administrateur ; il démarrera à la prochaine ouverture de session Windows";
 
 /// Le compagnon que tient Eyrie.
 enum Conn {
@@ -243,13 +246,20 @@ impl Plan {
                 && !tried
             {
                 tried = true;
-                match self.os.spawn_standby(&exe, args) {
-                    Ok(p) => {
-                        launched = Some((p, now()));
-                        deadline = Instant::now() + STANDBY_START;
-                        continue;
+                // Lancé par une Eyrie en administrateur, le veilleur le serait aussi : il lui survivrait, démarrerait
+                // Eyrie en administrateur pour un téléphone, et une Eyrie ordinaire ne pourrait ni le reconnaître ni
+                // l'arrêter. Il démarre à l'ouverture de session (valeur Run), sans élévation ; s'y rattacher va.
+                if self.os.elevated() {
+                    *lock(&link.fallback) = Some(ELEVATED.into());
+                } else {
+                    match self.os.spawn_standby(&exe, args) {
+                        Ok(p) => {
+                            launched = Some((p, now()));
+                            deadline = Instant::now() + STANDBY_START;
+                            continue;
+                        }
+                        Err(e) => *lock(&link.fallback) = Some(format!("lancement du veilleur : {e}")),
                     }
-                    Err(e) => *lock(&link.fallback) = Some(format!("lancement du veilleur : {e}")),
                 }
             }
             if let Some((p, at)) = &mut launched {
@@ -1056,6 +1066,32 @@ mod tests {
         assert_eq!(b.launches(), (1, 1));
         assert_eq!(b.t.standby_fallback().as_deref(), Some("tube de contrôle : refusé"));
         assert!(b.fake.run.lock().unwrap().is_some(), "le veilleur reste inscrit pour la prochaine session");
+    }
+
+    /// Eyrie lancée en administrateur ne lance pas le veilleur (il le serait aussi, lui survivrait, et démarrerait Eyrie
+    /// en administrateur pour un téléphone) : son compagnon le remplace et la page dit pourquoi. La valeur Run reste :
+    /// le veilleur démarrera sans élévation à la prochaine ouverture de session.
+    #[test]
+    fn an_elevated_eyrie_never_spawns_the_standby() {
+        let mut b = Bench::new();
+        *b.fake.elevated.lock().unwrap() = true;
+        b.mobile.wake = true;
+        b.poll();
+        let mut child = b.fake.child();
+        b.until(|b| b.t.relays());
+        assert_eq!(child.line().as_deref(), Some(relay_json().as_str()));
+        assert_eq!(b.launches(), (1, 0));
+        assert!(b.t.standby_fallback().is_some_and(|w| w.contains("administrateur")), "{:?}", b.t.standby_fallback());
+        assert!(b.fake.run.lock().unwrap().is_some(), "inscrit pour la prochaine session");
+        assert!(b.t.wake_key().is_some());
+
+        // Un veilleur déjà sur le nœud (lancé sans élévation) : Eyrie s'y rattache.
+        b.t.stop();
+        b.fake.standby_up();
+        b.poll();
+        let _pipe = b.fake.pipe();
+        b.until(|b| b.t.standby_attached());
+        assert_eq!(b.launches(), (1, 0));
     }
 
     /// Tailscale coupé avec un veilleur resté sur le nœud : il est arrêté, une fois.
