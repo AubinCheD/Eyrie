@@ -19,8 +19,8 @@ import (
 	"strings"
 	"sync"
 
-	"tailscale.com/client/local"
-	"tailscale.com/ipn"
+	"eyrie-tailnet/noeud"
+
 	"tailscale.com/logtail"
 	"tailscale.com/tsnet"
 )
@@ -106,7 +106,7 @@ func main() {
 		fail("client local : " + err.Error())
 		os.Exit(1)
 	}
-	go watch(ctx, lc)
+	go noeud.Suivre(ctx, lc, emit)
 
 	ln, err := srv.Listen("tcp", fmt.Sprintf(":%d", *port))
 	if err != nil {
@@ -129,55 +129,4 @@ func main() {
 	}, logf)
 
 	<-ctx.Done()
-}
-
-// watch suit l'état du nœud et le transmet à Eyrie ; demande un lien de connexion au besoin.
-func watch(ctx context.Context, lc *local.Client) {
-	w, err := lc.WatchIPNBus(ctx, ipn.NotifyInitialState|ipn.NotifyNoPrivateKeys)
-	if err != nil {
-		fail("suivi de l'état : " + err.Error())
-		return
-	}
-	defer w.Close()
-	asked := false
-	for {
-		n, err := w.Next()
-		if err != nil {
-			if ctx.Err() == nil {
-				fail("suivi de l'état : " + err.Error())
-			}
-			return
-		}
-		if n.BrowseToURL != nil && *n.BrowseToURL != "" {
-			emit(map[string]string{"state": "needs_login", "url": *n.BrowseToURL})
-		}
-		if n.State == nil {
-			continue
-		}
-		switch *n.State {
-		case ipn.NeedsLogin:
-			if !asked {
-				asked = true
-				if err := lc.StartLoginInteractive(ctx); err != nil {
-					fail("demande de connexion : " + err.Error())
-				}
-			}
-		case ipn.NeedsMachineAuth:
-			fail("appareil en attente d'approbation dans la console de votre tailnet")
-		case ipn.Running:
-			st, err := lc.StatusWithoutPeers(ctx)
-			if err != nil || st.Self == nil {
-				fail("état du nœud illisible")
-				continue
-			}
-			ip := ""
-			for _, a := range st.TailscaleIPs {
-				if a.Is4() {
-					ip = a.String()
-					break
-				}
-			}
-			emit(map[string]string{"state": "running", "name": strings.TrimSuffix(st.Self.DNSName, "."), "ip": ip})
-		}
-	}
 }

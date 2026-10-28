@@ -9,11 +9,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net"
-	"sync"
 	"sync/atomic"
 	"time"
+
+	"eyrie-tailnet/noeud"
 )
 
 // Connexions relayées en même temps, au plus.
@@ -118,16 +118,5 @@ func (r *relay) handle(ctx context.Context, c net.Conn, who whois, logf func(str
 	if _, err := local.Write(append(header, '\n')); err != nil {
 		return
 	}
-	var wg sync.WaitGroup
-	wg.Add(2)
-	pipe := func(dst, src net.Conn) {
-		defer wg.Done()
-		_, _ = io.Copy(dst, src)
-		// Un sens fermé ferme l'autre : le téléphone ou Eyrie a raccroché.
-		dst.Close()
-		src.Close()
-	}
-	go pipe(local, c)
-	go pipe(c, local)
-	wg.Wait()
+	noeud.Relier(local, c)
 }
