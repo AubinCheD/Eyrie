@@ -12,7 +12,8 @@
 // d'un téléphone appairé (port 4748 du tailnet, `veille.go`).
 //
 // Un seul compagnon par nœud (`verrou.go`). Codes de sortie : 0 arrêt demandé, 1 échec, 2 arguments
-// manquants, 3 nœud déjà tenu par un autre compagnon.
+// manquants, 3 nœud déjà tenu par un autre compagnon. Avec --arreter, il arrête les veilleurs lancés depuis son
+// exécutable (`arret.go`) : 0 s'ils sont tous arrêtés (ou s'il n'y en a pas), 1 sinon.
 package main
 
 import (
@@ -116,10 +117,14 @@ func run(args []string) int {
 	port := fl.Int("port", 4747, "port du tailnet où le téléphone se connecte")
 	standby := fl.Bool("veille", false, "veilleur : garde le nœud quand Eyrie est fermée, piloté par un tube nommé")
 	mobile := fl.String("mobile", "", "avec --veille : dossier du pont mobile d'Eyrie (appareils.json, veille.dpapi)")
+	stop := fl.Bool("arreter", false, "arrête les veilleurs lancés depuis cet exécutable (celui du nœud --dir, ou tous)")
 	if err := fl.Parse(args); err != nil {
 		return exitUsage
 	}
 	_ = version
+	if *stop {
+		return stopStandby(*dir)
+	}
 	if *dir == "" {
 		fail("dossier d'état manquant (--dir)")
 		return exitUsage

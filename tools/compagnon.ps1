@@ -7,7 +7,9 @@
     personnel, sans toucher au client Tailscale du PC, et relaie le téléphone vers le pont mobile d'Eyrie.
     Go est cherché dans -Go, dans le PATH, puis dans %LOCALAPPDATA%\Programs\go (archive officielle
     décompressée, sans droits d'administrateur). -Release le place dans target\release, sinon dans
-    target\debug. -Test lance d'abord ses essais.
+    target\debug. -Test lance d'abord ses essais. Un veilleur (eyrie-tailnet.exe --veille) qui tourne depuis
+    ce dossier verrouille l'exécutable : il est d'abord arrêté par son tube (--arreter), comme Eyrie le
+    ferait ; Eyrie le relancera.
 
 .EXAMPLE
     tools\compagnon.ps1 -Release
@@ -44,6 +46,13 @@ try {
     if ($Test) {
         & $Go test ./...
         if ($LASTEXITCODE -ne 0) { throw "go test a échoué (code $LASTEXITCODE)." }
+    }
+    # Le veilleur lancé depuis ce dossier tient l'exécutable : arrêté avant de le remplacer.
+    $veilleurs = @(Get-CimInstance Win32_Process -Filter "Name = 'eyrie-tailnet.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.ExecutablePath -eq $out -and $_.CommandLine -like '*--veille*' })
+    if ($veilleurs.Count -gt 0) {
+        & $out --arreter
+        if ($LASTEXITCODE -ne 0) { throw "Le veilleur ($out) ne s'est pas arrêté (code $LASTEXITCODE)." }
     }
     & $Go build -trimpath -ldflags '-s -w' -o $out .
     if ($LASTEXITCODE -ne 0) { throw "go build a échoué (code $LASTEXITCODE)." }

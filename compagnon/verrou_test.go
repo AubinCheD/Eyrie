@@ -36,6 +36,8 @@ func helper(role string) int {
 		return 0
 	case "lance":
 		return helperLaunched()
+	case "veilleur":
+		return helperStandby()
 	}
 	return 9
 }
