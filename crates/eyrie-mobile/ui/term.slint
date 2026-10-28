@@ -127,18 +127,21 @@ component CopySheet inherits Rectangle {
             flick := Flickable {
                 x: 12px;
                 width: parent.width - 24px;
-                // La souris sélectionne (bureau) ; le doigt fait défiler, l'appui long sélectionne.
+                // La souris sélectionne (bureau) ; le doigt fait défiler (dans les deux sens), l'appui long sélectionne.
                 mouse-drag-pan-enabled: false;
-                content-width: self.width;
+                content-width: max(self.width, field.preferred-width + 12px);
                 content-height: max(self.height, field.preferred-height + 24px);
+                // Les lignes du terminal gardent leurs colonnes (cadres, tableaux, diffs) : rien ne passe à la ligne, le
+                // texte défile de côté.
                 field := TextInput {
+                    x: 0;
                     y: 12px;
-                    width: flick.width;
+                    width: max(flick.width, self.preferred-width);
                     height: max(flick.height - 24px, self.preferred-height);
                     text: root.text;
                     read-only: true;
                     single-line: false;
-                    wrap: word-wrap;
+                    wrap: no-wrap;
                     vertical-alignment: top;
                     font-family: "Hack";
                     font-size: 13px;
@@ -146,15 +149,24 @@ component CopySheet inherits Rectangle {
                     selection-background-color: Theme.accent.with-alpha(0.35);
                     selection-foreground-color: Theme.term-fg;
                     accessible-label: "Texte du terminal";
-                    // Le curseur (le bout de la sélection) reste visible.
+                    // Le curseur (le bout de la sélection) reste visible ; la ligne d'un appui long se montre au milieu, depuis
+                    // son début.
                     cursor-position-changed(p) => {
                         if root.placing {
                             root.placing = false;
                             flick.content-y = max(min(0px, flick.height - flick.content-height), min(0px, flick.height / 2 - p.y - 12px));
-                        } else if p.y + 12px + flick.content-y < 0 {
-                            flick.content-y = min(0px, 8px - p.y - 12px);
-                        } else if p.y + 52px + flick.content-y > flick.height {
-                            flick.content-y = flick.height - p.y - 52px;
+                            flick.content-x = 0;
+                        } else {
+                            if p.y + 12px + flick.content-y < 0 {
+                                flick.content-y = min(0px, 8px - p.y - 12px);
+                            } else if p.y + 52px + flick.content-y > flick.height {
+                                flick.content-y = flick.height - p.y - 52px;
+                            }
+                            if p.x + flick.content-x < 0 {
+                                flick.content-x = min(0px, 8px - p.x);
+                            } else if p.x + 24px + flick.content-x > flick.width {
+                                flick.content-x = flick.width - p.x - 24px;
+                            }
                         }
                     }
                 }
