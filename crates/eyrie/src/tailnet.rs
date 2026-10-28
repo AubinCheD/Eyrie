@@ -653,9 +653,18 @@ impl Tailnet {
             .is_some_and(|r| r.link.standby.load(Ordering::Relaxed) && !r.link.ended.load(Ordering::Relaxed))
     }
 
-    /// Pourquoi le veilleur voulu ne tourne pas (le compagnon lancé par Eyrie le remplace).
+    /// Pourquoi le veilleur voulu ne tourne pas : le compagnon lancé par Eyrie le remplace, ou le lien a fini sur un
+    /// échec (tube d'un autre exécutable, nœud tenu sans tube, veilleur qui refuse Eyrie ou s'est arrêté) jusqu'à la
+    /// relance.
     pub fn standby_fallback(&self) -> Option<String> {
-        self.running.as_ref().filter(|r| r.standby).and_then(|r| lock(&r.link.fallback).clone())
+        let r = self.running.as_ref().filter(|r| r.standby)?;
+        if let Some(why) = lock(&r.link.fallback).clone() {
+            return Some(why);
+        }
+        match &*lock(&r.link.state) {
+            TailnetState::Failed(e) if r.link.ended.load(Ordering::Relaxed) => Some(e.clone()),
+            _ => None,
+        }
     }
 
     /// La clé dont chaque téléphone tire son secret de démarrage (`Welcome.wake`) : seulement pour un veilleur voulu
@@ -664,10 +673,13 @@ impl Tailnet {
         self.veille.key()
     }
 
-    /// « Réessayer » le veilleur : réglage réappliqué, et un compagnon qui le remplace est relancé.
+    /// « Réessayer » le veilleur : réglage réappliqué, et un compagnon qui le remplace, ou un lien fini, est relancé
+    /// tout de suite.
     pub fn retry_standby(&mut self) {
         self.veille.retry();
-        if self.running.as_ref().is_some_and(|r| r.standby && !r.link.standby.load(Ordering::Relaxed)) {
+        if self.running.as_ref().is_some_and(|r| {
+            r.standby && (!r.link.standby.load(Ordering::Relaxed) || r.link.ended.load(Ordering::Relaxed))
+        }) {
             self.release(Leave::Detach);
         }
     }
@@ -852,6 +864,34 @@ mod tests {
         b.until(|b| matches!(b.t.state(), Some(TailnetState::Failed(_))));
         let Some(TailnetState::Failed(e)) = b.t.state() else { unreachable!() };
         assert!(e.contains("autre.exe"), "{e}");
+        assert_eq!(b.launches(), (0, 0));
+    }
+
+    /// Le veilleur voulu, mais pas de rattachement possible (tube d'un autre exécutable, veilleur qui ferme le tube sans
+    /// un mot) : la page dit pourquoi au lieu de « Le veilleur démarre… », et « Réessayer » relance aussitôt.
+    #[test]
+    fn a_failed_attach_is_told_and_retried_at_once() {
+        let mut b = Bench::new();
+        b.mobile.wake = true;
+        b.fake.standby_up();
+        *b.fake.foreign.lock().unwrap() = Some(r"le tube est tenu par C:\autre.exe".into());
+        b.poll();
+        b.until(|b| b.t.standby_fallback().is_some());
+        assert!(b.t.standby_fallback().unwrap().contains("autre.exe"), "{:?}", b.t.standby_fallback());
+
+        // Le veilleur refuse Eyrie : il ferme le tube sans un mot.
+        *b.fake.foreign.lock().unwrap() = None;
+        b.t.retry_standby();
+        assert_eq!(b.t.standby_fallback(), None);
+        b.poll();
+        drop(b.fake.pipe());
+        b.until(|b| b.t.standby_fallback().is_some_and(|w| w.contains("refusé Eyrie")));
+        // « Réessayer » n'attend pas la relance d'un veilleur parti (30 s).
+        b.fake.standby_up();
+        b.t.retry_standby();
+        b.poll();
+        let _pipe = b.fake.pipe();
+        assert_eq!(*b.fake.attaches.lock().unwrap(), 2);
         assert_eq!(b.launches(), (0, 0));
     }
 
