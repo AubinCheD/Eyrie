@@ -18,8 +18,8 @@ use crate::store::{self, Pc, Store};
 use crate::tailnet::{self, Tailnet};
 use crate::termbuf::{self, TermBuf};
 use crate::{
-    AppWindow, CommandItem, ModuleItem, NavItem, NoteItem, PcItem, TermRow, TermSeg, Theme, UiAct, WaitItem, platform,
-    view,
+    AppWindow, CommandItem, ModuleItem, NavItem, NoteItem, PcItem, TermRow, TermSeg, Theme, UiAct, UiRow, WaitItem,
+    platform, view,
 };
 
 /// Les modules proposés dans la barre du bas tant que l'utilisateur n'a rien choisi.
@@ -84,6 +84,11 @@ pub struct Controller {
     term: TermBuf,
     term_model: Rc<VecModel<TermRow>>,
     term_dark: Option<bool>,
+    /// Les listes de l'interface, mises à jour sur place (jamais remplacées) : une ligne touchée survit aux messages.
+    models: Models,
+    /// L'écran dont les lignes sont affichées, et leurs clés et empreintes (voir [`view::patch`]).
+    shown_for: Option<(String, String)>,
+    shown: Vec<(String, u64)>,
     req: u32,
     target: Option<Target>,
     /// Ce qui a déjà été signalé (bulle ou notification du système) : rien deux fois, et rien à la première connexion
@@ -96,6 +101,42 @@ pub struct Controller {
     /// Le nœud Tailscale de l'application, au dernier relevé ; relevé chaque seconde (sauf sur le bureau, sans nœud).
     tailnet: Tailnet,
     tailnet_timer: slint::Timer,
+}
+
+/// Les modèles des listes de l'interface.
+struct Models {
+    rows: Rc<VecModel<UiRow>>,
+    acts: Rc<VecModel<UiAct>>,
+    nav: Rc<VecModel<NavItem>>,
+    modules: Rc<VecModel<ModuleItem>>,
+    waiting: Rc<VecModel<WaitItem>>,
+    notes: Rc<VecModel<NoteItem>>,
+    recent_notes: Rc<VecModel<NoteItem>>,
+    commands: Rc<VecModel<CommandItem>>,
+}
+
+impl Models {
+    fn install(ui: &AppWindow) -> Models {
+        let m = Models {
+            rows: Rc::default(),
+            acts: Rc::default(),
+            nav: Rc::default(),
+            modules: Rc::default(),
+            waiting: Rc::default(),
+            notes: Rc::default(),
+            recent_notes: Rc::default(),
+            commands: Rc::default(),
+        };
+        ui.set_rows(ModelRc::from(m.rows.clone()));
+        ui.set_screen_acts(ModelRc::from(m.acts.clone()));
+        ui.set_nav(ModelRc::from(m.nav.clone()));
+        ui.set_modules(ModelRc::from(m.modules.clone()));
+        ui.set_waiting(ModelRc::from(m.waiting.clone()));
+        ui.set_notes(ModelRc::from(m.notes.clone()));
+        ui.set_recent_notes(ModelRc::from(m.recent_notes.clone()));
+        ui.set_commands(ModelRc::from(m.commands.clone()));
+        m
+    }
 }
 
 thread_local! {
@@ -128,6 +169,7 @@ impl Controller {
         let name =
             if store.prefs.device_name.is_empty() { platform::device_name() } else { store.prefs.device_name.clone() };
         ui.set_device_name(name.into());
+        let models = Models::install(ui);
         let tn = tailnet::state();
         let (state, text) = tn.display();
         ui.set_tailnet_state(state);
@@ -154,6 +196,9 @@ impl Controller {
             term: TermBuf::default(),
             term_model,
             term_dark: None,
+            models,
+            shown_for: None,
+            shown: Vec::new(),
             req: 0,
             target: None,
             signalled: Signalled::default(),
@@ -344,7 +389,10 @@ impl Controller {
             ToPhone::Modules { modules } => {
                 self.cards = modules;
                 self.refresh_modules();
-                self.refresh_screen();
+                // Les lignes de l'écran ne changent pas ; son titre, s'il n'est pas encore arrivé, est le nom du module.
+                if self.is_module_tab() && !self.screens.contains_key(&(self.tab.clone(), self.top_path())) {
+                    self.refresh_screen();
+                }
             }
             ToPhone::Logos { logos } => {
                 for (id, png) in logos {
@@ -372,8 +420,12 @@ impl Controller {
             ToPhone::Screen { module, path, screen } => {
                 let key = (module, path);
                 self.missing.remove(&key);
+                let shown = self.is_shown(&key);
                 self.screens.insert(key, screen);
-                self.refresh_screen();
+                // Un écran qui n'est pas affiché (envoyé avant un changement d'écran) ne touche pas à la liste.
+                if shown {
+                    self.refresh_screen();
+                }
             }
             ToPhone::NoScreen { module, path, reason } => {
                 // L'écran ouvert a disparu (terminal fermé, entrée traitée) : retour à l'écran d'avant.
@@ -386,7 +438,11 @@ impl Controller {
                     stack.pop();
                     self.toast(&reason, 1);
                 } else {
+                    let shown = self.is_shown(&(module.clone(), path.clone()));
                     self.missing.insert((module, path), reason);
+                    if !shown {
+                        return;
+                    }
                 }
                 self.refresh_screen();
             }
@@ -566,11 +622,11 @@ impl Controller {
                 read: n.read,
             })
             .collect();
-        ui.set_modules(ModelRc::new(VecModel::from(items)));
-        ui.set_nav(ModelRc::new(VecModel::from(nav)));
-        ui.set_waiting(ModelRc::new(VecModel::from(waiting)));
-        ui.set_recent_notes(ModelRc::new(VecModel::from(notes.iter().take(3).cloned().collect::<Vec<_>>())));
-        ui.set_notes(ModelRc::new(VecModel::from(notes)));
+        view::sync(&self.models.modules, items);
+        view::sync(&self.models.nav, nav);
+        view::sync(&self.models.waiting, waiting);
+        view::sync(&self.models.recent_notes, notes.iter().take(3).cloned().collect());
+        view::sync(&self.models.notes, notes);
         ui.set_unread(self.unread as i32);
     }
 
@@ -593,7 +649,7 @@ impl Controller {
                 })
             })
             .collect();
-        ui.set_commands(ModelRc::new(VecModel::from(items)));
+        view::sync(&self.models.commands, items);
     }
 
     fn is_module_tab(&self) -> bool {
@@ -602,6 +658,11 @@ impl Controller {
 
     fn top_path(&self) -> String {
         self.stacks.get(&self.tab).and_then(|s| s.last().cloned()).unwrap_or_default()
+    }
+
+    /// Cet écran est celui qui est affiché.
+    fn is_shown(&self, key: &(String, String)) -> bool {
+        self.is_module_tab() && key.0 == self.tab && key.1 == self.top_path()
     }
 
     fn followed_term(&self) -> Option<(String, String)> {
@@ -669,17 +730,12 @@ impl Controller {
                 let name = self.card(module).map(|c| c.name.clone()).unwrap_or_else(|| module.to_string());
                 match self.screens.get(&key) {
                     Some(s) => {
-                        let rows = view::rows(s);
-                        ui.set_rows(ModelRc::new(VecModel::from(rows)));
                         if let Some(id) = &s.terminal {
                             term_follow = Some((module.to_string(), id.clone()));
                         }
                         (s.title.clone(), s.subtitle.clone(), stack_len > 1, s.acts.clone())
                     }
-                    None => {
-                        ui.set_rows(ModelRc::new(VecModel::<crate::UiRow>::default()));
-                        (name, String::new(), stack_len > 1, Vec::new())
-                    }
+                    None => (name, String::new(), stack_len > 1, Vec::new()),
                 }
             }
         };
@@ -691,8 +747,8 @@ impl Controller {
         ui.set_subtitle(subtitle.into());
         ui.set_can_back(can_back);
         ui.set_show_pc(acts.iter().any(|a| a.id == "@pc"));
-        let acts: Vec<_> = acts.into_iter().filter(|a| a.id != "@pc").collect();
-        ui.set_screen_acts(view::acts(&acts));
+        view::sync(&self.models.acts, acts.iter().filter(|a| a.id != "@pc").map(view::act).collect());
+        self.refresh_rows(screen_follow.as_ref().filter(|_| term_follow.is_none()));
         let terminal_mode = term_follow.is_some();
         if terminal_mode && !self.term.is(&term_follow.as_ref().unwrap().0, &term_follow.as_ref().unwrap().1) {
             let (m, id) = term_follow.clone().unwrap();
@@ -707,6 +763,27 @@ impl Controller {
             if !self.demo {
                 self.send(ToPc::Follow { screen: follow.0, terminal: follow.1 });
             }
+        }
+    }
+
+    /// Les lignes de l'écran affiché (`None` : pas d'écran de module en liste), mises à jour sur place.
+    fn refresh_rows(&mut self, key: Option<&(String, String)>) {
+        let Some((key, s)) = key.and_then(|k| self.screens.get(k).map(|s| (k, s))) else {
+            if self.models.rows.row_count() > 0 {
+                self.models.rows.set_vec(Vec::new());
+            }
+            self.shown.clear();
+            self.shown_for = None;
+            return;
+        };
+        let items = view::items(s);
+        if self.shown_for.as_ref() == Some(key) {
+            view::patch(&self.models.rows, &mut self.shown, &items, view::ui_row);
+        } else {
+            // Un autre écran : la liste repart de zéro.
+            self.models.rows.set_vec(items.iter().map(view::ui_row).collect::<Vec<_>>());
+            self.shown = items.iter().map(|i| (i.key.clone(), i.sig)).collect();
+            self.shown_for = Some(key.clone());
         }
     }
 
