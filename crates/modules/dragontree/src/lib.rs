@@ -16,7 +16,7 @@
 //!   onglets, sa file d'opérations, ses comptes, ses notifications et son bandeau de conflits sur le PC) ; un dépôt
 //!   cloné depuis le téléphone l'est par lui (`clonage`), et ses pull requests sont celles qu'il lit (`pull_requests`) ;
 //! - **masqué, il vit** (`background_tick`) : surveillance du disque, fetch automatique et enregistrement de ses
-//!   réglages, que son `ui` faisait seul.
+//!   réglages, que son `ui` faisait seul ; de même affiché dans une Eyrie réduite, où eframe n'appelle plus de `ui`.
 
 pub mod branches;
 pub mod clonage;
@@ -108,6 +108,25 @@ fn commands() -> Vec<KeyCommand> {
     ]
 }
 
+/// Les logiques après lesquelles DragonTree doit vivre sans son `ui` (`background_tick`) : masqué dans Eyrie, mais
+/// aussi affiché dans une Eyrie réduite ou cachée, où eframe n'appelle que la logique (aucune passe d'egui, aucun
+/// `ui`) alors que `visible`, ce qu'a montré la dernière passe, reste vrai.
+#[derive(Default)]
+struct WithoutUi {
+    /// Les passes d'egui finies à la logique précédente.
+    pass: Option<u64>,
+}
+
+impl WithoutUi {
+    /// `visible` : DragonTree affiché à la dernière passe ; `pass` : les passes d'egui finies jusqu'ici. Aucune passe
+    /// finie depuis la logique précédente : son `ui` n'a pas tourné entre les deux.
+    fn now(&mut self, visible: bool, pass: u64) -> bool {
+        let without = !visible || self.pass == Some(pass);
+        self.pass = Some(pass);
+        without
+    }
+}
+
 fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
     let profile_dir = match &bcx.data {
         DataMode::Shared => None,
@@ -152,6 +171,7 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
     app.set_settings_link(Box::new(move || settings.open_settings(&format!("module:{ID}"))));
     // Le dépôt de l'onglet actif devient le contexte partagé de la suite (Carnet, Fawkes le suivent).
     let mut published: Option<std::path::PathBuf> = None;
+    let mut without_ui = WithoutUi::default();
     let module = Embedded::new(info(), bcx.host.clone(), app)
         .key_commands(commands())
         .settings_panel(|app, ui| app.settings_ui(ui))
@@ -167,9 +187,10 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
         })
         .after_logic(move |app, cx| {
             phone_logic.borrow_mut().after_logic(app);
-            // Masqué, il vit quand même (son `ui` n'est pas appelé) : surveillance du disque, fetch automatique,
-            // réglages enregistrés ; le dépôt regardé depuis le téléphone est relu comme l'onglet affiché.
-            if !cx.visible {
+            // Masqué, ou affiché dans une Eyrie réduite, il vit quand même (son `ui` n'est pas appelé) : surveillance du
+            // disque, fetch automatique, réglages enregistrés ; le dépôt regardé depuis le téléphone est relu comme
+            // l'onglet affiché.
+            if without_ui.now(cx.visible, cx.host.ctx().cumulative_pass_nr()) {
                 app.background_tick();
             }
             let now = app.active_repo_dir().map(|p| p.to_path_buf());
@@ -216,5 +237,17 @@ mod tests {
                 if s.dark { dragontree_app::theme::Palette::dark() } else { dragontree_app::theme::Palette::light() };
             assert_eq!(p.added_bg, own.added_bg, "diff inchangé");
         }
+    }
+
+    /// Masqué, DragonTree vit sans son `ui` à chaque logique ; affiché, aussi dès que deux logiques se suivent sans
+    /// passe d'egui entre elles (Eyrie réduite), mais pas sur la première, qui suit encore une passe avec son `ui`.
+    #[test]
+    fn dragontree_lives_without_its_ui_when_no_pass_ran() {
+        let mut w = super::WithoutUi::default();
+        assert!(w.now(false, 0) && w.now(false, 1), "masqué");
+        assert!(!w.now(true, 2) && !w.now(true, 3), "affiché : une passe entre deux logiques");
+        assert!(!w.now(true, 4), "la dernière passe a eu son `ui`");
+        assert!(w.now(true, 4) && w.now(true, 4), "Eyrie réduite : la logique seule");
+        assert!(!w.now(true, 5), "de nouveau affichée");
     }
 }

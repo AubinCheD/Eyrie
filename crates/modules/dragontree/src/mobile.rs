@@ -2111,15 +2111,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Eyrie où DragonTree est masqué : sa logique tourne à chaque image (`visible` faux), jamais son `ui`.
+    /// Eyrie où le `ui` de DragonTree n'est jamais appelé : masqué (sa logique tourne à chaque image, `visible`
+    /// faux), ou affiché dans une Eyrie réduite (`visible` vrai, et eframe n'appelle que la logique : `logic_only`).
     struct HiddenInEyrie {
         module: Box<dyn suite_sdk::Module>,
         host: suite_sdk::Host,
+        visible: bool,
     }
 
     impl eframe::App for HiddenInEyrie {
         fn logic(&mut self, ctx: &eframe::egui::Context, frame: &mut eframe::Frame) {
-            let mut cx = suite_sdk::Cx { host: &self.host, frame, active: false, visible: false };
+            let mut cx = suite_sdk::Cx { host: &self.host, frame, active: false, visible: self.visible };
             self.module.logic(ctx, &mut cx);
         }
 
@@ -2132,6 +2134,15 @@ mod tests {
             let mut cx = suite_sdk::Cx { host: &self.host, frame: &mut frame, active: false, visible: false };
             self.module.mobile_screen(path, &mut cx)
         }
+
+        /// Une image d'Eyrie réduite : eframe n'appelle que sa logique, sans passe d'egui (`Context::run_logic`).
+        fn logic_only(&mut self) {
+            let (host, module, visible) = (&self.host, &mut self.module, self.visible);
+            let _ = host.ctx().run_logic(&eframe::egui::RawInput::default(), |ctx| {
+                let mut frame = eframe::Frame::_new_kittest();
+                module.logic(ctx, &mut suite_sdk::Cx { host, frame: &mut frame, active: false, visible });
+            });
+        }
     }
 
     /// Le défaut du 28/10 : masqué dans Eyrie, DragonTree ne relisait rien et n'enregistrait rien (`ui` seul le
@@ -2139,8 +2150,22 @@ mod tests {
     /// dépôt regardé est relu dès qu'il change sur le disque.
     #[test]
     fn hidden_in_eyrie_dragontree_still_follows_the_watched_repo() {
+        follows_the_watched_repo_without_its_ui(false);
+    }
+
+    /// Le défaut relevé à la relecture : affiché dans une Eyrie réduite (ou démarrée réduite depuis le téléphone),
+    /// DragonTree n'avait plus ni son `ui` (eframe n'appelle que la logique) ni `background_tick` (`visible` restait
+    /// vrai) : le dépôt regardé n'était plus relu. Il vit comme masqué.
+    #[test]
+    fn shown_in_a_minimized_eyrie_dragontree_still_follows_the_watched_repo() {
+        follows_the_watched_repo_without_its_ui(true);
+    }
+
+    /// DragonTree dans Eyrie sans son `ui` : masqué (`minimized` faux), ou affiché dans une Eyrie réduite après une
+    /// première image complète.
+    fn follows_the_watched_repo_without_its_ui(minimized: bool) {
         let Ok(git) = Git::discover() else { return };
-        let dir = std::env::temp_dir().join(format!("suite-dragontree-masque-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("suite-dragontree-masque-{minimized}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let repo = dir.join("depot");
         new_repo(&git, &repo);
@@ -2157,8 +2182,12 @@ mod tests {
             host.set_accounts_dir(trial.join("comptes"));
             let bcx = suite_sdk::BuildCx { cc, host: host.clone(), data: suite_sdk::DataMode::Trial(trial) };
             let module = crate::build(&bcx).unwrap_or_else(|e| panic!("{e}"));
-            HiddenInEyrie { module, host }
+            HiddenInEyrie { module, host, visible: minimized }
         });
+        h.step();
+        let frame = |h: &mut Harness<'static, HiddenInEyrie>| {
+            if minimized { h.state_mut().logic_only() } else { h.step() }
+        };
         let base = format!("depot/{}", repo_key(&repo));
         let saved = || {
             let s: Option<Settings> = std::fs::read(&file).ok().and_then(|b| serde_json::from_slice(&b).ok());
@@ -2167,7 +2196,7 @@ mod tests {
         let wait = |h: &mut Harness<'static, HiddenInEyrie>, what: &str, cond: &dyn Fn(&Screen) -> bool| {
             let deadline = Instant::now() + Duration::from_secs(40);
             loop {
-                h.step();
+                frame(h);
                 let s = h.state_mut().screen(&base).expect("écran du dépôt");
                 if cond(&s) {
                     return;
