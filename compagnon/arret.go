@@ -21,7 +21,8 @@ import (
 const stopWait = 15 * time.Second
 
 // stopStandby arrête le veilleur du nœud `dir`, ou, sans dossier, tous les veilleurs de l'utilisateur qui tournent
-// depuis cet exécutable, et attend qu'ils soient sortis. Rend 0 si tous sont arrêtés (ou s'il n'y en a pas), 1 sinon.
+// depuis cet exécutable, et attend qu'ils soient sortis. Rend 0 si tous sont arrêtés (ou s'il n'y en a pas), 1 sinon ;
+// les tubes non reconnus sont signalés sur la sortie d'erreur, sans échec.
 func stopStandby(dir string) int {
 	self, err := os.Executable()
 	if err != nil {
@@ -36,6 +37,8 @@ func stopStandby(dir string) int {
 	for _, name := range names {
 		stopped, err := stopOne(name, self, stopWait)
 		switch {
+		case errors.Is(err, errForeign):
+			fmt.Fprintf(os.Stderr, "tube %s ignoré : %v\n", name, err)
 		case err != nil:
 			fmt.Fprintf(os.Stderr, "veilleur %s : %v\n", name, err)
 			code = exitFailed
@@ -66,8 +69,14 @@ func standbyPipes() []string {
 	}
 }
 
+// errForeign : rien ne dit que ce tube est celui d'un veilleur lancé depuis cet exécutable. Les tubes sont communs à
+// tout le poste : ceux des veilleurs d'autres comptes (changement rapide d'utilisateur) y sont, fermés à celui-ci.
+var errForeign = errors.New("veilleur non reconnu")
+
 // stopOne demande l'arrêt au veilleur du tube `name` s'il tourne depuis l'exécutable `self`, puis attend qu'il soit
-// sorti (`wait` au plus). Rend faux, sans erreur, si personne n'écoute ce tube ou si son veilleur vient d'ailleurs.
+// sorti (`wait` au plus). Rend faux, sans erreur, si personne n'écoute ce tube ou si son veilleur vient d'ailleurs ;
+// errForeign si son serveur ne peut pas être reconnu (tube d'un autre compte, occupé, processus illisible). Les
+// autres erreurs viennent d'un veilleur reconnu qui ne s'arrête pas.
 func stopOne(name, self string, wait time.Duration) (bool, error) {
 	timeout := 2 * time.Second
 	c, err := winio.DialPipe(name, &timeout)
@@ -75,25 +84,25 @@ func stopOne(name, self string, wait time.Duration) (bool, error) {
 		return false, nil
 	}
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("%w : %v", errForeign, err)
 	}
 	defer c.Close()
 	h, err := pipeHandle(c)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("%w : %v", errForeign, err)
 	}
 	var pid uint32
 	if err := windows.GetNamedPipeServerProcessId(h, &pid); err != nil {
-		return false, fmt.Errorf("processus du veilleur illisible : %w", err)
+		return false, fmt.Errorf("%w : processus du tube illisible : %v", errForeign, err)
 	}
 	proc, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
 	if err != nil {
-		return false, fmt.Errorf("processus du veilleur %d : %w", pid, err)
+		return false, fmt.Errorf("%w : processus %d : %v", errForeign, pid, err)
 	}
 	defer windows.CloseHandle(proc)
 	image, err := processImage(proc)
 	if err != nil {
-		return false, fmt.Errorf("exécutable du veilleur %d illisible : %w", pid, err)
+		return false, fmt.Errorf("%w : exécutable du processus %d illisible : %v", errForeign, pid, err)
 	}
 	if !sameFile(image, self) {
 		return false, nil

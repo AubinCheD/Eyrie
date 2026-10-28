@@ -5,6 +5,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -13,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/tailscale/go-winio"
 )
 
 // Rôle « veilleur » : le tube d'un veilleur sur EYRIE_ESSAI_DIR, qui accepte son propre exécutable, jusqu'à l'arrêt
@@ -102,6 +105,23 @@ func TestStopEndsAStandbyFromTheSameExecutable(t *testing.T) {
 	}
 	if code := stopStandby(dir); code != exitOK {
 		t.Fatalf("sans veilleur : code %d", code)
+	}
+}
+
+// Un tube de veilleur fermé à ce compte (celui d'un veilleur d'un autre compte du poste, ou d'un intrus) est ignoré :
+// --arreter, et donc tools\compagnon.ps1, n'échouent pas pour lui.
+func TestStopIgnoresAPipeItCannotOpen(t *testing.T) {
+	dir := t.TempDir()
+	ln, err := winio.ListenPipe(pipeName(dir), &winio.PipeConfig{SecurityDescriptor: "D:P(A;;GA;;;SY)"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	if stopped, err := stopOne(pipeName(dir), self(t), time.Second); stopped || !errors.Is(err, errForeign) {
+		t.Fatalf("tube fermé : %v %v", stopped, err)
+	}
+	if code := stopStandby(dir); code != exitOK {
+		t.Fatalf("code : %d", code)
 	}
 }
 
