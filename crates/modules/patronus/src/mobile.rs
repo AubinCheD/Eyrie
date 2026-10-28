@@ -28,7 +28,7 @@ const JOURNAL: u64 = 4000;
 const COST_EVERY: Duration = Duration::from_secs(10);
 /// Le résultat d'une action sur un résultat reste affiché une minute.
 const JOB_SHOWN: Duration = Duration::from_secs(60);
-/// Au-delà, le bandeau des tâches est plié au départ.
+/// Au-delà, le bandeau des tâches est plié au départ, sauf si l'une ne peut pas partir.
 const TASKS_OPEN: usize = 6;
 
 /// Une tâche, relevée sous le verrou du moteur.
@@ -281,7 +281,8 @@ fn run_row(r: &Run, today: NaiveDate) -> Row {
     row.act(Act::new(format!("archiver:{}", r.id), "Archiver").glyph("🗄️"))
 }
 
-/// L'accueil : ce qui tourne, la boîte de réception, puis les tâches (pliées au-delà de `TASKS_OPEN`).
+/// L'accueil : ce qui tourne, la boîte de réception, puis les tâches (pliées au-delà de `TASKS_OPEN`, sauf si l'une
+/// ne peut pas partir : l'alerte se voit dépliée).
 pub fn home(s: &Snapshot, now: NaiveDateTime) -> Screen {
     let today = now.date();
     let mut parts = Vec::new();
@@ -348,8 +349,8 @@ pub fn home(s: &Snapshot, now: NaiveDateTime) -> Screen {
     let mut tasks: Vec<&TaskLine> = s.tasks.iter().collect();
     tasks.sort_by_key(|t| task_order(t));
     let blocked = tasks.iter().filter(|t| t.problem.is_some()).count();
-    let mut band =
-        Band::new("taches", "Tâches").aside(s.tasks.len().to_string()).glyph("✦").open(s.tasks.len() <= TASKS_OPEN);
+    let open = s.tasks.len() <= TASKS_OPEN || blocked > 0;
+    let mut band = Band::new("taches", "Tâches").aside(s.tasks.len().to_string()).glyph("✦").open(open);
     if blocked > 0 {
         band = band.badge(plural(blocked, "bloquée", "bloquées")).tone(Tone::Danger);
     }
@@ -763,8 +764,8 @@ mod tests {
         assert_eq!(rows[4].key, "tache/build");
     }
 
-    /// Les tâches : bloquées, puis par prochaine échéance, inactives à la fin ; pliées au-delà de six. Rien ne tourne :
-    /// pas de bandeau « En cours », et une boîte lue n'offre pas « Tout marquer lu ».
+    /// Les tâches : bloquées, puis par prochaine échéance, inactives à la fin ; pliées au-delà de six, sauf si l'une ne
+    /// peut pas partir. Rien ne tourne : pas de bandeau « En cours », et une boîte lue n'offre pas « Tout marquer lu ».
     #[test]
     fn many_tasks_are_sorted_and_folded() {
         let task = |id: &str, active: bool, next: Option<NaiveDateTime>| TaskLine {
@@ -786,11 +787,15 @@ mod tests {
         ];
         tasks.push(TaskLine { problem: Some("dossier absent".into()), ..task("bloquee", true, Some(at(27, 13))) });
         tasks.extend((0..3).map(|i| task(&format!("z{i}"), false, None)));
-        let s = home(&Snapshot { tasks, ..Default::default() }, at(27, 12));
-        assert_eq!(bands(&s), [("boite", Fold::Open, ""), ("taches", Fold::Closed, "1 bloquée")]);
+        let s = home(&Snapshot { tasks: tasks.clone(), ..Default::default() }, at(27, 12));
+        assert_eq!(bands(&s), [("boite", Fold::Open, ""), ("taches", Fold::Open, "1 bloquée")], "l'alerte dépliée");
         assert!(!s.action_ids().contains("tout_lu"));
         let order: Vec<&str> = rows(&s).iter().map(|r| r.title.as_str()).collect();
         assert_eq!(order, ["bloquee", "ce-soir", "demain", "sans-echeance", "inactive", "z0", "z1", "z2"]);
+        tasks.retain(|t| t.problem.is_none());
+        tasks.push(task("z3", false, None));
+        let s = home(&Snapshot { tasks, ..Default::default() }, at(27, 12));
+        assert_eq!(bands(&s)[1], ("taches", Fold::Closed, ""), "rien d'alarmant : plié");
     }
 
     #[test]

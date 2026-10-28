@@ -25,7 +25,7 @@ const LOGS_EVERY: Duration = Duration::from_secs(5);
 const LOGS_MAX: usize = 12_000;
 /// Le résultat d'une action Docker reste affiché une minute dans l'accueil.
 const JOB_SHOWN: Duration = Duration::from_secs(60);
-/// Au-delà, le bandeau des ports ouverts est plié au départ.
+/// Au-delà, le bandeau des ports ouverts est plié au départ, sauf si l'un est visible du réseau.
 const PORTS_OPEN: usize = 6;
 
 /// Le libellé d'une action Docker.
@@ -257,8 +257,8 @@ pub fn home(
         snap.services.iter().filter(|d| d.category == Category::Dev && !owned.contains(&d.proc.pid)).collect();
     open.sort_by_key(|d| d.ports.first().copied().unwrap_or(0));
     let public = open.iter().filter(|d| d.public).count();
-    let mut band =
-        Band::new("ports", "Ports ouverts").aside(open.len().to_string()).glyph("🔁").open(open.len() <= PORTS_OPEN);
+    let unfold = open.len() <= PORTS_OPEN || public > 0;
+    let mut band = Band::new("ports", "Ports ouverts").aside(open.len().to_string()).glyph("🔁").open(unfold);
     if public > 0 {
         band = band.badge(format!("{public} visible(s) du réseau")).tone(Tone::Warn);
     }
@@ -655,6 +655,7 @@ mod tests {
         );
     }
 
+    /// Plus de six ports : pliés ; un port visible du réseau met le bandeau en alerte, déplié.
     #[test]
     fn many_open_ports_fold_and_a_port_seen_from_the_network_warns() {
         let mut services: Vec<Detected> =
@@ -667,6 +668,16 @@ mod tests {
             &Jobs::default(),
         );
         assert_eq!(bands(&s)[1], ("ports", Fold::Closed, "", None));
+        services[6].public = true;
+        let s = home(
+            &[],
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &Snapshot { services: services.clone(), scans: 1, ..Default::default() },
+            &Jobs::default(),
+        );
+        assert_eq!(bands(&s)[1].1, Fold::Open, "l'alerte dépliée");
+        services[6].public = false;
         services.truncate(2);
         services[1].public = true;
         let s = home(
