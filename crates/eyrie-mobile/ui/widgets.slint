@@ -117,13 +117,19 @@ export struct WaitItem {
     path: string,
 }
 
+// Une notification du PC ; `path` : l'écran du module où elle mène ; `expanded` : dépliée (texte entier).
 export struct NoteItem {
+    module: string,
     module-name: string,
     title: string,
     body: string,
     tone: int,
     when: string,
     read: bool,
+    path: string,
+    has-path: bool,
+    expanded: bool,
+    key: string,
 }
 
 export struct CommandItem {

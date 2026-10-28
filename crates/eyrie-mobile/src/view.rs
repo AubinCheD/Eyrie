@@ -571,6 +571,19 @@ pub fn sync<T: Clone + PartialEq + 'static>(model: &VecModel<T>, new: Vec<T>) {
     }
 }
 
+/// De quand datent les données montrées hors ligne : « Données reçues à l'instant », « Données d'il y a 3 min ».
+pub fn data_age(at: u64, now: u64) -> String {
+    match ago(at, now) {
+        a if now.saturating_sub(at) < 60 => format!("Données reçues {a}"),
+        a => format!("Données d'il y a {a}"),
+    }
+}
+
+/// La clé d'une notification du PC (pour la déplier sur le téléphone).
+pub fn note_key(at: u64, module: &str, title: &str) -> String {
+    format!("{at}\u{1f}{module}\u{1f}{title}")
+}
+
 /// « il y a » : à l'instant, 5 min, 2 h, 3 j.
 pub fn ago(at: u64, now: u64) -> String {
     match now.saturating_sub(at) {
@@ -644,6 +657,8 @@ mod tests {
         assert_eq!(act(&Act::link("Ouvrir", "https://x.org")).url, "https://x.org");
         assert_eq!(ago(100, 100), "à l'instant");
         assert_eq!(ago(0, 7300), "2 h");
+        assert_eq!(data_age(100, 130), "Données reçues à l'instant");
+        assert_eq!(data_age(100, 100 + 180), "Données d'il y a 3 min");
     }
 
     /// Les clés : `Row.key`, sinon titre et glyphe ; deux lignes pareilles restent distinctes.

@@ -119,6 +119,13 @@ pub struct Controller {
     search: HashMap<(String, String), String>,
     /// Les lignes des diffs passent à la ligne (le temps de la session).
     diff_wrap: bool,
+    /// Ce qui attend a été reçu au moins une fois : sinon, la vue d'ensemble attend le PC.
+    got_overview: bool,
+    /// Le dernier message du PC (secondes Unix) : hors ligne, la vue d'ensemble dit de quand datent ses données.
+    data_at: Option<u64>,
+    age_timer: slint::Timer,
+    /// Les notifications dépliées (sans écran où mener, le toucher montre leur texte entier).
+    expanded_notes: std::collections::HashSet<String>,
     last_tabs: Option<Tabs>,
     req: u32,
     /// Les actions envoyées sans résultat du PC, par numéro de demande : pas de second envoi de la même.
@@ -239,6 +246,10 @@ impl Controller {
             scroll_seq: 0,
             search: HashMap::new(),
             diff_wrap: false,
+            got_overview: false,
+            data_at: None,
+            age_timer: slint::Timer::default(),
+            expanded_notes: Default::default(),
             last_tabs: None,
             req: 0,
             pending: HashMap::new(),
@@ -257,6 +268,9 @@ impl Controller {
                     with(|c| c.refresh_tailnet());
                 });
             }
+            c.age_timer.start(slint::TimerMode::Repeated, Duration::from_secs(20), || {
+                with(|c| c.refresh_age());
+            });
             c.start();
         });
     }
@@ -313,6 +327,17 @@ impl Controller {
             ui.set_link_text(text.into());
             ui.set_pc_name(self.pc_name.as_str().into());
         }
+        self.refresh_age();
+    }
+
+    /// Hors ligne, de quand datent les données montrées.
+    fn refresh_age(&self) {
+        let Some(ui) = self.ui() else { return };
+        let age = match self.data_at {
+            Some(at) if !self.online => view::data_age(at, now()),
+            _ => String::new(),
+        };
+        ui.set_data_age(age.into());
     }
 
     pub fn toast(&self, text: &str, tone: i32) {
@@ -427,6 +452,7 @@ impl Controller {
     }
 
     pub fn on_message(&mut self, m: ToPhone) {
+        self.data_at = Some(now());
         match m {
             ToPhone::Modules { modules } => {
                 self.cards = modules;
@@ -447,6 +473,7 @@ impl Controller {
             ToPhone::Overview { waiting } => {
                 self.signal_waiting(&waiting);
                 self.waiting = waiting;
+                self.got_overview = true;
                 self.refresh_modules();
             }
             ToPhone::Notes { notes, unread } => {
@@ -667,13 +694,21 @@ impl Controller {
         let notes: Vec<NoteItem> = self
             .notes
             .iter()
-            .map(|n| NoteItem {
-                module_name: self.card(&n.module).map(|c| c.name.as_str()).unwrap_or(&n.module).into(),
-                title: n.title.as_str().into(),
-                body: n.body.as_str().into(),
-                tone: view::tone(Some(n.tone)),
-                when: view::ago(n.at, t).into(),
-                read: n.read,
+            .map(|n| {
+                let key = view::note_key(n.at, &n.module, &n.title);
+                NoteItem {
+                    module: n.module.as_str().into(),
+                    module_name: self.card(&n.module).map(|c| c.name.as_str()).unwrap_or(&n.module).into(),
+                    title: n.title.as_str().into(),
+                    body: n.body.as_str().into(),
+                    tone: view::tone(Some(n.tone)),
+                    when: view::ago(n.at, t).into(),
+                    read: n.read,
+                    path: n.path.clone().unwrap_or_default().into(),
+                    has_path: n.path.is_some(),
+                    expanded: self.expanded_notes.contains(&key),
+                    key: key.into(),
+                }
             })
             .collect();
         view::sync(&self.models.modules, items);
@@ -682,6 +717,7 @@ impl Controller {
         view::sync(&self.models.recent_notes, notes.iter().take(3).cloned().collect());
         view::sync(&self.models.notes, notes);
         ui.set_unread(self.unread as i32);
+        ui.set_waiting_known(self.got_overview);
     }
 
     fn refresh_commands(&self) {
@@ -1099,6 +1135,19 @@ impl Controller {
         self.refresh_screen();
     }
 
+    /// Toucher une notification : l'écran du module où elle mène ; sans écran, son texte entier (ou de nouveau
+    /// replié).
+    pub(crate) fn open_note(&mut self, n: &NoteItem) {
+        if n.has_path {
+            return self.open_module_path(&n.module, &n.path);
+        }
+        let key = n.key.to_string();
+        if !self.expanded_notes.remove(&key) {
+            self.expanded_notes.insert(key);
+        }
+        self.refresh_modules();
+    }
+
     /// Retour (barre du haut ou bouton du système) ; `false` : rien à quitter, l'application se ferme.
     fn back(&mut self) -> bool {
         let Some(ui) = self.ui() else { return false };
@@ -1326,6 +1375,9 @@ impl Controller {
         self.notes.clear();
         self.unread = 0;
         self.commands.clear();
+        self.got_overview = false;
+        self.data_at = None;
+        self.expanded_notes.clear();
         self.screens.clear();
         self.missing.clear();
         self.stacks.clear();
@@ -1556,6 +1608,9 @@ fn wire(ui: &AppWindow) {
     });
     ui.on_open_extra(|what| {
         with(|c| c.nav_select(&what));
+    });
+    ui.on_open_note(|n| {
+        with(|c| c.open_note(&n));
     });
     ui.on_notes_read(|| {
         with(|c| c.send(ToPc::NotesRead));

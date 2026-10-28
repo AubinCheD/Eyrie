@@ -1,6 +1,6 @@
 //! Démonstration sans PC (`EYRIE_MOBILE_DEMO=<scène>`), pour les captures et la mise au point de l'interface :
 //! `ensemble`, `fawkes`, `recherche`, `terminal`, `patronus`, `depot`, `historique`, `diff`, `diff-retour`, `plus`,
-//! `notes`, `reglages`, `accueil`, `commandes`, `accueil-tailscale`, `code`, `appairage`, `hors-ligne`. Suffixe
+//! `notes`, `reglages`, `attente`, `accueil`, `commandes`, `accueil-tailscale`, `code`, `appairage`, `hors-ligne`. Suffixe
 //! `+clair` ou `+sombre` : le thème (sinon celui du système).
 
 use slint::ComponentHandle;
@@ -13,7 +13,7 @@ use suite_mobile::ui::{
 
 use crate::app::with;
 use crate::tailnet::Tailnet;
-use crate::{AppWindow, Theme, UiAct};
+use crate::{AppWindow, NoteItem, Theme, UiAct};
 
 /// L'état d'un nœud Tailscale, à l'écran (le bureau n'en a pas).
 fn show_tailnet(ui: &AppWindow, t: Tailnet) {
@@ -331,9 +331,15 @@ pub fn play(ui: &AppWindow, scene: &str) {
     if let Some(t) = theme {
         ui.global::<Theme>().set_choice(t);
     }
+    // Avant toute donnée du PC : la vue d'ensemble l'attend.
+    if scene == "attente" {
+        with(|c| c.demo_offline());
+        return;
+    }
     let feed = |m: ToPhone| {
         with(|c| c.on_message(m));
     };
+    let t = now();
     with(|c| c.demo_online("PORTABLE-AUBIN"));
     feed(ToPhone::Modules { modules: modules() });
     feed(ToPhone::Overview {
@@ -350,16 +356,16 @@ pub fn play(ui: &AppWindow, scene: &str) {
                 title: "Claude attend une réponse".into(),
                 body: "appli mobile".into(),
                 tone: Tone::Warn,
-                at: now() - 60,
+                at: t - 60,
                 read: false,
-                path: None,
+                path: Some("t/3".into()),
             },
             Note {
                 module: "patronus".into(),
                 title: "Tests de nuit : échec".into(),
-                body: "2 tests rouges".into(),
+                body: "2 tests rouges : une_action_en_cours, les_bandeaux. Le journal est dans Patronus.".into(),
                 tone: Tone::Danger,
-                at: now() - 3600 * 9,
+                at: t - 3600 * 9,
                 read: false,
                 path: None,
             },
@@ -368,7 +374,7 @@ pub fn play(ui: &AppWindow, scene: &str) {
                 title: "Nouvelle revue demandée".into(),
                 body: "Ozmo #412".into(),
                 tone: Tone::Info,
-                at: now() - 3600 * 26,
+                at: t - 3600 * 26,
                 read: true,
                 path: None,
             },
@@ -437,8 +443,16 @@ pub fn play(ui: &AppWindow, scene: &str) {
                 c.select_tab("depot/eyrie/historique");
             });
         }
-        "plus" | "notes" | "commandes" => {
+        "plus" | "commandes" => {
             with(|c| c.nav_select(scene));
+        }
+        // Une notification sans écran où mener, dépliée.
+        "notes" => {
+            let key = crate::view::note_key(t - 3600 * 9, "patronus", "Tests de nuit : échec");
+            with(|c| {
+                c.nav_select(scene);
+                c.open_note(&NoteItem { key: key.into(), ..Default::default() });
+            });
         }
         // Comme sur Android : le nœud Tailscale de l'application, connecté.
         "reglages" => {

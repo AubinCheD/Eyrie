@@ -5,7 +5,8 @@ import { ListView, LineEdit } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { TailnetStatus } from "onboarding.slint";
 import {
-    UiAct, UiRow, TabItem, ScreenTabs, ModuleItem, WaitItem, NoteItem, CommandItem, PcItem, Icon, IconButton, ModuleAvatar, Pill,
+    UiAct, UiRow, TabItem, ScreenTabs, ModuleItem, WaitItem, NoteItem, CommandItem, PcItem, Icon, IconButton, ModuleAvatar,
+    Pill, Busy,
     SectionHeader, RowView, CommitRowView, NoteView, MeterView, TextBlock, ActButton, EmptyView, DiffLineView,
     DiffBarView, BandHeader, SearchField
 } from "widgets.slint";
@@ -184,6 +185,47 @@ export component ScreenPage inherits Rectangle {
     }
 }
 
+// Une notification : elle mène à son écran (chevron), sinon se déplie pour montrer son texte entier.
+component NoteRow inherits VerticalLayout {
+    in property <NoteItem> note;
+    in property <bool> first;
+    in property <bool> last;
+    callback tapped();
+    RowView {
+        item: {
+            kind: 1,
+            title: root.note.title,
+            subtitle: root.note.module-name + (root.note.body != "" && !root.note.expanded ? " · " + root.note.body : ""),
+            detail: root.note.when,
+            glyph: root.note.read ? "·" : "●",
+            tone: root.note.read ? 0 : root.note.tone,
+            opens: root.note.has-path,
+            first: root.first,
+            last: root.last && !root.note.expanded,
+        };
+        tapped => { root.tapped(); }
+    }
+    if root.note.expanded: Rectangle {
+        height: body.preferred-height + 14px;
+        Rectangle {
+            x: Theme.pad;
+            width: parent.width - 2 * Theme.pad;
+            background: Theme.surface;
+            border-bottom-left-radius: root.last ? Theme.radius : 0;
+            border-bottom-right-radius: root.last ? Theme.radius : 0;
+            body := Text {
+                x: 62px;
+                y: 0;
+                width: parent.width - 62px - 16px;
+                text: root.note.body;
+                color: Theme.text-dim;
+                font-size: 13.5px;
+                wrap: word-wrap;
+            }
+        }
+    }
+}
+
 component ModuleCard inherits Rectangle {
     in property <ModuleItem> module;
     callback clicked();
@@ -232,8 +274,12 @@ export component OverviewPage inherits Rectangle {
     in property <[ModuleItem]> modules;
     in property <[NoteItem]> notes;
     in property <int> unread;
+    // Ce qui attend a été reçu du PC (sinon : on l'attend) ; hors ligne, de quand datent les données.
+    in property <bool> waiting-known;
+    in property <string> data-age;
     callback open-module(string);
     callback open-wait(string, string);
+    callback open-note(NoteItem);
     callback open-notes();
     property <length> card-w: (root.width - 3 * Theme.pad) / 2;
     Flickable {
@@ -243,12 +289,12 @@ export component OverviewPage inherits Rectangle {
             alignment: start;
             // Le PC.
             Rectangle {
-                height: 84px;
+                height: root.data-age != "" ? 100px : 84px;
                 Rectangle {
                     x: Theme.pad;
                     y: 8px;
                     width: parent.width - 2 * Theme.pad;
-                    height: 72px;
+                    height: parent.height - 12px;
                     border-radius: Theme.radius;
                     background: Theme.surface;
                     HorizontalLayout {
@@ -289,6 +335,12 @@ export component OverviewPage inherits Rectangle {
                                     overflow: elide;
                                 }
                             }
+                            if root.data-age != "": Text {
+                                text: root.data-age;
+                                color: Theme.text-faint;
+                                font-size: 12.5px;
+                                overflow: elide;
+                            }
                         }
                     }
                 }
@@ -307,13 +359,18 @@ export component OverviewPage inherits Rectangle {
                     HorizontalLayout {
                         padding-left: 16px;
                         spacing: 10px;
-                        Icon {
+                        if root.waiting-known: Icon {
                             kind: "check";
                             tint: Theme.ok;
                             size: 20px;
                         }
+                        if !root.waiting-known: VerticalLayout {
+                            alignment: center;
+                            Busy { }
+                        }
                         Text {
-                            text: "Rien ne vous attend.";
+                            // Rien reçu encore : ne pas dire « rien ne vous attend ».
+                            text: root.waiting-known ? "Rien ne vous attend." : "En attente du PC…";
                             color: Theme.text-dim;
                             font-size: 14px;
                             vertical-alignment: center;
@@ -354,17 +411,20 @@ export component OverviewPage inherits Rectangle {
                 title: "NOTIFICATIONS";
                 aside: root.unread > 0 ? "\{root.unread} non lue(s)" : "";
             }
-            for n[i] in root.notes: RowView {
+            for n[i] in root.notes: NoteRow {
+                note: n;
+                first: i == 0;
+                last: false;
+                tapped => { root.open-note(n); }
+            }
+            if root.notes.length > 0: RowView {
                 item: {
                     kind: 1,
-                    title: n.title,
-                    subtitle: n.module-name + (n.body != "" ? " · " + n.body : ""),
-                    detail: n.when,
-                    glyph: n.read ? "·" : "●",
-                    tone: n.read ? 0 : n.tone,
+                    title: "Toutes les notifications",
+                    glyph: "●",
                     opens: true,
-                    first: i == 0,
-                    last: i == root.notes.length - 1,
+                    first: false,
+                    last: true,
                 };
                 tapped => { root.open-notes(); }
             }
@@ -483,20 +543,15 @@ export component MorePage inherits Rectangle {
 
 export component NotesPage inherits Rectangle {
     in property <[NoteItem]> notes;
+    callback open-note(NoteItem);
     ListView {
         for n[i] in root.notes: VerticalLayout {
             padding-top: i == 0 ? 8px : 0;
-            RowView {
-                item: {
-                    kind: 1,
-                    title: n.title,
-                    subtitle: n.module-name + (n.body != "" ? " · " + n.body : ""),
-                    detail: n.when,
-                    glyph: n.read ? "·" : "●",
-                    tone: n.read ? 0 : n.tone,
-                    first: i == 0,
-                    last: i == root.notes.length - 1,
-                };
+            NoteRow {
+                note: n;
+                first: i == 0;
+                last: i == root.notes.length - 1;
+                tapped => { root.open-note(n); }
             }
         }
     }

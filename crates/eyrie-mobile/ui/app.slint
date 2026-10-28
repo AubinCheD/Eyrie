@@ -46,6 +46,9 @@ export component AppWindow inherits Window {
     in property <[NoteItem]> notes;
     in property <[NoteItem]> recent-notes;
     in property <int> unread;
+    // Ce qui attend a été reçu du PC ; hors ligne, de quand datent les données montrées.
+    in property <bool> waiting-known;
+    in property <string> data-age;
     in property <[CommandItem]> commands;
     in-out property <string> command-filter;
     in property <[UiRow]> rows;
@@ -122,6 +125,7 @@ export component AppWindow inherits Window {
     callback toggle-pin(string);
     callback open-extra(string);
     callback notes-read();
+    callback open-note(NoteItem);
     callback run-command(CommandItem);
     callback filter-edited(string);
     callback set-theme(int);
@@ -309,8 +313,11 @@ export component AppWindow inherits Window {
                         modules: root.modules;
                         notes: root.recent-notes;
                         unread: root.unread;
+                        waiting-known: root.waiting-known;
+                        data-age: root.data-age;
                         open-module(id) => { root.nav-select(id); }
                         open-wait(id, path) => { root.open-module-path(id, path); }
+                        open-note(n) => { root.open-note(n); }
                         open-notes => { root.open-extra("notes"); }
                     }
                     if root.tab == "plus": MorePage {
@@ -325,6 +332,7 @@ export component AppWindow inherits Window {
                     }
                     if root.tab == "notes": NotesPage {
                         notes: root.notes;
+                        open-note(n) => { root.open-note(n); }
                     }
                     if root.tab == "commandes": CommandsPage {
                         commands: root.commands;
