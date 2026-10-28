@@ -22,6 +22,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
+use suite_mobile::PROTOCOL;
 use suite_mobile::msg::{Rights, ToPhone};
 use suite_mobile::pairing::{self, Ticket};
 
@@ -63,6 +64,8 @@ pub struct Bridge {
     pub page: page::PageState,
     /// Ce que le sélecteur de dossiers sait du PC, fait au premier usage.
     folders: Option<Arc<browse::Env>>,
+    /// La clé du veilleur (« Démarrer Eyrie depuis le téléphone ») : chaque téléphone en tire son secret.
+    wake: Option<[u8; 32]>,
 }
 
 /// Nom de ce PC (`COMPUTERNAME`).
@@ -87,6 +90,7 @@ impl Bridge {
             sync: sync::State::default(),
             page: page::PageState::default(),
             folders: None,
+            wake: None,
         }
     }
 
@@ -148,6 +152,7 @@ impl Bridge {
         let token = (!self.local()).then(|| self.token.clone());
         let shared = Arc::new(server::Shared::new(key, pc_name(), token, Box::new(move || ctx.request_repaint())));
         shared.set_devices(self.device_auths());
+        shared.set_standby_key(self.wake);
         match server::Server::start(shared, self.local_port.unwrap_or(0)) {
             Ok(s) => {
                 self.store.journal("", "acces", format!("accès ouvert ({})", s.addr));
@@ -195,6 +200,29 @@ impl Bridge {
     fn devices_changed(&mut self) {
         if let Some(s) = self.shared() {
             s.set_devices(self.device_auths());
+        }
+    }
+
+    /// La clé du veilleur (`None` : pas de démarrage à distance). Les téléphones déjà connectés reçoivent un nouveau
+    /// `Welcome`, avec leur secret ou sans.
+    pub fn set_wake(&mut self, key: Option<[u8; 32]>) {
+        if self.wake == key {
+            return;
+        }
+        self.wake = key;
+        if let Some(s) = self.shared() {
+            s.set_standby_key(key);
+        }
+        let auths = self.device_auths();
+        for s in &self.sessions {
+            let Some(dev) = auths.iter().find(|d| d.id == s.device) else { continue };
+            s.send(ToPhone::Welcome {
+                protocol: PROTOCOL,
+                pc: pc_name(),
+                eyrie: env!("CARGO_PKG_VERSION").into(),
+                rights: s.rights,
+                wake: key.map(|k| server::wake_key(&k, dev)),
+            });
         }
     }
 

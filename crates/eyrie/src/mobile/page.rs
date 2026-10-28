@@ -1,7 +1,9 @@
-//! Ce que le pont montre sur le PC : la page Téléphones des réglages (interrupteur, QR code d'appairage, appareils et
-//! leurs droits, connexions, journal), la confirmation d'un appairage, et l'indicateur de la barre d'état.
+//! Ce que le pont montre sur le PC : la page Téléphones des réglages (interrupteur, démarrage depuis le téléphone, QR
+//! code d'appairage, appareils et leurs droits, connexions, journal), la confirmation d'un appairage, et l'indicateur
+//! de la barre d'état.
 
-use std::time::{Duration, UNIX_EPOCH};
+use std::path::Path;
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use eframe::egui::{self, RichText};
 use suite_mobile::msg::Rights;
@@ -9,6 +11,7 @@ use suite_mobile::msg::Rights;
 use crate::app::{Action, Suite};
 use crate::i18n::tr;
 use crate::settings::{Page, SettingsCx};
+use crate::veille;
 
 /// Ce que la page garde d'une image à l'autre.
 #[derive(Default)]
@@ -20,6 +23,8 @@ pub struct PageState {
     journal_open: bool,
     /// Message d'un ticket qui n'a pas pu être créé.
     ticket_error: Option<String>,
+    /// `veille-echec.json`, relu toutes les deux secondes au plus.
+    standby_failure: Option<(Instant, Option<veille::Failure>)>,
 }
 
 fn ago(secs: u64) -> String {
@@ -103,6 +108,8 @@ pub fn page(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui) {
     if let Some(problem) = &suite.core.mobile.store.problem {
         ui.label(RichText::new(problem).color(p.warn));
     }
+    ui.add_space(6.0);
+    standby(suite, ui);
 
     // --- Appairer ---
     ui.add_space(10.0);
@@ -292,6 +299,62 @@ pub fn page(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui) {
     });
     if ui.small_button(if *open { tr("Masquer le journal") } else { tr("Voir le journal") }).clicked() {
         suite.core.mobile.page.journal_open = !suite.core.mobile.page.journal_open;
+    }
+}
+
+/// Pourquoi le veilleur ne tourne pas, s'il l'a écrit (`veille-echec.json`) ; le fichier est relu toutes les deux
+/// secondes au plus.
+fn standby_failure(state: &mut PageState, node: Option<&Path>) -> Option<veille::Failure> {
+    if state.standby_failure.as_ref().is_none_or(|(at, _)| at.elapsed() >= Duration::from_secs(2)) {
+        state.standby_failure = Some((Instant::now(), node.and_then(veille::read_failure)));
+    }
+    state.standby_failure.as_ref().and_then(|(_, f)| f.clone())
+}
+
+/// « Démarrer Eyrie depuis le téléphone » : la case, l'état du veilleur, l'ouverture de session, son dernier échec.
+fn standby(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui) {
+    let p = suite.core.palette();
+    ui.checkbox(&mut suite.core.st.mobile.wake, tr("Démarrer Eyrie depuis le téléphone")).on_hover_text(tr(
+        "Le veilleur du PC garde Eyrie joignable sur le tailnet quand elle est fermée : un téléphone appairé peut alors la démarrer (elle s'ouvre réduite). Le PC doit être allumé, éveillé, et la session Windows ouverte (verrouillée, ça va).",
+    ));
+    if !suite.core.st.mobile.wake {
+        return;
+    }
+    let line = |ui: &mut egui::Ui, text: &str, color| {
+        ui.add(egui::Label::new(RichText::new(text).color(color)).wrap());
+    };
+    if !suite.core.st.tailnet.enabled {
+        line(ui, tr("Tailscale est coupé, le veilleur aussi : activez-le dans la page Tailscale."), p.warn);
+        return;
+    }
+    let tailnet = &suite.core.tailnet;
+    let attached = tailnet.standby_attached();
+    let mut retry = false;
+    if let Some(problem) = &tailnet.veille.problem {
+        line(ui, &format!("{} {problem}", tr("Impossible :")), p.danger);
+        retry = ui.button(tr("Réessayer")).clicked();
+    } else if attached {
+        line(ui, tr("Le veilleur tient le nœud : Eyrie fermée, le téléphone pourra la démarrer."), p.ok);
+        if !suite.core.st.mobile.enabled {
+            line(ui, tr("Accès depuis le téléphone coupé : le veilleur refuse de démarrer Eyrie."), p.warn);
+        }
+    } else if let Some(why) = tailnet.standby_fallback() {
+        line(ui, &format!("{} {why}", tr("Le veilleur ne tourne pas :")), p.warn);
+        retry = ui.button(tr("Réessayer")).clicked();
+    } else {
+        line(ui, tr("Le veilleur démarre…"), p.text_dim);
+    }
+    if let Some(e) = &tailnet.veille.error {
+        line(ui, e, p.warn);
+    } else if tailnet.veille.problem.is_none() && tailnet.veille.run.is_some() {
+        line(ui, tr("Lancé à chaque ouverture de session Windows."), p.text_dim);
+    }
+    let node = tailnet.node_path().map(Path::to_path_buf);
+    if !attached && let Some(f) = standby_failure(&mut suite.core.mobile.page, node.as_deref()) {
+        line(ui, &format!("{} ({}) : {}", tr("Dernier échec du veilleur"), ago(f.at), f.message), p.warn);
+    }
+    if retry {
+        suite.core.tailnet.retry_standby();
     }
 }
 

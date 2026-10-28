@@ -205,33 +205,35 @@ fn load_key(path: &Path) -> Result<Option<Keypair>, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e.to_string()),
     };
-    let plain = dpapi::unprotect(&bytes)?;
+    let plain = dpapi::unprotect(&bytes, KEY_ENTROPY)?;
     Keypair::from_bytes(&plain).map(Some).ok_or_else(|| "taille inattendue".into())
 }
 
 fn save_key(path: &Path, key: &Keypair) -> Result<(), String> {
-    let sealed = dpapi::protect(&key.to_bytes())?;
+    let sealed = dpapi::protect(&key.to_bytes(), KEY_ENTROPY)?;
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, sealed).and_then(|_| std::fs::rename(&tmp, path)).map_err(|e| e.to_string())
 }
 
-/// Chiffrement lié au compte Windows (DPAPI), comme la clé du nœud Tailscale.
+/// L'entropie DPAPI de la clé du PC.
+const KEY_ENTROPY: &[u8] = b"Eyrie mobile: cle du PC";
+
+/// Chiffrement lié au compte Windows (DPAPI), comme la clé du nœud Tailscale ; `entropy` sépare les usages (clé du
+/// PC, réglage du veilleur).
 #[cfg(windows)]
-mod dpapi {
+pub(crate) mod dpapi {
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Cryptography::{
         CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData,
     };
 
-    const ENTROPY: &[u8] = b"Eyrie mobile: cle du PC";
-
     fn blob(b: &[u8]) -> CRYPT_INTEGER_BLOB {
         CRYPT_INTEGER_BLOB { cbData: b.len() as u32, pbData: b.as_ptr() as *mut u8 }
     }
 
-    pub fn protect(plain: &[u8]) -> Result<Vec<u8>, String> {
+    pub fn protect(plain: &[u8], entropy: &[u8]) -> Result<Vec<u8>, String> {
         let input = blob(plain);
-        let entropy = blob(ENTROPY);
+        let entropy = blob(entropy);
         let mut out = CRYPT_INTEGER_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
         // SAFETY : blobs valides le temps de l'appel ; la sortie est rendue par LocalFree.
         let ok = unsafe {
@@ -254,9 +256,9 @@ mod dpapi {
         Ok(bytes)
     }
 
-    pub fn unprotect(sealed: &[u8]) -> Result<Vec<u8>, String> {
+    pub fn unprotect(sealed: &[u8], entropy: &[u8]) -> Result<Vec<u8>, String> {
         let input = blob(sealed);
-        let entropy = blob(ENTROPY);
+        let entropy = blob(entropy);
         let mut out = CRYPT_INTEGER_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
         // SAFETY : comme `protect`.
         let ok = unsafe {
@@ -281,12 +283,12 @@ mod dpapi {
 }
 
 #[cfg(not(windows))]
-mod dpapi {
-    pub fn protect(plain: &[u8]) -> Result<Vec<u8>, String> {
+pub(crate) mod dpapi {
+    pub fn protect(plain: &[u8], _entropy: &[u8]) -> Result<Vec<u8>, String> {
         Ok(plain.to_vec())
     }
 
-    pub fn unprotect(sealed: &[u8]) -> Result<Vec<u8>, String> {
+    pub fn unprotect(sealed: &[u8], _entropy: &[u8]) -> Result<Vec<u8>, String> {
         Ok(sealed.to_vec())
     }
 }

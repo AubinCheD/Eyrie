@@ -748,7 +748,9 @@ impl Suite {
                         self.core.journal.push("suite", Tone::Info, tr("Accès depuis le téléphone coupé."));
                     }
                     if everything {
+                        // Le veilleur aussi : arrêté, et retiré de l'ouverture de session.
                         self.core.st.tailnet.enabled = false;
+                        self.core.st.mobile.wake = false;
                     }
                 }
                 Action::SetTheme(t) => {
@@ -1201,7 +1203,8 @@ impl eframe::App for Suite {
         let commands = crate::mobile::poll(&mut self.core, frame, ctx);
         self.shell.pending_commands.extend(commands);
         let relay = self.core.mobile.relay();
-        self.core.tailnet.poll(&self.core.st.tailnet, &self.core.dir, ctx, relay);
+        self.core.tailnet.poll(&self.core.st.tailnet, &self.core.st.mobile, &self.core.dir, ctx, relay);
+        self.core.mobile.set_wake(self.core.tailnet.wake_key());
         self.core.accounts.poll();
         if self.core.accounts.take_added() {
             self.shell.settings.clear_new_account();

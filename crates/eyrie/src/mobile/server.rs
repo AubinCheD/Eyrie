@@ -12,8 +12,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use suite_mobile::channel::{self, Keypair};
-use suite_mobile::msg::{PROTOCOL, Rights, ToPc, ToPhone};
+use suite_mobile::msg::{PROTOCOL, Rights, ToPc, ToPhone, WakeKey};
 use suite_mobile::pairing::{self, Role};
+use suite_mobile::veille;
 
 /// Qui se connecte, selon Tailscale (l'en-tête du compagnon).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -94,6 +95,9 @@ pub struct Shared {
     /// développement avec `EYRIE_MOBILE_LOCAL`).
     pub token: Option<String>,
     devices: Mutex<Vec<DeviceAuth>>,
+    /// La clé du veilleur, quand « Démarrer Eyrie depuis le téléphone » est voulu et possible : chaque appareil en
+    /// reçoit son secret dans `Welcome`.
+    standby: Mutex<Option<[u8; 32]>>,
     tickets: Mutex<Vec<Ticket>>,
     inbox: Mutex<VecDeque<Inbound>>,
     wake: Box<dyn Fn() + Send + Sync>,
@@ -109,6 +113,7 @@ impl Shared {
             eyrie: env!("CARGO_PKG_VERSION").into(),
             token,
             devices: Mutex::new(Vec::new()),
+            standby: Mutex::new(None),
             tickets: Mutex::new(Vec::new()),
             inbox: Mutex::new(VecDeque::new()),
             wake,
@@ -119,6 +124,16 @@ impl Shared {
 
     pub fn set_devices(&self, devices: Vec<DeviceAuth>) {
         *lock(&self.devices) = devices;
+    }
+
+    pub fn set_standby_key(&self, key: Option<[u8; 32]>) {
+        *lock(&self.standby) = key;
+    }
+
+    /// Ce que reçoit l'appareil `dev` pour demander au veilleur de démarrer Eyrie (rien sans veilleur).
+    pub fn wake_key(&self, dev: &DeviceAuth) -> Option<WakeKey> {
+        let key = (*lock(&self.standby))?;
+        Some(wake_key(&key, dev))
     }
 
     /// Un nouveau ticket (QR et code saisi ensemble : l'un utilisé, l'autre tombe).
@@ -184,6 +199,12 @@ impl Shared {
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Le secret de démarrage de l'appareil `dev`, tiré de la clé du veilleur et de sa clé publique ; `device` est son
+/// identifiant (le veilleur le cherche dans `appareils.json`).
+pub fn wake_key(key: &[u8; 32], dev: &DeviceAuth) -> WakeKey {
+    WakeKey { port: veille::PORT, secret: veille::device_secret(key, &dev.key).to_vec(), device: dev.id.clone() }
 }
 
 /// L'écoute en cours.
@@ -332,7 +353,7 @@ fn serve(mut stream: TcpStream, shared: Arc<Shared>) {
                     pc: shared.pc_name.clone(),
                     eyrie: shared.eyrie.clone(),
                     rights: dev.rights,
-                    wake: None,
+                    wake: shared.wake_key(&dev),
                 };
                 if tx.send(&welcome).is_err() {
                     return;
@@ -513,6 +534,36 @@ mod tests {
             panic!("session fermée pendant qu'elle était calme");
         };
         assert_eq!(msg, ToPc::Ping);
+    }
+
+    /// Chaque appareil reçoit dans `Welcome` son propre secret de démarrage (celui que le veilleur recalcule) et son
+    /// identifiant ; sans veilleur, rien.
+    #[test]
+    fn each_device_gets_its_own_wake_key_in_welcome() {
+        let s = shared(None);
+        let server = Server::start(s.clone(), 0).unwrap();
+        let (pixel, tab) = (Keypair::generate(), Keypair::generate());
+        let auth = |id: &str, k: &Keypair| DeviceAuth {
+            id: id.into(),
+            name: id.into(),
+            key: k.public,
+            login: String::new(),
+            rights: Rights::default(),
+        };
+        s.set_devices(vec![auth("a1", &pixel), auth("b2", &tab)]);
+        let mut c = open(&server, &pixel);
+        assert_eq!(client::hello(&mut c, &s.key.public, "x", "y").unwrap().wake, None, "pas de veilleur");
+        s.set_standby_key(Some([5; 32]));
+        let mut seen = Vec::new();
+        for (id, k) in [("a1", &pixel), ("b2", &tab)] {
+            let mut c = open(&server, k);
+            let w = client::hello(&mut c, &s.key.public, "x", "y").unwrap().wake.expect("clé du veilleur");
+            assert_eq!(w.port, veille::PORT);
+            assert_eq!(w.device, id);
+            assert_eq!(w.secret, veille::device_secret(&[5; 32], &k.public).to_vec());
+            seen.push(w.secret);
+        }
+        assert_ne!(seen[0], seen[1], "un secret par appareil");
     }
 
     #[test]

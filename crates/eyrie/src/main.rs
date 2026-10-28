@@ -30,6 +30,7 @@ mod tests;
 #[cfg(test)]
 mod tests_deep;
 mod tiles;
+mod veille;
 mod views;
 mod windows;
 
@@ -110,7 +111,7 @@ fn main() -> eframe::Result {
     wait_for_previous(&args);
 
     let dir = persist::data_dir();
-    let lock_name = format!("Local\\Eyrie-instance:{}", suite_sdk::instance::dir_key(&dir));
+    let lock_name = veille::instance_lock(&dir);
     let Some(_instance) = suite_sdk::instance::NamedMutex::try_acquire(&lock_name) else {
         message_box("Eyrie est déjà ouvert.");
         return Ok(());

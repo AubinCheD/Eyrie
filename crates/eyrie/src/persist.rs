@@ -89,11 +89,14 @@ pub struct MobileSettings {
     pub enabled: bool,
     /// Une bulle sur le PC pour chaque action faite au téléphone.
     pub show_actions: bool,
+    /// « Démarrer Eyrie depuis le téléphone » : le veilleur garde le PC sur le tailnet quand Eyrie est fermée, et la
+    /// démarre à la demande d'un téléphone appairé (`crate::veille`).
+    pub wake: bool,
 }
 
 impl Default for MobileSettings {
     fn default() -> Self {
-        MobileSettings { enabled: false, show_actions: true }
+        MobileSettings { enabled: false, show_actions: true, wake: false }
     }
 }
 
