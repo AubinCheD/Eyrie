@@ -320,19 +320,22 @@ export component SearchField inherits Rectangle {
 }
 
 // Un bouton plein (`style` : 0 normal, 1 principal, 2 danger), avec le glyphe de l'action devant son libellé ;
-// `busy` : l'action est en cours (indicateur à la place du glyphe, bouton inactif).
+// `busy` : l'action est en cours (indicateur à la place du glyphe, bouton inactif) ; `compact` : le glyphe seul dans
+// un rond (s'il y en a un ; le libellé reste pour le lecteur d'écran).
 export component ActButton inherits Rectangle {
     in property <string> text;
     in property <string> glyph;
     in property <int> style: 0;
     in property <bool> enabled: true;
     in property <bool> busy;
+    in property <bool> compact;
     // Marge de part et d'autre du libellé (plus serrée dans une ligne).
     in property <length> pad: 16px;
     callback clicked();
     property <color> ink: root.style == 1 ? Theme.on-accent : root.style == 2 ? Theme.danger : Theme.text;
+    property <bool> round: root.compact && root.glyph != "";
     height: 48px;
-    preferred-width: content.preferred-width;
+    preferred-width: root.round ? self.height : content.preferred-width;
     border-radius: self.height / 2;
     opacity: !enabled ? 0.45 : busy ? 0.7 : 1;
     background: style == 1 ? (ta.pressed ? Theme.accent.darker(0.15) : Theme.accent)
@@ -344,8 +347,8 @@ export component ActButton inherits Rectangle {
     accessible-enabled: root.enabled && !root.busy;
     accessible-action-default => { root.clicked(); }
     content := HorizontalLayout {
-        padding-left: root.pad;
-        padding-right: root.pad;
+        padding-left: root.round ? 0 : root.pad;
+        padding-right: root.round ? 0 : root.pad;
         spacing: 7px;
         alignment: center;
         if root.busy: VerticalLayout {
@@ -358,10 +361,10 @@ export component ActButton inherits Rectangle {
         if !root.busy && root.glyph != "": Text {
             text: root.glyph;
             color: root.ink;
-            font-size: 15px;
+            font-size: root.round ? 18px : 15px;
             vertical-alignment: center;
         }
-        Text {
+        if !root.round: Text {
             text: root.text;
             color: root.ink;
             font-size: 15px;
@@ -660,6 +663,20 @@ export component BandHeader inherits Rectangle {
     }
 }
 
+// Le bouton visible d'une ligne, à droite, de 48 px : sur une ligne étroite (un téléphone), son glyphe seul dans un
+// rond, pour laisser la place au titre ; sinon le glyphe et le libellé.
+component TrailingButton inherits ActButton {
+    in property <UiAct> act;
+    in property <bool> narrow;
+    pad: 12px;
+    min-width: self.preferred-width;
+    compact: root.narrow;
+    text: root.act.label;
+    glyph: root.act.glyph;
+    style: root.act.style;
+    busy: root.act.busy;
+}
+
 // L'action que fait le toucher d'une ligne, quand elle n'ouvre pas d'écran : le toucher agit sur le PC.
 component TapPill inherits Rectangle {
     in property <UiAct> act;
@@ -742,8 +759,9 @@ export component RowView inherits Rectangle {
         content := HorizontalLayout {
             padding-left: 14px;
             padding-right: 6px;
-            padding-top: 8px;
-            padding-bottom: 8px;
+            // Le bouton visible fait 48 px : la ligne garde ses 60 px.
+            padding-top: item.has-trailing ? 6px : 8px;
+            padding-bottom: item.has-trailing ? 6px : 8px;
             spacing: 12px;
             Rectangle {
                 width: 34px;
@@ -764,15 +782,18 @@ export component RowView inherits Rectangle {
                 spacing: 2px;
                 HorizontalLayout {
                     spacing: 8px;
+                    // Le titre garde au moins 30 % de la ligne : les boutons et le texte à droite cèdent avant lui.
                     Text {
                         text: item.title;
                         color: Theme.text;
                         font-size: Theme.font-body;
                         font-weight: 500;
                         overflow: elide;
+                        min-width: min(self.preferred-width, root.width * 0.3);
                         horizontal-stretch: 1;
                     }
-                    Pill {
+                    // Seulement s'il y en a une : même cachée, une pastille vide prendrait sa place au titre.
+                    if item.badge != "": Pill {
                         text: item.badge;
                         tone: item.tone >= 3 ? item.tone : 1;
                     }
@@ -801,6 +822,7 @@ export component RowView inherits Rectangle {
                 horizontal-alignment: right;
                 max-width: 110px;
                 min-width: item.has-trailing ? 0px : min(110px, self.preferred-width);
+                horizontal-stretch: 0;
                 overflow: elide;
             }
             if item.has-tap && !item.opens: VerticalLayout {
@@ -809,35 +831,34 @@ export component RowView inherits Rectangle {
                     act: item.tap;
                 }
             }
-            if item.has-trailing: VerticalLayout {
-                alignment: center;
-                ActButton {
-                    height: 40px;
-                    pad: 12px;
-                    min-width: self.preferred-width;
-                    text: item.trailing.label;
-                    glyph: item.trailing.glyph;
-                    style: item.trailing.style;
-                    busy: item.trailing.busy;
-                    clicked => { root.trailing(); }
+            // Les boutons de droite, serrés : ⋯ et le chevron ont déjà leur marge dans leur cible.
+            if item.has-trailing || item.busy || item.acts.length > 0 || item.opens: HorizontalLayout {
+                spacing: 4px;
+                if item.has-trailing: VerticalLayout {
+                    alignment: center;
+                    TrailingButton {
+                        act: item.trailing;
+                        narrow: root.width < 480px;
+                        clicked => { root.trailing(); }
+                    }
                 }
-            }
-            if item.busy && !(item.has-tap && item.tap.busy): VerticalLayout {
-                alignment: center;
-                Busy { }
-            }
-            if item.acts.length > 0: IconButton {
-                icon: "more";
-                label: "Actions de « " + item.title + " »";
-                tint: Theme.text-dim;
-                clicked => { root.menu(); }
-            }
-            if item.opens: VerticalLayout {
-                alignment: center;
-                Icon {
-                    kind: "chevron";
-                    tint: Theme.text-faint;
-                    size: 22px;
+                if item.busy && !(item.has-tap && item.tap.busy): VerticalLayout {
+                    alignment: center;
+                    Busy { }
+                }
+                if item.acts.length > 0: IconButton {
+                    icon: "more";
+                    label: "Actions de « " + item.title + " »";
+                    tint: Theme.text-dim;
+                    clicked => { root.menu(); }
+                }
+                if item.opens: VerticalLayout {
+                    alignment: center;
+                    Icon {
+                        kind: "chevron";
+                        tint: Theme.text-faint;
+                        size: 22px;
+                    }
                 }
             }
         }
@@ -997,14 +1018,9 @@ export component CommitRowView inherits Rectangle {
             }
             if item.has-trailing: VerticalLayout {
                 alignment: center;
-                ActButton {
-                    height: 40px;
-                    pad: 12px;
-                    min-width: self.preferred-width;
-                    text: item.trailing.label;
-                    glyph: item.trailing.glyph;
-                    style: item.trailing.style;
-                    busy: item.trailing.busy;
+                TrailingButton {
+                    act: item.trailing;
+                    narrow: root.width < 480px;
                     clicked => { root.trailing(); }
                 }
             }
