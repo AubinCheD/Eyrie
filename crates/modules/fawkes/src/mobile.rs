@@ -267,7 +267,7 @@ fn dir_name(d: &str) -> String {
 }
 
 /// Le menu d'un bandeau : celui du groupe sur le PC (`sidebar::group_menu`), avec ce qui a un effet. Modifier et
-/// supprimer le groupe restent sur le PC ; redémarrer tout le groupe n'a pas d'API publique dans Fawkes.
+/// supprimer le groupe restent sur le PC.
 fn group_acts(g: &Group, n: &Tally) -> Vec<Act> {
     let gid = g.id;
     let mut acts = Vec::new();
@@ -288,6 +288,15 @@ fn group_acts(g: &Group, n: &Tally) -> Vec<Act> {
             "Mettre en veille les terminaux de « {} » ? Ce qui y tourne s'arrête jusqu'au réveil.",
             g.name
         )));
+    }
+    if n.terms > 0 {
+        let what = if n.terms == 1 { "le terminal".to_string() } else { format!("les {} terminaux", n.terms) };
+        acts.push(
+            Act::new(format!("redemarrer:g{gid}"), "Tout redémarrer")
+                .glyph("🔄")
+                .danger()
+                .confirm(format!("Redémarrer {what} de « {} » ? Ce qui y tourne s'arrête, puis repart.", g.name)),
+        );
     }
     acts.push(Act::new(format!("montrer:g{gid}"), "Montrer sur le PC").glyph("🖥️"));
     acts
@@ -537,8 +546,8 @@ fn parse(action: &str) -> Result<Cmd<'_>, String> {
         _ => return Err("action inconnue".into()),
     };
     match arg.strip_prefix('g') {
-        // Ni redémarrer ni fermer tout un groupe depuis le téléphone.
-        Some(_) if matches!(verb, Verb::Restart | Verb::Close) => Err("action inconnue".into()),
+        // Pas de quoi fermer tout un groupe depuis le téléphone.
+        Some(_) if verb == Verb::Close => Err("action inconnue".into()),
         Some(gid) => Ok(Cmd::Group(verb, gid.parse().map_err(|_| "groupe inconnu")?)),
         None => Ok(Cmd::Term(verb, arg.parse().map_err(|_| "terminal inconnu")?)),
     }
@@ -598,13 +607,21 @@ fn term_action(app: &mut App, verb: Verb, id: TermId, cx: &mut Cx) -> Result<Opt
 }
 
 /// Le menu d'un bandeau, comme celui du groupe sur le PC (`Action::SleepGroup`, `WakeGroup`, `RemoteControlGroup`) :
-/// terminal par terminal, par les méthodes publiques de Fawkes.
+/// terminal par terminal, par les méthodes publiques de Fawkes ; tout redémarrer, d'un coup (`App::restart_group` :
+/// terminal actif d'abord, lancements de Claude espacés).
 fn group_action(app: &mut App, verb: Verb, gid: GroupId, cx: &mut Cx) -> Result<Option<String>, String> {
     if app.st.group(gid).is_none() {
         return Err("Ce groupe n'existe plus.".into());
     }
     let ids = app.terms_of(gid);
     match verb {
+        Verb::Restart => {
+            if ids.is_empty() {
+                return Err("Ce groupe n'a aucun terminal.".into());
+            }
+            app.restart_group(gid);
+            Ok(Some(count(ids.len(), "terminal redémarré", "terminaux redémarrés")))
+        }
         Verb::Sleep => {
             let live: Vec<TermId> = ids.into_iter().filter(|id| app.live.contains_key(id)).collect();
             for &id in &live {
@@ -639,7 +656,7 @@ fn group_action(app: &mut App, verb: Verb, gid: GroupId, cx: &mut Cx) -> Result<
             cx.host.show(crate::suite::ID);
             Ok(Some("Montré sur le PC".into()))
         }
-        Verb::Restart | Verb::Close => Err("action inconnue".into()),
+        Verb::Close => Err("action inconnue".into()),
     }
 }
 
@@ -848,7 +865,7 @@ pub fn term_input(app: &mut App, id: &str, input: &TermInput, cx: &mut Cx) -> Re
 #[cfg(test)]
 mod tests {
     use fawkes::model::ClaudeState;
-    use suite_sdk::mobile::ui::{Block, Fold};
+    use suite_sdk::mobile::ui::{ActStyle, Block, Fold};
 
     use super::*;
 
@@ -1073,8 +1090,8 @@ mod tests {
     }
 
     /// Le menu d'un bandeau reprend celui du groupe sur le PC, avec seulement ce qui a un effet. Tout passe par la liste
-    /// blanche du pont, sauf « Nouveau terminal dans ce groupe… », un écran ouvert par le téléphone. Ni redémarrer, ni
-    /// fermer, ni supprimer un groupe depuis le téléphone.
+    /// blanche du pont, sauf « Nouveau terminal dans ce groupe… », un écran ouvert par le téléphone. « Tout redémarrer »
+    /// demande confirmation ; ni fermer ni supprimer un groupe depuis le téléphone.
     #[test]
     fn band_menus_offer_what_applies_and_are_whitelisted() {
         let (mut st, mut seen) = three_groups();
@@ -1090,17 +1107,42 @@ mod tests {
         };
         assert_eq!(
             menu(&s, "g5"),
-            ["shell:g5", "claude:g5", "nouveau/g/5", "remote:g5", "veille:g5", "montrer:g5"],
+            ["shell:g5", "claude:g5", "nouveau/g/5", "remote:g5", "veille:g5", "redemarrer:g5", "montrer:g5"],
             "dépôt, Claude sans Remote Control, tout éveillé"
         );
-        assert_eq!(menu(&s, "g7"), ["nouveau/g/7", "reveiller:g7", "montrer:g7"], "sans dépôt, tout en veille");
-        assert_eq!(menu(&s, "g0"), ["nouveau/g/0", "montrer:g0"], "vide");
+        assert_eq!(
+            menu(&s, "g7"),
+            ["nouveau/g/7", "reveiller:g7", "redemarrer:g7", "montrer:g7"],
+            "sans dépôt, tout en veille"
+        );
+        assert_eq!(menu(&s, "g0"), ["nouveau/g/0", "montrer:g0"], "vide : rien à redémarrer");
         let ids = s.action_ids();
-        for id in ["shell:g5", "claude:g5", "remote:g5", "veille:g5", "montrer:g5", "reveiller:g7", "montrer:g0"] {
+        for id in [
+            "shell:g5",
+            "claude:g5",
+            "remote:g5",
+            "veille:g5",
+            "redemarrer:g5",
+            "montrer:g5",
+            "reveiller:g7",
+            "redemarrer:g7",
+            "montrer:g0",
+        ] {
             assert!(ids.contains(id), "{id} dans la liste blanche");
         }
         assert!(s.opens().contains("nouveau/g/5"));
-        assert!(!ids.iter().any(|id| id.starts_with("redemarrer:g") || id.starts_with("fermer:g")));
+        assert!(!ids.iter().any(|id| id.starts_with("fermer:g")));
+        let restart = s.all_acts().into_iter().find(|a| a.id == "redemarrer:g5").unwrap();
+        assert_eq!(
+            (restart.label.as_str(), restart.style, restart.confirm.as_deref()),
+            (
+                "Tout redémarrer",
+                ActStyle::Danger,
+                Some("Redémarrer les 2 terminaux de « Eyrie » ? Ce qui y tourne s'arrête, puis repart.")
+            )
+        );
+        let one = s.all_acts().into_iter().find(|a| a.id == "redemarrer:g7").unwrap();
+        assert!(one.confirm.as_ref().is_some_and(|q| q.starts_with("Redémarrer le terminal de « Ozmo » ?")));
         let labels: Vec<String> = s
             .blocks
             .iter()
@@ -1123,8 +1165,8 @@ mod tests {
         assert!(!ids.contains("remote:g5") && !ids.contains("remote:1"), "déjà sous Remote Control");
     }
 
-    /// Chaque action que proposent l'accueil et les écrans « nouveau terminal » est comprise ; redémarrer ou fermer
-    /// tout un groupe ne l'est pas.
+    /// Chaque action que proposent l'accueil et les écrans « nouveau terminal » est comprise, tout redémarrer un groupe
+    /// compris ; fermer tout un groupe ne l'est pas.
     #[test]
     fn every_offered_action_is_understood() {
         let (mut st, mut seen) = three_groups();
@@ -1140,7 +1182,8 @@ mod tests {
         assert_eq!(parse("veille:g5"), Ok(Cmd::Group(Verb::Sleep, 5)));
         assert_eq!(parse("veille:12"), Ok(Cmd::Term(Verb::Sleep, 12)));
         assert_eq!(parse("claude:g5"), Ok(Cmd::New { claude: true, key: "g5" }));
-        for refused in ["redemarrer:g5", "fermer:g5", "veille:gx", "veille:", "supprimer:g5", "veille"] {
+        assert_eq!(parse("redemarrer:g5"), Ok(Cmd::Group(Verb::Restart, 5)));
+        for refused in ["fermer:g5", "redemarrer:gx", "veille:gx", "veille:", "supprimer:g5", "veille"] {
             assert!(parse(refused).is_err(), "{refused}");
         }
     }
