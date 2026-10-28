@@ -5,7 +5,7 @@
 //! Tout passe par l'API publique de Fawkes : `App::st` (groupes, terminaux), `App::live` (la grille de chaque
 //! terminal, `TermRuntime`), `ui::panes::status_color` (le libellé d'état), `ui::panes::replay_keyboard` (la saisie,
 //! encodée comme au clavier du PC, mode win32-input de ConPTY compris). Les écrans se construisent à partir de l'état
-//! de Fawkes (`AppState`) et de ce qui est relevé des terminaux en marche ([`Seen`]).
+//! de Fawkes (`AppState`) et de ce qui est relevé des terminaux en marche (`Seen`).
 
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
