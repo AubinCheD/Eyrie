@@ -1890,6 +1890,7 @@ impl Controller {
             subtitle: format!("Dossiers de {}", self.pc_label()).into(),
             dir: l.map(|l| l.dir.as_str()).unwrap_or_default().into(),
             loading: p.asked.is_some(),
+            navigating: p.navigating(),
             first_load: p.first_load(),
             trouble: p.trouble.clone().unwrap_or_default().into(),
             choose_label: choose_label.into(),

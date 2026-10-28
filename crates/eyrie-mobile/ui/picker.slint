@@ -39,8 +39,10 @@ export struct PickerState {
     subtitle: string,
     // Le dossier montré (vide : la racine).
     dir: string,
-    // Une demande au PC est en cours ; `first-load` : rien n'est encore arrivé.
+    // Une demande au PC est en cours ; `navigating` : pour un autre dossier (ou le même, rechargé), les choix attendent
+    // sa réponse ; `first-load` : rien n'est encore arrivé.
     loading: bool,
+    navigating: bool,
     first-load: bool,
     // Pas de réponse, hors ligne : dit en tête, avec « Réessayer ».
     trouble: string,
@@ -54,9 +56,11 @@ export struct PickerState {
     filterable: bool,
 }
 
-// Un dossier de la liste : le toucher l'ouvre ; un dépôt peut avoir « Choisir » à droite.
+// Un dossier de la liste : le toucher l'ouvre ; un dépôt peut avoir « Choisir » à droite (inactif pendant qu'un autre
+// dossier arrive : `waiting`).
 component PickEntry inherits Rectangle {
     in property <PickRow> item;
+    in property <bool> waiting;
     callback open();
     callback pick();
     // Refusé : estompé (inactif) ; caché ou déjà connu : son icône seulement (le texte garde son contraste).
@@ -136,6 +140,7 @@ component PickEntry inherits Rectangle {
                 ActButton {
                     text: "Choisir";
                     pad: 14px;
+                    enabled: !root.waiting;
                     min-width: self.preferred-width;
                     max-width: self.preferred-width;
                     accessible-label: "Choisir « " + item.title + " »";
@@ -170,7 +175,12 @@ component LinkRow inherits Rectangle {
     height: 56px;
     accessible-role: button;
     accessible-label: root.text;
-    accessible-action-default => { root.clicked(); }
+    accessible-enabled: !root.busy;
+    accessible-action-default => {
+        if !root.busy {
+            root.clicked();
+        }
+    }
     Rectangle {
         x: (parent.width - self.width) / 2;
         y: 6px;
@@ -452,6 +462,7 @@ export component FolderPicker inherits Rectangle {
                     }
                     if r.kind == 1: PickEntry {
                         item: r;
+                        waiting: root.state.navigating;
                         open => {
                             root.haptic();
                             root.go(r.path);

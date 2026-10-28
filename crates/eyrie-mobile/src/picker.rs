@@ -137,10 +137,11 @@ impl Picker {
         self.ask(Ask { req, dir, offset: 0 })
     }
 
-    /// La page suivante du dossier montré ; `None` : il n'en a pas, ou elle est déjà demandée.
+    /// La page suivante du dossier montré ; `None` : il n'en a pas, ou une demande attend déjà sa réponse (cette page,
+    /// ou un autre dossier qu'elle remplacerait).
     pub fn more(&mut self, req: u32) -> Option<ToPc> {
         let l = self.listing.as_ref()?;
-        if !l.more || self.asked.as_ref().is_some_and(|a| a.offset > 0) {
+        if !l.more || self.asked.is_some() {
             return None;
         }
         let offset = l.offset + l.entries.len() as u32;
@@ -148,14 +149,20 @@ impl Picker {
         Some(self.ask(Ask { req, dir, offset }))
     }
 
-    /// Le dossier montré de nouveau, depuis son début (filtre ou dossiers cachés changés).
+    /// Le dossier de nouveau, depuis son début (filtre ou dossiers cachés changés) : celui qui est demandé s'il n'est pas
+    /// encore arrivé, sinon celui qui est montré.
     fn reload(&mut self, req: u32) -> ToPc {
-        let dir = match (&self.listing, &self.asked) {
-            (Some(_), _) => self.dir(),
-            (None, Some(a)) => a.dir.clone(),
+        let dir = match (&self.asked, &self.listing) {
+            (Some(a), _) => a.dir.clone(),
+            (None, Some(_)) => self.dir(),
             (None, None) => self.start(),
         };
         self.ask(Ask { req, dir, offset: 0 })
+    }
+
+    /// Un autre dossier (ou le même, rechargé) est demandé, sans réponse encore : ce qui est montré ne se choisit pas.
+    pub fn navigating(&self) -> bool {
+        self.asked.as_ref().is_some_and(|a| a.offset == 0)
     }
 
     /// Montre ou masque les dossiers cachés.
@@ -249,10 +256,16 @@ impl Picker {
         self.trouble = Some("Hors ligne : la liste reprendra au retour du PC.".into());
     }
 
-    /// Le chemin que donnerait « Choisir ce dossier » : le dossier montré, s'il peut être choisi.
+    /// Le dossier montré peut être choisi (le PC le dit), qu'un autre soit demandé ou non.
+    fn choosable(&self) -> bool {
+        self.listing.as_ref().is_some_and(|l| l.choose.is_some() && !l.dir.is_empty())
+    }
+
+    /// Le chemin que donnerait « Choisir ce dossier » : le dossier montré, s'il peut être choisi et qu'aucun autre
+    /// n'est demandé (le dossier d'avant ne part pas pendant que celui touché arrive).
     pub fn chosen(&self) -> Option<String> {
         let l = self.listing.as_ref()?;
-        (l.choose.is_some() && !l.dir.is_empty()).then(|| l.dir.clone())
+        (self.choosable() && !self.navigating()).then(|| l.dir.clone())
     }
 
     /// Le PC a refusé de lister avant que rien ne soit montré : son refus, et le bouton de choix mène à la saisie du
@@ -276,11 +289,11 @@ impl Picker {
     }
 
     /// Ce chemin est celui d'une entrée montrée qui peut être choisie d'un toucher : un dossier, ou un raccourci de la
-    /// racine (un dépôt récent, un dossier de l'accès rapide).
+    /// racine (un dépôt récent, un dossier de l'accès rapide) ; pas pendant qu'un autre dossier est demandé.
     pub fn pickable(&self, path: &str) -> bool {
         let mut shown =
             self.listing.iter().flat_map(|l| l.entries.iter().chain(l.groups.iter().flat_map(|g| &g.places)));
-        shown.any(|e| e.path == path && self.can_pick(e))
+        !self.navigating() && shown.any(|e| e.path == path && self.can_pick(e))
     }
 
     /// Le filtre est proposé : un grand dossier, ou un filtre déjà en cours.
@@ -298,17 +311,19 @@ impl Picker {
             .collect()
     }
 
-    /// Le bouton de choix : son libellé, s'il est possible, et sinon pourquoi (ou que faire).
+    /// Le bouton de choix : son libellé, s'il est possible, et sinon pourquoi (ou que faire). Pendant qu'un autre
+    /// dossier arrive, le bouton attend, et le texte ne change pas.
     pub fn choice(&self) -> (String, bool, String) {
         if self.refusal().is_some() {
             return ("Saisir le chemin".into(), true, "Ou saisissez le chemin du dossier à la main.".into());
         }
         let l = self.listing.as_ref();
         let label = l.and_then(|l| l.choose.clone()).unwrap_or_else(|| "Choisir ce dossier".into());
+        let ready = self.choosable();
         let can = self.chosen().is_some();
         let why = match l {
-            Some(l) if !can && !l.why_not.is_empty() => l.why_not.clone(),
-            _ if can => String::new(),
+            Some(l) if !ready && !l.why_not.is_empty() => l.why_not.clone(),
+            _ if ready => String::new(),
             _ if self.spec.want == FOLDER_REPO => "Ouvrez un dépôt, ou touchez « Choisir » à côté de lui.".into(),
             _ => "Ouvrez le dossier à choisir.".into(),
         };
@@ -646,6 +661,36 @@ mod tests {
         assert_eq!(p.answer(1, unreachable(r"C:\nulle\part", "Ce dossier n'existe pas.")), Answer::Shown);
         assert_eq!(p.refusal(), Some("Ce dossier n'existe pas."));
         assert_eq!(browse_req(&p.again(2)).1.as_deref(), Some(r"C:\nulle\part"));
+    }
+
+    /// Un dossier touché, sa réponse pas encore là : ni « Choisir ce dossier » ni « Choisir » à côté d'un dépôt du
+    /// dossier d'avant ne partent (le texte du bouton ne change pas), « N de plus » ne remplace pas la demande, et les
+    /// dossiers cachés s'appliquent au dossier demandé. La page suivante qui arrive n'empêche pas de choisir.
+    #[test]
+    fn nothing_is_chosen_while_another_folder_loads() {
+        let mut p = picker(FOLDER_REPO);
+        p.browse(1, Some(r"C:\DEV"));
+        let mut l = listing(r"C:\DEV", &[("Eyrie", ENTRY_REPO), ("Clients", 0)]);
+        (l.choose, l.more, l.total) = (Some("Ajouter ce dépôt".into()), true, 60);
+        p.answer(1, l);
+        assert!(p.chosen().is_some() && p.pickable(r"C:\DEV\Eyrie"));
+
+        p.browse(2, Some(r"C:\DEV\Clients"));
+        assert!(p.navigating());
+        assert_eq!(p.chosen(), None, "le dossier d'avant ne part pas");
+        assert!(!p.pickable(r"C:\DEV\Eyrie"));
+        assert_eq!(p.choice(), ("Ajouter ce dépôt".into(), false, String::new()));
+        assert!(p.more(3).is_none(), "la page d'avant ne remplace pas la demande");
+        assert_eq!(browse_req(&p.set_hidden(4, true)).1.as_deref(), Some(r"C:\DEV\Clients"), "le dossier demandé");
+
+        let mut l = listing(r"C:\DEV\Clients", &[("a", 0)]);
+        (l.choose, l.more, l.total) = (Some("Ajouter ce dépôt".into()), true, 60);
+        p.answer(4, l);
+        assert!(p.more(5).is_some());
+        assert!(
+            !p.navigating() && p.chosen().as_deref() == Some(r"C:\DEV\Clients"),
+            "une page de plus attend : on choisit"
+        );
     }
 
     /// Une coupure perd la demande en cours : elle est dite, et refaite au retour du PC.
