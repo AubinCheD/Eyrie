@@ -21,9 +21,11 @@ export struct UiAct {
 }
 
 // Une ligne d'écran. `kind` : 0 section, 1 ligne, 2 note, 3 jauge, 4 texte, 5 vide, 6 boutons, 7 ligne de diff (`tone` :
-// 0 contexte, 1 ajout, 2 retrait, 3 en-tête).
+// 0 contexte, 1 ajout, 2 retrait, 3 en-tête), 8 bandeau (`key` : sa clé ; `fold` : 0 ne se plie pas, 1 ouvert, 2 plié).
 export struct UiRow {
     kind: int,
+    key: string,
+    fold: int,
     title: string,
     subtitle: string,
     detail: string,
@@ -243,6 +245,106 @@ export component SectionHeader inherits Rectangle {
             horizontal-alignment: right;
             vertical-alignment: center;
         }
+    }
+}
+
+// Un bandeau : l'en-tête d'un groupe de lignes, qui se plie et se déplie d'un toucher n'importe où ; pastille de couleur,
+// glyphe, titre, texte à droite, pastille de ton (visible même plié), menu ⋯.
+export component BandHeader inherits Rectangle {
+    in property <UiRow> item;
+    callback toggle();
+    callback menu();
+    property <bool> foldable: item.fold != 0;
+    height: 52px;
+    accessible-role: button;
+    accessible-label: item.title + (item.detail != "" ? ", " + item.detail : "") + (item.badge != "" ? ", " + item.badge : "");
+    accessible-expandable: root.foldable;
+    accessible-expanded: item.fold == 1;
+    accessible-action-default => {
+        if root.foldable {
+            root.toggle();
+        }
+    }
+    accessible-action-expand => { root.toggle(); }
+    Rectangle {
+        x: Theme.pad - 8px;
+        width: parent.width - 2 * (Theme.pad - 8px);
+        y: 4px;
+        height: parent.height - 8px;
+        border-radius: Theme.radius-small;
+        background: ta.pressed ? Theme.pressed : transparent;
+        animate background { duration: 90ms; }
+    }
+    HorizontalLayout {
+        padding-left: Theme.pad;
+        padding-right: item.acts.length > 0 ? 4px : Theme.pad;
+        spacing: 10px;
+        if root.foldable: VerticalLayout {
+            alignment: center;
+            Icon {
+                kind: "chevron";
+                size: 20px;
+                tint: Theme.text-dim;
+                transform-rotation: item.fold == 1 ? 90deg : 0deg;
+                animate transform-rotation { duration: 160ms; easing: ease-out; }
+            }
+        }
+        if item.has-color: VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 10px;
+                height: 10px;
+                border-radius: 5px;
+                background: item.color;
+            }
+        }
+        if item.glyph != "": Text {
+            text: item.glyph;
+            color: item.has-color ? item.color : Theme.text-dim;
+            font-size: 16px;
+            vertical-alignment: center;
+        }
+        Text {
+            text: item.title;
+            color: Theme.text;
+            font-size: 15px;
+            font-weight: 600;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        if item.detail != "": Text {
+            text: item.detail;
+            color: Theme.text-dim;
+            font-size: 13px;
+            vertical-alignment: center;
+        }
+        if item.badge != "": VerticalLayout {
+            alignment: center;
+            Pill {
+                text: item.badge;
+                tone: item.tone > 0 ? item.tone : 1;
+            }
+        }
+        if item.busy: VerticalLayout {
+            alignment: center;
+            Busy { }
+        }
+        if item.acts.length > 0: VerticalLayout {
+            alignment: center;
+            IconButton {
+                icon: "more";
+                label: "Actions de « " + item.title + " »";
+                tint: Theme.text-dim;
+                clicked => { root.menu(); }
+            }
+        }
+    }
+    ta := TouchArea {
+        x: 0;
+        width: parent.width - (item.acts.length > 0 ? 52px : 0px);
+        enabled: root.foldable;
+        clicked => { root.toggle(); }
     }
 }
 

@@ -6,7 +6,7 @@ import { Theme } from "theme.slint";
 import { TailnetStatus } from "onboarding.slint";
 import {
     UiAct, UiRow, ModuleItem, WaitItem, NoteItem, CommandItem, PcItem, Icon, IconButton, ModuleAvatar, Pill,
-    SectionHeader, RowView, NoteView, MeterView, TextBlock, ActButton, EmptyView, DiffLineView
+    SectionHeader, RowView, NoteView, MeterView, TextBlock, ActButton, EmptyView, DiffLineView, BandHeader
 } from "widgets.slint";
 
 // L'écran d'un module : les blocs décrits par le PC.
@@ -21,6 +21,7 @@ export component ScreenPage inherits Rectangle {
     callback open-path(string);
     callback act(UiAct);
     callback menu(UiRow);
+    callback fold(string);
     callback haptic();
 
     property <length> applied-y;
@@ -58,6 +59,14 @@ export component ScreenPage inherits Rectangle {
             if r.kind == 0: SectionHeader {
                 title: r.title;
                 aside: r.detail;
+            }
+            if r.kind == 8: BandHeader {
+                item: r;
+                toggle => {
+                    root.haptic();
+                    root.fold(r.key);
+                }
+                menu => { root.menu(r); }
             }
             if r.kind == 1: RowView {
                 item: r;

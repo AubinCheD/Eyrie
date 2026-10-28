@@ -108,6 +108,7 @@ export component AppWindow inherits Window {
     callback open-path(string);
     callback back-requested() -> bool;
     callback run-act(UiAct, string);
+    callback fold-band(string);
     callback open-url(string);
     callback haptic();
     callback toggle-pin(string);
@@ -356,6 +357,7 @@ export component AppWindow inherits Window {
                         open-path(p) => { root.open-path(p); }
                         act(a) => { root.start-act(a); }
                         menu(r) => { root.show-sheet(r.title, r.acts); }
+                        fold(k) => { root.fold-band(k); }
                         haptic => { root.haptic(); }
                     }
                     term := TermView {

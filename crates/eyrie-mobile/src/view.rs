@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use slint::{Color, Model, ModelRc, SharedString, VecModel};
-use suite_mobile::ui::{Act, ActStyle, Block, Row, Screen, Tone};
+use suite_mobile::ui::{Act, ActStyle, Block, Fold, Row, Screen, Tone};
 
 use crate::{UiAct, UiRow};
 
@@ -32,6 +32,9 @@ pub fn rgb(c: u32) -> Color {
 pub struct Local {
     /// Les actions envoyées depuis cet écran dont le PC n'a pas encore donné le résultat (leurs identifiants).
     pub pending: HashSet<String>,
+    /// Les bandeaux que l'utilisateur a pliés (`false`) ou dépliés (`true`), par clé ; les autres gardent l'état de
+    /// départ donné par le PC.
+    pub open: HashMap<String, bool>,
 }
 
 impl Local {
@@ -79,7 +82,11 @@ pub struct Item<'a> {
 }
 
 enum What<'a> {
-    Section(&'a Block),
+    /// `open` : `None` pour un titre qui ne se plie pas.
+    Section {
+        block: &'a Block,
+        open: Option<bool>,
+    },
     Row {
         row: &'a Row,
         first: bool,
@@ -140,17 +147,51 @@ fn hash_block(h: &mut DefaultHasher, b: &Block, local: &Local) {
     }
 }
 
-/// Les lignes de l'écran, dans l'ordre, avec leur clé et leur empreinte.
+/// Un bandeau est-il ouvert ? Le choix de l'utilisateur (ouvert, et le ton du bandeau quand il l'a fait), sinon l'état
+/// de départ du PC. « L'alerte gagne » : un bandeau plié qui passe à Attention ou Danger, plus grave qu'au pliage, se
+/// rouvre ; une fois : le second booléen dit qu'il faut retenir ce nouvel état.
+pub fn band_open(chosen: Option<(bool, i32)>, default_open: bool, tone_now: i32) -> (bool, bool) {
+    match chosen {
+        None => (default_open, false),
+        Some((false, tone_then)) if tone_now >= 3 && tone_now > tone_then => (true, true),
+        Some((open, _)) => (open, false),
+    }
+}
+
+/// Le pliage d'un titre de section : `None` s'il ne se plie pas.
+fn fold_of(b: &Block, local: &Local) -> Option<bool> {
+    match b {
+        Block::Section { key, fold, .. } if !key.is_empty() && *fold != Fold::No => {
+            Some(local.open.get(key).copied().unwrap_or(*fold == Fold::Open))
+        }
+        _ => None,
+    }
+}
+
+/// Les lignes de l'écran, dans l'ordre, avec leur clé et leur empreinte : un bandeau plié cache les blocs qui le
+/// suivent jusqu'à la section suivante, et les cartes (premier et dernier arrondis) se forment sur ce qui reste.
 pub fn items<'a>(s: &'a Screen, local: &Local) -> Vec<Item<'a>> {
-    let is_row = |i: usize| matches!(s.blocks.get(i), Some(Block::Row(_)));
+    let mut visible: Vec<(&Block, Option<bool>)> = Vec::with_capacity(s.blocks.len());
+    let mut folded = false;
+    for b in &s.blocks {
+        if matches!(b, Block::Section { .. }) {
+            let open = fold_of(b, local);
+            folded = open == Some(false);
+            visible.push((b, open));
+        } else if !folded {
+            visible.push((b, None));
+        }
+    }
+    let is_row = |i: usize| matches!(visible.get(i), Some((Block::Row(_), _)));
     let mut keys = Keys::default();
-    let mut out = Vec::with_capacity(s.blocks.len());
-    for (i, b) in s.blocks.iter().enumerate() {
+    let mut out = Vec::with_capacity(visible.len());
+    for (i, &(b, open)) in visible.iter().enumerate() {
         let mut h = DefaultHasher::new();
         hash_block(&mut h, b, local);
         let (base, what) = match b {
             Block::Section { title, key, .. } => {
-                (format!("s:{}", if key.is_empty() { title } else { key }), What::Section(b))
+                open.hash(&mut h);
+                (format!("s:{}", if key.is_empty() { title } else { key }), What::Section { block: b, open })
             }
             Block::Row(r) => {
                 let (first, last) = (i == 0 || !is_row(i - 1), !is_row(i + 1));
@@ -209,15 +250,45 @@ fn row(r: &Row, first: bool, last: bool, local: &Local) -> UiRow {
         first,
         last,
         busy: r.tap.iter().chain(&r.acts).any(|a| local.busy(a)),
+        ..Default::default()
+    }
+}
+
+/// Un bandeau (`kind` 8 : pliable, ou orné d'une couleur, d'un glyphe, d'une pastille, d'un menu), sinon un simple
+/// titre de section (`kind` 0).
+fn section(b: &Block, open: Option<bool>, local: &Local) -> UiRow {
+    let Block::Section { title, aside, key, color, glyph, badge, tone: t, acts: list, .. } = b else {
+        return empty(5, "");
+    };
+    let plain = open.is_none() && color.is_none() && glyph.is_empty() && badge.is_empty() && list.is_empty();
+    if plain {
+        return UiRow { detail: aside.as_str().into(), ..empty(0, &title.to_uppercase()) };
+    }
+    UiRow {
+        kind: 8,
+        key: key.as_str().into(),
+        title: title.as_str().into(),
+        detail: aside.as_str().into(),
+        glyph: glyph.as_str().into(),
+        color: color.map(rgb).unwrap_or_default(),
+        has_color: color.is_some(),
+        badge: badge.as_str().into(),
+        tone: tone(*t),
+        acts: acts(list, local),
+        fold: match open {
+            None => 0,
+            Some(true) => 1,
+            Some(false) => 2,
+        },
+        busy: list.iter().any(|a| local.busy(a)),
+        ..Default::default()
     }
 }
 
 /// La ligne Slint d'une ligne de la liste.
 pub fn ui_row(item: &Item, local: &Local) -> UiRow {
     match &item.what {
-        What::Section(Block::Section { title, aside, .. }) => {
-            UiRow { detail: aside.as_str().into(), ..empty(0, &title.to_uppercase()) }
-        }
+        What::Section { block, open } => section(block, *open, local),
         What::Row { row: r, first, last } => row(r, *first, *last, local),
         What::Block(Block::Note { text, tone: t, .. }) => UiRow { tone: tone(Some(*t)), ..empty(2, text) },
         What::Block(Block::Meter { label, value, text, tone: t }) => {
@@ -229,7 +300,7 @@ pub fn ui_row(item: &Item, local: &Local) -> UiRow {
         What::DiffLine { kind, text, first, last } => {
             UiRow { tone: *kind as i32, first: *first, last: *last, ..empty(7, text) }
         }
-        What::Section(_) | What::Block(_) => empty(5, ""),
+        What::Block(_) => empty(5, ""),
     }
 }
 
@@ -316,6 +387,8 @@ pub fn ago(at: u64, now: u64) -> String {
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+
+    use suite_mobile::ui::Band;
 
     use super::*;
 
@@ -446,6 +519,68 @@ mod tests {
         patch(&model, &mut shown, &items(&s, &idle), |i| ui_row(i, &idle));
         let built = patch(&model, &mut shown, &items(&s, &sent), |i| ui_row(i, &sent));
         assert_eq!(built, 2, "les boutons et la ligne `dev`");
+    }
+
+    fn bands() -> Screen {
+        let mut s = Screen::new("Fawkes");
+        s.row(Row::new("Nouveau terminal").open("nouveau"));
+        s.band(Band::new("g1", "Eyrie").badge("1 attend").tone(Tone::Warn).act(Act::new("veille:g1", "Veille")));
+        s.row(Row::new("Claude").key("t/3")).row(Row::new("pwsh").key("t/4"));
+        s.band(Band::new("g2", "Ozmo").open(false)).row(Row::new("Git Bash").key("t/7"));
+        s.note("Une note du groupe Ozmo", Tone::Info);
+        s.section("Récents", "").row(Row::new("Eyrie").key("r/1"));
+        s
+    }
+
+    fn shown(s: &Screen, local: &Local) -> Vec<String> {
+        items(s, local).into_iter().map(|i| i.key).collect()
+    }
+
+    /// Un bandeau plié cache ce qui le suit jusqu'à la section suivante ; le choix fait sur le téléphone l'emporte sur
+    /// l'état de départ du PC ; un simple titre ne se plie pas.
+    #[test]
+    fn a_folded_band_hides_what_follows_it_up_to_the_next_section() {
+        let s = bands();
+        let mut local = Local::default();
+        assert_eq!(
+            shown(&s, &local),
+            ["r:Nouveau terminal\u{1f}", "s:g1", "r:t/3", "r:t/4", "s:g2", "s:Récents", "r:r/1"]
+        );
+        let r = rows(&s, &local);
+        assert_eq!((r[1].kind, r[1].fold, r[1].title.as_str(), r[1].tone), (8, 1, "Eyrie", 3));
+        assert_eq!((r[4].fold, r[4].key.as_str()), (2, "g2"));
+        assert_eq!((r[5].kind, r[5].title.as_str()), (0, "RÉCENTS"), "un simple titre");
+
+        local.open.insert("g1".into(), false);
+        local.open.insert("g2".into(), true);
+        assert_eq!(shown(&s, &local), ["r:Nouveau terminal\u{1f}", "s:g1", "s:g2", "r:t/7", "n", "s:Récents", "r:r/1"]);
+    }
+
+    /// Les cartes se forment sur ce qui est montré : la ligne avant un bandeau plié reste la dernière de sa carte même
+    /// si des lignes cachées la suivent.
+    #[test]
+    fn cards_are_rounded_after_folding() {
+        let mut s = Screen::new("x");
+        s.row(Row::new("a")).band(Band::new("k", "Plié").open(false)).row(Row::new("b"));
+        s.band(Band::new("k2", "Ouvert").fixed()).row(Row::new("c")).row(Row::new("d"));
+        let r = rows(&s, &Local::default());
+        assert_eq!(r.iter().map(|r| r.title.to_string()).collect::<Vec<_>>(), ["a", "Plié", "OUVERT", "c", "d"]);
+        assert!(r[0].first && r[0].last);
+        assert!(r[3].first && !r[3].last && r[4].last);
+        assert_eq!(r[2].kind, 0, "qui ne se plie pas, sans ornement : un simple titre");
+    }
+
+    /// L'alerte gagne : plié en Info, un bandeau qui passe à Attention se rouvre (une fois) ; plié en Attention, il
+    /// ne se rouvre que s'il passe à Danger.
+    #[test]
+    fn a_folded_band_reopens_once_when_it_becomes_alarming() {
+        assert_eq!(band_open(None, true, 4), (true, false), "l'état de départ du PC");
+        assert_eq!(band_open(None, false, 4), (false, false));
+        assert_eq!(band_open(Some((false, 1)), true, 1), (false, false));
+        assert_eq!(band_open(Some((false, 1)), true, 3), (true, true));
+        assert_eq!(band_open(Some((false, 3)), true, 3), (false, false), "replié par l'utilisateur en connaissance");
+        assert_eq!(band_open(Some((false, 3)), true, 4), (true, true));
+        assert_eq!(band_open(Some((true, 0)), false, 0), (true, false));
     }
 
     #[test]

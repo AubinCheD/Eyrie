@@ -4,7 +4,7 @@
 
 use suite_mobile::msg::{Badge, CommandCard, ModuleCard, Note, ToPhone, Waiting};
 use suite_mobile::term::{self, Color, Line, Run, TermFrame, TermView};
-use suite_mobile::ui::{Act, Row, Screen, Tone};
+use suite_mobile::ui::{Act, Band, Row, Screen, Tone};
 
 use crate::app::with;
 use crate::tailnet::Tailnet;
@@ -44,11 +44,32 @@ fn modules() -> Vec<ModuleCard> {
     ]
 }
 
+/// Le menu d'un groupe de Fawkes.
+fn group_menu(g: &str) -> Band {
+    Band::new(g, "")
+        .act(Act::new(format!("claude:{g}"), "Claude dans le dépôt du groupe").glyph("✳"))
+        .act(Act::screen("Nouveau terminal dans ce groupe…", format!("nouveau/g/{g}")).glyph("+"))
+        .act(Act::new(format!("veille:{g}"), "Tout mettre en veille").glyph("☾"))
+        .act(
+            Act::new(format!("redemarrer:{g}"), "Tout redémarrer")
+                .glyph("↻")
+                .danger()
+                .confirm("Redémarrer tous les terminaux du groupe ?"),
+        )
+}
+
+/// Fawkes : un bandeau pliant par groupe de terminaux.
 fn fawkes_home() -> Screen {
     let mut s = Screen::new("Fawkes").act(Act::new("@pc", "Montrer sur le PC"));
     s.note("Une session Claude attend une réponse.", Tone::Warn);
     s.row(Row::new("Nouveau terminal").glyph("➕").subtitle("Shell ou Claude, dans un dossier récent").open("nouveau"));
-    s.section("Eyrie", "3");
+    let eyrie = group_menu("g1");
+    s.band(
+        Band { title: "Eyrie".into(), aside: "✻1 · 3".into(), ..eyrie }
+            .color(0x5b8def)
+            .badge("1 attend")
+            .tone(Tone::Warn),
+    );
     s.row(
         Row::new("Claude · appli mobile")
             .subtitle("Claude attend une réponse · …\\TestAubin\\Eyrie")
@@ -69,7 +90,8 @@ fn fawkes_home() -> Screen {
             .act(Act::new("veille:4", "Mettre en veille").glyph("🌙")),
     );
     s.row(Row::new("PowerShell").subtitle("Shell · …\\TestAubin\\Eyrie").glyph("›_").color(0x5b8def).open("t/5"));
-    s.section("Ozmo", "2");
+    let ozmo = group_menu("g2");
+    s.band(Band { title: "Ozmo".into(), aside: "✻1 · 2".into(), ..ozmo }.color(0x4cb872));
     s.row(
         Row::new("Claude · revue de code")
             .subtitle("Claude travaille · …\\DEV\\Ozmo")
@@ -79,6 +101,9 @@ fn fawkes_home() -> Screen {
             .open("t/6"),
     );
     s.row(Row::new("Git Bash").subtitle("En veille · …\\DEV\\Ozmo").glyph("›_").color(0x4cb872).open("t/7"));
+    let perso = group_menu("g3");
+    s.band(Band { title: "Perso".into(), aside: "0".into(), ..perso }.color(0xb07ce0).open(false));
+    s.empty("Aucun terminal dans ce groupe.");
     s
 }
 

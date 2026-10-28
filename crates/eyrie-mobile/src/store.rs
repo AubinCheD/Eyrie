@@ -1,6 +1,7 @@
 //! Ce que le téléphone garde : sa clé (son identité auprès des PC), les PC appairés et leurs clés, les préférences.
 //! Dans le stockage privé de l'application (inaccessible aux autres applications sur Android).
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -45,6 +46,20 @@ impl Pc {
     }
 }
 
+/// Les bandeaux pliés ou dépliés gardés au plus (les moins récemment touchés partent).
+pub const FOLDS_MAX: usize = 300;
+
+/// Un bandeau plié ou déplié par l'utilisateur : le téléphone retient son choix, rien n'est envoyé au PC.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Folded {
+    pub open: bool,
+    /// Le ton du bandeau à ce moment (0 aucun… 4 danger) : un bandeau plié qui devient plus grave se rouvre.
+    pub tone: i32,
+    /// Ordre des choix : le plus ancien part au-delà de [`FOLDS_MAX`].
+    pub seq: u64,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Prefs {
@@ -56,6 +71,12 @@ pub struct Prefs {
     pub pinned: Vec<String>,
     pub device_name: String,
     pub current: Option<String>,
+    /// Bandeaux pliés ou dépliés, par PC, module, écran et clé (voir [`Store::folded`]).
+    pub folds: BTreeMap<String, Folded>,
+}
+
+fn fold_key(pc: &str, module: &str, path: &str, band: &str) -> String {
+    format!("{pc}\u{1f}{module}\u{1f}{path}\u{1f}{band}")
 }
 
 pub fn hex(bytes: &[u8]) -> String {
@@ -119,9 +140,29 @@ impl Store {
         self.save();
     }
 
+    /// Le choix fait pour un bandeau d'un écran de ce PC.
+    pub fn folded(&self, pc: &str, module: &str, path: &str, band: &str) -> Option<&Folded> {
+        self.prefs.folds.get(&fold_key(pc, module, path, band))
+    }
+
+    /// Retient le choix fait pour un bandeau (à enregistrer ensuite) ; [`FOLDS_MAX`] choix au plus.
+    pub fn set_folded(&mut self, pc: &str, module: &str, path: &str, band: &str, open: bool, tone: i32) {
+        let seq = self.prefs.folds.values().map(|f| f.seq).max().unwrap_or(0) + 1;
+        self.prefs.folds.insert(fold_key(pc, module, path, band), Folded { open, tone, seq });
+        while self.prefs.folds.len() > FOLDS_MAX {
+            let oldest = self.prefs.folds.iter().min_by_key(|(_, f)| f.seq).map(|(k, _)| k.clone());
+            match oldest {
+                Some(k) => self.prefs.folds.remove(&k),
+                None => break,
+            };
+        }
+    }
+
     /// Oublie un PC ; le suivant devient le PC courant.
     pub fn forget(&mut self, id: &str) {
         self.pcs.retain(|p| p.id != id);
+        let mine = format!("{id}\u{1f}");
+        self.prefs.folds.retain(|k, _| !k.starts_with(&mine));
         if self.prefs.current.as_deref() == Some(id) {
             self.prefs.current = self.pcs.first().map(|p| p.id.clone());
         }
@@ -160,6 +201,33 @@ mod tests {
         let mut s = back;
         s.forget("a");
         assert!(s.current().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Le pliage des bandeaux est gardé par PC, module, écran et clé ; les plus anciens choix partent au-delà de la
+    /// limite ; oublier un PC oublie les siens.
+    #[test]
+    fn folded_bands_are_kept_per_screen_and_bounded() {
+        let dir = std::env::temp_dir().join(format!("eyrie-mobile-folds-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut s = Store::open(&dir);
+        s.set_folded("pc1", "fawkes", "", "g1", false, 1);
+        s.set_folded("pc2", "fawkes", "", "g1", true, 0);
+        s.save();
+        let back = Store::open(&dir);
+        assert_eq!(back.folded("pc1", "fawkes", "", "g1").map(|f| (f.open, f.tone)), Some((false, 1)));
+        assert_eq!(back.folded("pc2", "fawkes", "", "g1").map(|f| f.open), Some(true));
+        assert!(back.folded("pc1", "fawkes", "groupe", "g1").is_none());
+
+        let mut s = back;
+        for i in 0..FOLDS_MAX + 5 {
+            s.set_folded("pc1", "owlery", "", &format!("depot{i}"), false, 0);
+        }
+        assert_eq!(s.prefs.folds.len(), FOLDS_MAX);
+        assert!(s.folded("pc1", "fawkes", "", "g1").is_none(), "le plus ancien est parti");
+        assert!(s.folded("pc1", "owlery", "", &format!("depot{}", FOLDS_MAX + 4)).is_some());
+        s.forget("pc1");
+        assert!(s.prefs.folds.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

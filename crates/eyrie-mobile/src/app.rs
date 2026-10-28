@@ -11,7 +11,7 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use suite_mobile::msg::{CommandCard, ModuleCard, Note, Rights, ToPc, ToPhone, Waiting};
 use suite_mobile::pairing::{self, Ticket};
 use suite_mobile::term::{Key, TermInput};
-use suite_mobile::ui::{Screen, Tone};
+use suite_mobile::ui::{Act, Block, Fold, Screen, Tone};
 
 use crate::net::{Link, NetEvent, PairEvent};
 use crate::store::{self, Pc, Store};
@@ -700,10 +700,50 @@ impl Controller {
         self.is_module_tab() && key.0 == self.tab && key.1 == self.top_path()
     }
 
-    /// Ce que le téléphone ajoute à cet écran : ses actions en cours.
-    fn local(&self, key: &(String, String)) -> view::Local {
+    /// Ce que le téléphone ajoute à cet écran : ses actions en cours, le pliage de ses bandeaux. Un bandeau plié qui
+    /// devient plus grave se rouvre (« l'alerte gagne ») : ce nouvel état est retenu.
+    fn local(&mut self, key: &(String, String)) -> view::Local {
         let pending = self.pending.values().filter(|p| p.module == key.0 && p.path == key.1);
-        view::Local { pending: pending.map(|p| p.act.clone()).collect() }
+        let mut local = view::Local { pending: pending.map(|p| p.act.clone()).collect(), ..Default::default() };
+        let pc = self.store.prefs.current.clone().unwrap_or_default();
+        let mut reopened = Vec::new();
+        for (band, default_open, tone) in bands(self.screens.get(key)) {
+            let chosen = self.store.folded(&pc, &key.0, &key.1, &band).map(|f| (f.open, f.tone));
+            let (open, again) = view::band_open(chosen, default_open, tone);
+            if chosen.is_some() {
+                local.open.insert(band.clone(), open);
+            }
+            if again {
+                reopened.push((band, tone));
+            }
+        }
+        for (band, tone) in &reopened {
+            self.store.set_folded(&pc, &key.0, &key.1, band, true, *tone);
+        }
+        if !reopened.is_empty() {
+            self.store.save();
+        }
+        local
+    }
+
+    /// Plie ou déplie des bandeaux de l'écran affiché (`None` : celui-ci seulement, à l'inverse de son état), sur le
+    /// téléphone seulement.
+    fn fold_bands(&mut self, only: Option<&str>, open: bool) {
+        let Some(key) = self.shown_for.clone() else { return };
+        let local = self.local(&key);
+        let pc = self.store.prefs.current.clone().unwrap_or_default();
+        for (band, default_open, tone) in bands(self.screens.get(&key)) {
+            match only {
+                Some(b) if b == band => {
+                    let now = local.open.get(&band).copied().unwrap_or(default_open);
+                    self.store.set_folded(&pc, &key.0, &key.1, &band, !now, tone);
+                }
+                Some(_) => {}
+                None => self.store.set_folded(&pc, &key.0, &key.1, &band, open, tone),
+            }
+        }
+        self.store.save();
+        self.refresh_screen();
     }
 
     fn followed_term(&self) -> Option<(String, String)> {
@@ -789,7 +829,12 @@ impl Controller {
         ui.set_can_back(can_back);
         ui.set_show_pc(acts.iter().any(|a| a.id == "@pc"));
         let local = screen_follow.as_ref().map(|k| self.local(k)).unwrap_or_default();
-        view::sync(&self.models.acts, acts.iter().filter(|a| a.id != "@pc").map(|a| view::act_in(a, &local)).collect());
+        let mut acts: Vec<Act> = acts.into_iter().filter(|a| a.id != "@pc").collect();
+        if screen_follow.as_ref().is_some_and(|k| bands(self.screens.get(k)).len() >= 2) {
+            acts.push(Act::new("@replier", "Tout replier").glyph("▸"));
+            acts.push(Act::new("@deplier", "Tout déplier").glyph("▾"));
+        }
+        view::sync(&self.models.acts, acts.iter().map(|a| view::act_in(a, &local)).collect());
         self.refresh_rows(screen_follow.as_ref().filter(|_| term_follow.is_none()));
         let terminal_mode = term_follow.is_some();
         if terminal_mode && !self.term.is(&term_follow.as_ref().unwrap().0, &term_follow.as_ref().unwrap().1) {
@@ -810,7 +855,7 @@ impl Controller {
 
     /// Les lignes de l'écran affiché (`None` : pas d'écran de module en liste), mises à jour sur place.
     fn refresh_rows(&mut self, key: Option<&(String, String)>) {
-        let Some((key, s)) = key.and_then(|k| self.screens.get(k).map(|s| (k, s))) else {
+        let Some(key) = key.filter(|k| self.screens.contains_key(*k)).cloned() else {
             if self.models.rows.row_count() > 0 {
                 self.models.rows.set_vec(Vec::new());
             }
@@ -820,18 +865,18 @@ impl Controller {
             self.shown.clear();
             return;
         };
-        let local = self.local(key);
-        let items = view::items(s, &local);
-        if self.shown_for.as_ref() == Some(key) {
+        let local = self.local(&key);
+        let items = view::items(&self.screens[&key], &local);
+        if self.shown_for.as_ref() == Some(&key) {
             view::patch(&self.models.rows, &mut self.shown, &items, |i| view::ui_row(i, &local));
-        } else {
-            // Un autre écran : la liste repart de zéro, à la position où on l'avait laissée.
-            self.models.rows.set_vec(items.iter().map(|i| view::ui_row(i, &local)).collect::<Vec<_>>());
-            self.shown = items.iter().map(|i| (i.key.clone(), i.sig)).collect();
-            let y = self.scroll.get(key).copied().unwrap_or(0.0);
-            self.shown_for = Some(key.clone());
-            self.scroll_to(y);
+            return;
         }
+        // Un autre écran : la liste repart de zéro, à la position où on l'avait laissée.
+        self.models.rows.set_vec(items.iter().map(|i| view::ui_row(i, &local)).collect::<Vec<_>>());
+        self.shown = items.iter().map(|i| (i.key.clone(), i.sig)).collect();
+        let y = self.scroll.get(&key).copied().unwrap_or(0.0);
+        self.shown_for = Some(key);
+        self.scroll_to(y);
     }
 
     /// Retient la position de la liste de l'écran affiché, avant d'en changer.
@@ -1011,9 +1056,11 @@ impl Controller {
     }
 
     pub(crate) fn run_act(&mut self, a: &UiAct, input: &str) {
-        if a.id == "@lu" {
-            self.send(ToPc::NotesRead);
-            return;
+        match a.id.as_str() {
+            "@lu" => return self.send(ToPc::NotesRead),
+            "@replier" => return self.fold_bands(None, false),
+            "@deplier" => return self.fold_bands(None, true),
+            _ => {}
         }
         if !self.is_module_tab() || a.busy {
             return;
@@ -1346,6 +1393,20 @@ impl Controller {
     }
 }
 
+/// Les bandeaux pliables d'un écran : clé, ouvert au départ, ton.
+fn bands(screen: Option<&Screen>) -> Vec<(String, bool, i32)> {
+    let blocks = screen.map(|s| s.blocks.as_slice()).unwrap_or_default();
+    blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Section { key, fold, tone, .. } if !key.is_empty() && *fold != Fold::No => {
+                Some((key.clone(), *fold == Fold::Open, view::tone(*tone)))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 /// La bulle pour les notifications arrivées (les plus récentes d'abord) : la notification elle-même, ou leur nombre et
 /// la plus récente, au ton de la plus grave.
 fn notes_toast(fresh: &[&Note]) -> Option<(String, Tone)> {
@@ -1391,6 +1452,9 @@ fn wire(ui: &AppWindow) {
     ui.on_back_requested(|| with(|c| c.back()).unwrap_or(false));
     ui.on_run_act(|a, input| {
         with(|c| c.run_act(&a, &input));
+    });
+    ui.on_fold_band(|band| {
+        with(|c| c.fold_bands(Some(&band), false));
     });
     ui.on_open_url(|u| platform::open_url(&u));
     ui.on_haptic(platform::haptic);
