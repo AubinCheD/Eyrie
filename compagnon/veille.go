@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
@@ -416,7 +417,7 @@ func (w *waker) decide(peer, login string, devices []pairedDevice, cfg wakeConfi
 	}
 	if err := w.check(w.exe); err != nil {
 		w.journal(dev.Name, "Démarrage refusé : "+err.Error(), now)
-		return "Eyrie n'est pas à l'abri sur le PC (modifiable par un autre compte) : voir le journal du PC"
+		return placeReason(err)
 	}
 	var args []string
 	if cfg.Minimized {
@@ -434,6 +435,18 @@ func (w *waker) decide(peer, login string, devices []pairedDevice, cfg wakeConfi
 	}
 	w.journal(dev.Name, text, now)
 	return ""
+}
+
+// placeReason : ce que le téléphone apprend d'un emplacement refusé (exePlaceCheck) ; le détail est au journal du PC.
+func placeReason(err error) string {
+	var place *unsafePlace
+	switch {
+	case errors.As(err, &place):
+		return "Eyrie n'est pas à l'abri sur le PC (modifiable par un autre compte) : voir le journal du PC"
+	case errors.Is(err, fs.ErrNotExist):
+		return "eyrie.exe introuvable à côté du veilleur sur le PC : voir le journal du PC"
+	}
+	return "emplacement d'Eyrie illisible sur le PC : voir le journal du PC"
 }
 
 // proofHolds : la preuve d'une demande vaut-elle pour l'appareil de clé publique `public` (hexadécimal) ? En temps

@@ -3,6 +3,8 @@
 package main
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,7 +39,21 @@ func TestAFolderOthersCanWriteToIsRefused(t *testing.T) {
 		t.Fatalf("dossier ouvert : %q %v", who, err)
 	}
 	err := exePlaceCheck(exe)
-	if err == nil || !strings.Contains(err.Error(), "S-1-5-11") || !strings.Contains(err.Error(), "Program Files") {
+	var place *unsafePlace
+	if !errors.As(err, &place) || !strings.Contains(err.Error(), "S-1-5-11") ||
+		!strings.Contains(err.Error(), "Program Files") {
 		t.Fatalf("refus : %v", err)
+	}
+}
+
+// Un eyrie.exe absent est refusé, mais n'est pas dit modifiable par un autre compte.
+func TestAMissingEyrieIsNotCalledUnsafe(t *testing.T) {
+	err := exePlaceCheck(filepath.Join(t.TempDir(), "eyrie.exe"))
+	var place *unsafePlace
+	if !errors.Is(err, fs.ErrNotExist) || errors.As(err, &place) || !strings.Contains(err.Error(), "introuvable") {
+		t.Fatalf("refus : %v", err)
+	}
+	if got := placeReason(err); !strings.Contains(got, "introuvable") {
+		t.Fatalf("raison : %s", got)
 	}
 }

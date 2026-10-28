@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
@@ -439,18 +440,29 @@ func TestOneStartEveryThirtySeconds(t *testing.T) {
 	}
 }
 
-// Un eyrie.exe modifiable par un autre compte n'est pas lancé.
+// Un eyrie.exe modifiable par un autre compte n'est pas lancé ; absent ou de droits illisibles non plus, mais le
+// téléphone ne l'apprend pas sous le même nom.
 func TestAnUnsafeEyrieIsNotLaunched(t *testing.T) {
 	f := newWake(t)
-	f.set(func(f *wakeFixture) {
-		f.unsafe = errors.New(`C:\Outils peut être modifié par un autre compte du poste (S-1-5-11)`)
-	})
-	x := f.start()
-	if x.reply.OK || !strings.Contains(x.reply.Reason, "abri") || len(f.launches()) != 0 {
-		t.Fatalf("emplacement : %+v", x)
-	}
-	if j := f.journal(); len(j) != 1 || !strings.Contains(j[0].Text, "S-1-5-11") {
-		t.Fatalf("journal : %+v", j)
+	for i, c := range []struct {
+		err          error
+		reason, logs string
+	}{
+		{&unsafePlace{path: `C:\Outils`, who: "S-1-5-11"}, "pas à l'abri", "S-1-5-11"},
+		{fmt.Errorf(`C:\Essai\eyrie.exe introuvable : %w`, fs.ErrNotExist), "introuvable", "introuvable"},
+		{errors.New(`droits de C:\Essai\eyrie.exe illisibles : refusé`), "illisible", "illisibles"},
+	} {
+		f.set(func(f *wakeFixture) {
+			f.unsafe = c.err
+			f.clock = f.clock.Add(time.Hour)
+		})
+		x := f.start()
+		if x.reply.OK || !strings.Contains(x.reply.Reason, c.reason) || len(f.launches()) != 0 {
+			t.Fatalf("%v : %+v", c.err, x)
+		}
+		if j := f.journal(); len(j) != i+1 || !strings.Contains(j[i].Text, c.logs) {
+			t.Fatalf("journal : %+v", j)
+		}
 	}
 }
 

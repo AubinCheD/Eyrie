@@ -12,6 +12,8 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"slices"
 	"unsafe"
@@ -30,17 +32,30 @@ var trustedSIDs = []string{
 	"S-1-3-4", // OWNER RIGHTS
 }
 
+// unsafePlace : l'exécutable ou son dossier `path` peut être modifié par le compte `who`.
+type unsafePlace struct {
+	path, who string
+}
+
+func (e *unsafePlace) Error() string {
+	return fmt.Sprintf("%s peut être modifié par un autre compte du poste (%s) : le veilleur lancerait ce "+
+		"qu'il y dépose. Installez Eyrie dans %%LOCALAPPDATA%%\\Programs ou dans Program Files.", e.path, e.who)
+}
+
 // exePlaceCheck rend une erreur, en français, si l'exécutable `exe` ou son dossier peut être modifié par un autre
-// compte que l'utilisateur, SYSTEM, les administrateurs ou TrustedInstaller.
+// compte que l'utilisateur, SYSTEM, les administrateurs ou TrustedInstaller (*unsafePlace), si `exe` n'existe pas
+// (fs.ErrNotExist) ou si leurs droits sont illisibles.
 func exePlaceCheck(exe string) error {
+	if _, err := os.Stat(exe); errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%s introuvable : %w", exe, fs.ErrNotExist)
+	}
 	for _, path := range []string{exe, filepath.Dir(exe)} {
 		who, err := writableByOthers(path)
 		if err != nil {
 			return err
 		}
 		if who != "" {
-			return fmt.Errorf("%s peut être modifié par un autre compte du poste (%s) : le veilleur lancerait ce "+
-				"qu'il y dépose. Installez Eyrie dans %%LOCALAPPDATA%%\\Programs ou dans Program Files.", path, who)
+			return &unsafePlace{path: path, who: who}
 		}
 	}
 	return nil
