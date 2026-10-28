@@ -219,11 +219,20 @@ struct Nav {
     scroll: HashMap<(String, String), f32>,
     /// Le texte cherché dans chaque écran qui a une recherche (filtrée sur le téléphone).
     search: HashMap<(String, String), String>,
+    /// Le dernier lien vers un autre module (« @module … ») : ce module, la hauteur de sa pile juste après, et l'onglet
+    /// d'où il a été suivi. Le retour depuis l'écran ouvert ramène à cet onglet.
+    linked: Option<(String, usize, String)>,
 }
 
 impl Nav {
     fn new() -> Nav {
-        Nav { tab: "ensemble".into(), stacks: HashMap::new(), scroll: HashMap::new(), search: HashMap::new() }
+        Nav {
+            tab: "ensemble".into(),
+            stacks: HashMap::new(),
+            scroll: HashMap::new(),
+            search: HashMap::new(),
+            linked: None,
+        }
     }
 
     fn is_module_tab(&self) -> bool {
@@ -276,6 +285,7 @@ impl Nav {
             }
             self.stacks.insert(key.to_string(), vec![String::new()]);
         }
+        self.linked = None;
         self.tab = key.to_string();
         if self.is_module_tab() {
             self.stack();
@@ -286,6 +296,7 @@ impl Nav {
     /// Ouvre un écran d'un module (vide : son accueil, la pile de cet onglet repart de là) ; un écran poussé part du
     /// haut.
     fn open_module_path(&mut self, module: &str, path: &str) {
+        self.linked = None;
         self.tab = module.to_string();
         let stack = self.stack();
         if path.is_empty() {
@@ -293,6 +304,17 @@ impl Nav {
         } else if stack.last().map(String::as_str) != Some(path) {
             stack.push(path.to_string());
             self.scroll.remove(&(module.to_string(), path.to_string()));
+        }
+    }
+
+    /// Un lien vers l'écran d'un autre module : il s'ouvre comme [`Nav::open_module_path`], et le retour depuis cet
+    /// écran ramène au module d'où l'on vient (pas à l'accueil du module ouvert, qu'on n'a pas vu).
+    fn follow_link(&mut self, module: &str, path: &str) {
+        let from = self.tab.clone();
+        self.open_module_path(module, path);
+        if from != module {
+            let depth = self.stack().len();
+            self.linked = Some((module.to_string(), depth, from));
         }
     }
 
@@ -311,7 +333,7 @@ impl Nav {
     fn open(&mut self, open: &str) -> bool {
         match module_target(open) {
             Some((module, path)) => {
-                self.open_module_path(module, path);
+                self.follow_link(module, path);
                 true
             }
             None => self.open_path(open),
@@ -326,7 +348,7 @@ impl Nav {
             return None;
         }
         if let Some((module, path)) = module_target(path) {
-            self.open_module_path(module, path);
+            self.follow_link(module, path);
             return Some(Moved::Screen);
         }
         if self.top_path() == path {
@@ -341,15 +363,32 @@ impl Nav {
         Some(Moved::Screen)
     }
 
-    /// Retour : l'écran d'avant dans le module, sinon la vue d'ensemble ; d'une page de « Plus », « Plus ». `false` :
-    /// rien à quitter.
+    /// L'écran affiché est celui qu'un lien d'un autre module a ouvert : l'onglet de ce module.
+    fn linked_from(&self) -> Option<&str> {
+        let depth = self.stacks.get(&self.tab).map_or(1, Vec::len);
+        match &self.linked {
+            Some((module, at, from)) if *module == self.tab && *at == depth => Some(from),
+            _ => None,
+        }
+    }
+
+    /// Retour : l'écran d'avant dans le module, sinon la vue d'ensemble ; depuis l'écran qu'un lien d'un autre module
+    /// a ouvert, ce module ; d'une page de « Plus », « Plus ». `false` : rien à quitter.
     fn back(&mut self) -> bool {
         if self.is_module_tab() {
+            let depth = self.stack().len();
+            let from = self.linked_from().map(String::from);
             let stack = self.stack();
             if stack.len() > 1 {
                 stack.pop();
-            } else {
-                self.tab = "ensemble".into();
+            }
+            match from {
+                Some(from) => {
+                    self.linked = None;
+                    self.tab = from;
+                }
+                None if depth == 1 => self.tab = "ensemble".into(),
+                None => {}
             }
             return true;
         }
@@ -370,6 +409,11 @@ impl Nav {
         let stack = self.stack();
         if stack.len() > 1 && stack.last().map(String::as_str) == Some(path) {
             stack.pop();
+            // L'écran ouvert par un lien est parti : le lien est oublié.
+            let depth = stack.len() + 1;
+            if self.linked.as_ref().is_some_and(|(m, at, _)| m == module && *at == depth) {
+                self.linked = None;
+            }
             return true;
         }
         false
@@ -378,6 +422,7 @@ impl Nav {
     /// Développement : l'onglet et le chemin à ouvrir (`fawkes/t/3`).
     fn goto(&mut self, goto: &str) {
         let (tab, path) = goto.split_once('/').unwrap_or((goto, ""));
+        self.linked = None;
         self.tab = tab.to_string();
         let mut stack = vec![String::new()];
         if !path.is_empty() {
@@ -1386,7 +1431,8 @@ impl Controller {
             module => {
                 let path = self.nav.top_path();
                 let key = (module.to_string(), path.clone());
-                let stack_len = self.nav.stacks.get(module).map_or(1, Vec::len);
+                // L'accueil d'un module ouvert par un lien a aussi sa flèche de retour.
+                let below = self.nav.stacks.get(module).map_or(1, Vec::len) > 1 || self.nav.linked_from().is_some();
                 screen_follow = Some(key.clone());
                 let name = self.card(module).map(|c| c.name.clone()).unwrap_or_else(|| module.to_string());
                 match self.screens.get(&key) {
@@ -1396,15 +1442,15 @@ impl Controller {
                         }
                         search = s.search.clone();
                         tabs = s.tabs.clone();
-                        (s.title.clone(), s.subtitle.clone(), stack_len > 1, s.acts.clone())
+                        (s.title.clone(), s.subtitle.clone(), below, s.acts.clone())
                     }
                     // Un onglet voisin pas encore arrivé : les onglets et le titre de l'écran d'où l'on vient.
                     None => match &self.last_tabs {
                         Some(t) if t.module == module && t.tabs.iter().any(|t| t.path == path) => {
                             tabs = t.tabs.clone();
-                            (t.title.clone(), t.subtitle.clone(), stack_len > 1, Vec::new())
+                            (t.title.clone(), t.subtitle.clone(), below, Vec::new())
                         }
-                        _ => (name, String::new(), stack_len > 1, Vec::new()),
+                        _ => (name, String::new(), below, Vec::new()),
                     },
                 }
             }
@@ -2783,7 +2829,12 @@ mod tests {
         );
         assert_eq!(stack(&nav, "grimoire"), ["", "profil/perso"], "le module d'où l'on vient garde sa pile");
         assert!(nav.back());
-        assert_eq!((nav.tab.as_str(), nav.top_path()), ("gringotts", String::new()), "retour : l'accueil du module");
+        assert_eq!(
+            (nav.tab.as_str(), nav.top_path().as_str()),
+            ("grimoire", "profil/perso"),
+            "retour : d'où l'on vient"
+        );
+        assert_eq!(stack(&nav, "gringotts"), [""]);
 
         nav.open_module_path("owlery", "item/3");
         assert_eq!(nav.select_tab("@module fawkes"), Some(Moved::Screen), "un onglet vers un autre module");
@@ -2792,6 +2843,41 @@ mod tests {
         assert_eq!(stack(&nav, "fawkes"), ["", "t/3"]);
         assert!(nav.open("@module fawkes nouveau"), "le même module : l'écran s'empile");
         assert_eq!(stack(&nav, "fawkes"), ["", "t/3", "nouveau"]);
+    }
+
+    /// Après un lien vers un autre module, le retour ramène au module d'où l'on vient depuis l'écran ouvert (même
+    /// l'accueil du module), après les écrans ouverts ensuite ; un onglet du bas touché entre-temps l'oublie, comme un
+    /// écran ouvert par le PC.
+    #[test]
+    fn back_after_a_link_returns_to_the_module_it_came_from() {
+        let mut nav = Nav::new();
+        nav.open_module_path("grimoire", "");
+        assert!(nav.open("@module gringotts compte/perso"));
+        assert!(nav.open("compte/perso/mars"), "plus loin dans le module ouvert");
+        assert!(nav.back());
+        assert_eq!((nav.tab.as_str(), nav.top_path().as_str()), ("gringotts", "compte/perso"));
+        assert!(nav.back());
+        assert_eq!((nav.tab.as_str(), nav.top_path().as_str()), ("grimoire", ""));
+        assert!(nav.back());
+        assert_eq!(nav.tab, "ensemble", "puis comme d'habitude");
+
+        nav.open_module_path("grimoire", "");
+        assert_eq!(nav.select_tab("@module fawkes"), Some(Moved::Screen));
+        assert_eq!(nav.linked_from(), Some("grimoire"), "une flèche de retour sur son accueil");
+        assert!(nav.back());
+        assert_eq!(nav.tab, "grimoire", "l'accueil ouvert par un lien aussi");
+
+        assert!(nav.open("@module gringotts compte/perso"));
+        nav.select_bottom("fawkes", false, true);
+        nav.select_bottom("gringotts", false, true);
+        assert!(nav.back());
+        assert_eq!((nav.tab.as_str(), nav.top_path()), ("gringotts", String::new()), "venu par la barre du bas");
+
+        nav.open_module_path("grimoire", "");
+        assert!(nav.open("@module gringotts compte/perso"));
+        nav.open_module_path("gringotts", "compte/perso");
+        assert!(nav.back());
+        assert_eq!(nav.tab, "gringotts", "ouvert de nouveau par le PC : le lien est oublié");
     }
 
     /// Le menu d'un bandeau vient de servir : son pliage du moment tient quelques secondes, prolongées au résultat de
