@@ -337,13 +337,12 @@ fn message(
                 Err(e) => core.mobile.store.journal(&name, "action", format!("{text} : échec ({e})")),
             }
             // « @ouvrir <chemin> » : le téléphone ouvre cet écran du module (le terminal qu'il vient de créer…).
-            // « @module <id> » : celui d'un autre module (Owlery → Fawkes après « Corriger avec Claude »).
+            // « @module <id> [<chemin>] » : celui d'un autre module (Owlery → Fawkes après « Corriger avec Claude »).
             let open = match &result {
-                Ok(Some(m)) => {
-                    m.strip_prefix(suite_mobile::msg::OPEN_PREFIX).map(|p| (module.clone(), p.to_string())).or_else(
-                        || m.strip_prefix(suite_mobile::msg::MODULE_PREFIX).map(|m| (m.to_string(), String::new())),
-                    )
-                }
+                Ok(Some(m)) => m
+                    .strip_prefix(suite_mobile::msg::OPEN_PREFIX)
+                    .map(|p| (module.clone(), p.to_string()))
+                    .or_else(|| suite_mobile::msg::module_target(m).map(|(m, p)| (m.to_string(), p.to_string()))),
                 _ => None,
             };
             let result = if open.is_some() { Ok(None) } else { result };

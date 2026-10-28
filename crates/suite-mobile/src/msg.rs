@@ -12,8 +12,17 @@ pub const PROTOCOL: u32 = 1;
 /// Un module qui veut que le téléphone ouvre un écran après une action répond `Ok(Some("@ouvrir <chemin>"))`.
 pub const OPEN_PREFIX: &str = "@ouvrir ";
 
-/// … ou un autre module, sur son accueil : `Ok(Some("@module fawkes"))`.
+/// … ou un autre module, sur son accueil : `Ok(Some("@module fawkes"))`, ou sur un de ses écrans :
+/// `Ok(Some("@module gringotts conversation/12"))` (l'identifiant d'un module n'a pas d'espace). La même forme dans
+/// `Act.open`, `Row.open` ou `Tab.path` fait ouvrir au téléphone l'écran d'un autre module, sans rien envoyer au PC.
 pub const MODULE_PREFIX: &str = "@module ";
+
+/// Le module et le chemin désignés par « @module <id> [<chemin>] », ou `None` pour un chemin du module lui-même.
+pub fn module_target(open: &str) -> Option<(&str, &str)> {
+    let rest = open.strip_prefix(MODULE_PREFIX)?;
+    let (module, path) = rest.split_once(' ').unwrap_or((rest, ""));
+    (!module.is_empty()).then_some((module, path))
+}
 
 /// Ce qu'un appareil a le droit de faire.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -334,6 +343,14 @@ pub struct Listing {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_module_target_names_the_module_and_its_screen() {
+        assert_eq!(module_target("@module fawkes"), Some(("fawkes", "")));
+        assert_eq!(module_target("@module gringotts conversation/a b"), Some(("gringotts", "conversation/a b")));
+        assert_eq!(module_target("@module "), None);
+        assert_eq!(module_target("depot/1"), None);
+    }
 
     #[test]
     fn messages_survive_messagepack() {

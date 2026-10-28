@@ -128,6 +128,16 @@ impl Act {
         Act { label: label.into(), open: Some(path.into()), ..Default::default() }
     }
 
+    /// Ouvre l'écran `path` (vide : l'accueil) d'un autre module, sur le téléphone : rien n'est envoyé au PC.
+    pub fn module(label: impl Into<String>, module: &str, path: &str) -> Self {
+        let open = if path.is_empty() {
+            format!("{}{module}", crate::msg::MODULE_PREFIX)
+        } else {
+            format!("{}{module} {path}", crate::msg::MODULE_PREFIX)
+        };
+        Act { label: label.into(), open: Some(open), ..Default::default() }
+    }
+
     pub fn glyph(mut self, glyph: impl Into<String>) -> Self {
         self.glyph = glyph.into();
         self
