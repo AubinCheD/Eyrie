@@ -2749,10 +2749,20 @@ mod tests {
         let (open, show) = phone.action(h.state_mut(), "", "cloner", None).unwrap();
         assert_eq!((open.as_str(), show), (format!("{OPEN_PREFIX}cloner/1").as_str(), false));
         let path = "cloner/1";
+        // La saisie du dossier parent, telle que le pont la reçoit avec l'écran : avec `child`, il contrôle
+        // `parent\child` avant le module, dans le sélecteur comme au choix.
+        let spec = |phone: &mut Phone, h: &mut H| {
+            let s = phone.screen(h.state_mut(), path).unwrap();
+            s.all_acts().into_iter().find(|a| a.id == "dossier").and_then(|a| a.input.clone()?.folder).unwrap()
+        };
         let s = phone.screen(h.state_mut(), path).unwrap();
-        let spec = s.all_acts().into_iter().find(|a| a.id == "dossier").and_then(|a| a.input.clone()?.folder).unwrap();
         let proposed = h.state().clone_defaults().parent.display().to_string();
-        assert_eq!((spec.want, spec.start), (FOLDER_PARENT, proposed), "le dossier que propose DragonTree");
+        let first = spec(&mut phone, &mut h);
+        assert_eq!(
+            (first.want, first.start, first.child),
+            (FOLDER_PARENT, proposed, String::new()),
+            "le dossier que propose DragonTree ; pas encore de nom"
+        );
         assert!(!ids(&s).contains(&"lancer".to_string()), "rien de saisi");
 
         let act = |phone: &mut Phone, h: &mut H, action: &str, input: &str| {
@@ -2773,6 +2783,7 @@ mod tests {
         let (text, _) = act(&mut phone, &mut h, "url", "https://github.com/ada/depot.git").unwrap();
         assert!(text.is_empty(), "pas de bulle : l'écran change");
         assert_eq!(phone.drafts[&1].folder, "depot", "déduit de l'URL");
+        assert_eq!(spec(&mut phone, &mut h).child, "depot", "le dossier que le clonage créera");
         assert_eq!(
             phone.drafts[&1].account.as_deref(),
             Some(ada.id.as_str()),
@@ -2780,6 +2791,9 @@ mod tests {
         );
         act(&mut phone, &mut h, "dossier", &parent.display().to_string()).unwrap();
         act(&mut phone, &mut h, "nom", "occupe").unwrap();
+        assert_eq!(spec(&mut phone, &mut h).child, "occupe", "le nom saisi");
+        let refused = act(&mut phone, &mut h, "dossier", &parent.display().to_string()).unwrap_err();
+        assert!(refused.contains("n'est pas vide"), "le module le refuse aussi : {refused}");
         let s = phone.screen(h.state_mut(), path).unwrap();
         assert!(!ids(&s).contains(&"lancer".to_string()) && format!("{s:?}").contains("n'est pas vide"), "{s:?}");
         assert!(act(&mut phone, &mut h, "lancer", "").is_err(), "destination occupée");
