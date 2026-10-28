@@ -240,15 +240,42 @@ fn local_acts(n: &str, head: bool, current: Option<&str>) -> Vec<Act> {
     acts
 }
 
-/// Pousser une branche locale : la courante vers sa branche suivie, sinon publier (vers une branche du même nom).
-fn push_act(l: &LocalBranch, head: bool) -> Act {
+/// Où « publier » pousse la branche locale `l` (`PushBranch` : vers une branche du même nom, qui devient sa branche
+/// suivie) : sur le remote de sa branche suivie si celle-ci porte son nom (même supprimée sur le serveur), sinon,
+/// sans suivi, sur `remote` (le remote par défaut). Erreur : sa branche suivie a un autre nom, ou est locale ;
+/// `PushBranch` la ferait suivre une autre branche.
+pub fn publish_remote(refs: &RefsSnapshot, l: &LocalBranch, remote: Option<String>) -> Result<String, String> {
+    let Some(u) = &l.upstream else {
+        return remote.ok_or_else(|| "Aucun remote : ajoutez-en un sur le PC.".into());
+    };
+    let target = match refs.remotes.iter().find(|r| r.full == *u) {
+        Some(r) => Some((r.remote.clone(), r.name.clone())),
+        // Supprimée sur le serveur : son remote d'après son nom.
+        None if l.upstream_gone => refs.upstream_parts(u),
+        None => None,
+    };
+    match target {
+        Some((remote, name)) if name == l.name => Ok(remote),
+        _ => Err(format!("{} suit {u}, d'un autre nom : elle se pousse depuis DragonTree sur le PC.", l.name)),
+    }
+}
+
+/// Pousser une branche locale, en disant vers où : la courante vers sa branche suivie (le push de DragonTree) ; une
+/// autre vers sa branche suivie si celle-ci porte son nom ; une branche sans suivi est publiée sur `remote` (le remote
+/// par défaut). `None` : elle ne se pousse pas d'ici (voir [`publish_remote`]).
+fn push_act(refs: &RefsSnapshot, l: &LocalBranch, head: bool, remote: Option<&str>) -> Option<Act> {
     let n = &l.name;
-    if head && l.upstream.is_some() && !l.upstream_gone {
-        Act::new("push", "Pousser").glyph("⬆️").confirm(format!("Pousser {n} vers sa branche distante ?"))
-    } else if l.upstream.is_some() && !l.upstream_gone {
-        Act::new(format!("publier:{n}"), "Pousser").glyph("⬆️").confirm(format!("Pousser {n} sur le serveur ?"))
-    } else {
-        Act::new(format!("publier:{n}"), "Publier").glyph("⬆️").confirm(format!("Publier {n} sur le serveur ?"))
+    let act = |id: String, label: &str, question: String| Some(Act::new(id, label).glyph("⬆️").confirm(question));
+    match &l.upstream {
+        Some(u) if head => act("push".into(), "Pousser", format!("Pousser {n} vers {u} ?")),
+        Some(u) => {
+            publish_remote(refs, l, None).ok()?;
+            act(format!("publier:{n}"), "Pousser", format!("Pousser {n} vers {u} ?"))
+        }
+        None => {
+            let to = publish_remote(refs, l, remote.map(str::to_string)).ok()?;
+            act(format!("publier:{n}"), "Publier", format!("Publier {n} sur {to} ? Elle suivra {to}/{n}."))
+        }
     }
 }
 
@@ -279,8 +306,17 @@ fn remote_acts(r: &RemoteBranch, tracked: bool, current: Option<&str>) -> Vec<Ac
     acts
 }
 
-/// La ligne d'une branche : elle ouvre son détail ; une locale porte ses gestes dans son menu (appui long).
-fn branch_row(base: &str, b: Branch, refs: &RefsSnapshot, tips: &HashMap<Oid, Commit>, now: i64, busy: bool) -> Row {
+/// La ligne d'une branche : elle ouvre son détail ; une locale porte ses gestes dans son menu (appui long). `remote` :
+/// le remote par défaut, où publier une branche sans suivi.
+fn branch_row(
+    base: &str,
+    b: Branch,
+    refs: &RefsSnapshot,
+    tips: &HashMap<Oid, Commit>,
+    remote: Option<&str>,
+    now: i64,
+    busy: bool,
+) -> Row {
     let key = b.key();
     let current = refs.current_branch();
     let mut sub = Vec::new();
@@ -297,7 +333,9 @@ fn branch_row(base: &str, b: Branch, refs: &RefsSnapshot, tips: &HashMap<Oid, Co
             }
             if !busy {
                 row.acts = local_acts(&l.name, head, current);
-                row.acts.insert(0, push_act(l, head));
+                if let Some(push) = push_act(refs, l, head, remote) {
+                    row.acts.insert(0, push);
+                }
             }
         }
         Branch::Remote(r) => {
@@ -335,6 +373,8 @@ pub fn list(base: &str, v: &RepoView, now: i64, busy: bool) -> Screen {
                 .input("Nom (créée depuis HEAD et sortie)", "feature/…"),
         );
     }
+    let remote = v.default_remote();
+    let remote = remote.as_deref();
     s.band(Band::new("courante", "Courante").glyph("📍"));
     match (&refs.head, refs.current_branch().and_then(|c| refs.local(c))) {
         (HeadState::Detached(oid), _) => {
@@ -347,7 +387,7 @@ pub fn list(base: &str, v: &RepoView, now: i64, busy: bool) -> Screen {
             );
         }
         (_, Some(l)) => {
-            s.row(branch_row(base, Branch::Local(l), refs, &v.tips, now, busy));
+            s.row(branch_row(base, Branch::Local(l), refs, &v.tips, remote, now, busy));
         }
         (_, None) => {
             s.empty("Branche sans commit encore.");
@@ -365,7 +405,7 @@ pub fn list(base: &str, v: &RepoView, now: i64, busy: bool) -> Screen {
         let glyph = if g.remote { "☁️" } else { "🌿" };
         s.band(Band::new(format!("g:{hash}"), &g.title).glyph(glyph).aside(n.to_string()).open(open));
         for b in g.branches.iter().take(cap) {
-            s.row(branch_row(base, *b, refs, &v.tips, now, busy));
+            s.row(branch_row(base, *b, refs, &v.tips, remote, now, busy));
         }
         if n > cap {
             let more = if cap == 0 { format!("Voir les {n} branches") } else { format!("{} autres…", n - cap) };
@@ -391,8 +431,9 @@ pub fn group(base: &str, v: &RepoView, hash: &str, now: i64, busy: bool) -> Opti
         .subtitle(format!("{n} branche(s), les plus récentes d'abord"))
         .search("Chercher une branche");
     let shown = v.count.max(PAGE).min(n);
+    let remote = v.default_remote();
     for b in &g.branches[..shown] {
-        s.row(branch_row(base, *b, refs, &v.tips, now, busy));
+        s.row(branch_row(base, *b, refs, &v.tips, remote.as_deref(), now, busy));
     }
     if let Some(row) = depot::more_row(shown, n, "branches") {
         s.row(row);
@@ -449,7 +490,15 @@ pub fn detail(base: &str, v: &RepoView, key: &str, now: i64, busy: bool) -> Scre
                 if let Some(first) = buttons.first_mut().filter(|a| a.id.starts_with("basculer:")) {
                     *first = first.clone().primary();
                 }
-                buttons.push(push_act(l, head));
+                match push_act(refs, l, head, v.default_remote().as_deref()) {
+                    Some(push) => buttons.push(push),
+                    None if l.ahead > 0 => {
+                        if let Err(e) = publish_remote(refs, l, None) {
+                            s.note(e, Tone::Info);
+                        }
+                    }
+                    None => {}
+                }
                 s.acts.extend(menu);
             }
             if l.ahead > 0 || l.behind > 0 {
@@ -692,5 +741,61 @@ mod tests {
         assert!(!tracked.action_ids().contains("suivre:origin/feature/x"), "déjà suivie");
         assert!(format!("{:?}", detail("depot/k", &v, "inconnue", 0, false)).contains("introuvable"));
         assert!(detail("depot/k", &v, &key, 0, true).action_ids().is_empty(), "rien pendant une opération");
+    }
+
+    /// Le défaut du 28/10 : « Pousser » une branche qui n'est pas la courante la poussait sur le remote de la
+    /// courante, et la faisait suivre une autre branche. Elle va vers sa branche suivie, sur son remote à elle ; une
+    /// branche qui suit une branche d'un autre nom ne se pousse pas d'ici ; une branche sans suivi est publiée sur le
+    /// remote par défaut. La question dit où.
+    #[test]
+    fn a_push_goes_to_the_remote_the_branch_tracks() {
+        use dragontree_app::repo::RemoteOp;
+        use dragontree_git::{Remote, StatusSnapshot};
+
+        let mut main = local("main", 1);
+        main.is_head = true;
+        main.upstream = Some("upstream/main".into());
+        let mut fork = local("feature/x", 2);
+        fork.upstream = Some("origin/feature/x".into());
+        fork.ahead = 1;
+        let mut renamed = local("renommee", 3);
+        renamed.upstream = Some("origin/ancien-nom".into());
+        renamed.ahead = 1;
+        let remotes =
+            vec![remote("upstream", "main", 5), remote("origin", "feature/x", 6), remote("origin", "ancien-nom", 7)];
+        let mut v = view(vec![main, fork, renamed, local("seule", 4)], remotes, Vec::new());
+        let named = |name: &str| Remote { name: name.into(), fetch_url: String::new(), push_url: String::new() };
+        v.remotes = Arc::new(vec![named("origin"), named("upstream")]);
+        let status = StatusSnapshot {
+            branch: Some("main".into()),
+            upstream: Some("upstream/main".into()),
+            ..Default::default()
+        };
+        v.status = Some(Ok(status));
+        let push = |name: &str| {
+            let s = detail("depot/k", &v, &branch_key(&format!("refs/heads/{name}")), 0, false);
+            s.all_acts().into_iter().find(|a| a.id == "push" || a.id.starts_with("publier:")).cloned()
+        };
+
+        let fork = push("feature/x").expect("pousser feature/x");
+        assert_eq!(fork.confirm.as_deref(), Some("Pousser feature/x vers origin/feature/x ?"));
+        assert_eq!(
+            depot::parse(&v, &fork.id, None).unwrap().0,
+            RemoteOp::PushBranch { name: "feature/x".into(), remote: "origin".into() },
+            "vers son remote, pas celui de la courante"
+        );
+        assert!(push("renommee").is_none(), "suit une branche d'un autre nom");
+        assert!(depot::parse(&v, "publier:renommee", None).is_err());
+        let s = detail("depot/k", &v, &branch_key("refs/heads/renommee"), 0, false);
+        assert!(format!("{s:?}").contains("sur le PC"), "elle dit pourquoi : {s:?}");
+        let alone = push("seule").expect("publier seule");
+        assert_eq!(alone.confirm.as_deref(), Some("Publier seule sur upstream ? Elle suivra upstream/seule."));
+        assert_eq!(
+            depot::parse(&v, &alone.id, None).unwrap().0,
+            RemoteOp::PushBranch { name: "seule".into(), remote: "upstream".into() }
+        );
+        let main = push("main").expect("pousser la courante");
+        assert_eq!((main.id.as_str(), main.confirm.as_deref()), ("push", Some("Pousser main vers upstream/main ?")));
+        assert!(depot::parse(&v, "publier:inconnue", None).is_err(), "une branche que DragonTree n'a pas lue");
     }
 }

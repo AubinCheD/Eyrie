@@ -33,7 +33,7 @@ use dragontree_git::{
 };
 use suite_sdk::mobile::ui::{Act, Band, DIFF_ADDED, DIFF_CONTEXT, DIFF_HEADER, DIFF_REMOVED, Row, Screen, Tab, Tone};
 
-use crate::branches::{Pending, branch_key};
+use crate::branches::{Pending, branch_key, publish_remote};
 use crate::historique::LogView;
 
 /// Une liste par pages (étiquettes, historique, branches) : sa première page, et ce que « plus » ajoute.
@@ -980,8 +980,17 @@ pub fn parse(v: &RepoView, action: &str, input: Option<&str>) -> Result<(RemoteO
             (RemoteOp::DeleteBranch { name: arg.clone(), force: true }, format!("Supprimer {arg}"))
         }
         "publier" => {
-            let remote = v.default_remote().ok_or("Aucun remote : ajoutez-en un sur le PC.")?;
-            (RemoteOp::PushBranch { name: arg.clone(), remote }, format!("Pousser {arg}"))
+            // Vers sa branche suivie (sur son remote à elle) ou, sans suivi, sur le remote par défaut.
+            let remote = match v.refs.as_deref().map(|r| (r, r.local(&arg))) {
+                Some((refs, Some(l))) => publish_remote(refs, l, v.default_remote())?,
+                // Branches pas encore lues par DragonTree : seulement la courante, sans suivi d'après son état.
+                _ if st.is_some_and(|s| s.branch.as_deref() == Some(arg.as_str()) && s.upstream.is_none()) => {
+                    v.default_remote().ok_or("Aucun remote : ajoutez-en un sur le PC.")?
+                }
+                _ => return Err(format!("{arg} : branche introuvable, ou pas encore relue par DragonTree.")),
+            };
+            let label = format!("Pousser {arg} vers {remote}/{arg}");
+            (RemoteOp::PushBranch { name: arg.clone(), remote }, label)
         }
         "fusionner" => (RemoteOp::Merge(arg.clone()), format!("Fusionner {arg}")),
         "rebaser" => (RemoteOp::Rebase(arg.clone()), format!("Rebaser sur {arg}")),
