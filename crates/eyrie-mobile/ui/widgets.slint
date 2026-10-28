@@ -20,6 +20,22 @@ export struct UiAct {
     busy: bool,
 }
 
+// Une étiquette d'une ligne (branche, étiquette git, HEAD) ; `strong` : mise en avant (pleine).
+export struct UiChip {
+    text: string,
+    glyph: string,
+    color: color,
+    has-color: bool,
+    tone: int,
+    strong: bool,
+}
+
+// Un trait du graphe des commits dans une ligne : un chemin SVG (pixels de la cellule) et la couleur de sa voie.
+export struct GraphSeg {
+    d: string,
+    lane: int,
+}
+
 // Une ligne d'écran. `kind` : 0 section, 1 ligne, 2 note, 3 jauge, 4 texte, 5 vide, 6 boutons, 7 ligne de diff (`tone` :
 // 0 contexte, 1 ajout, 2 retrait, 3 en-tête), 8 bandeau (`key` : sa clé ; `fold` : 0 ne se plie pas, 1 ouvert, 2 plié).
 export struct UiRow {
@@ -45,6 +61,15 @@ export struct UiRow {
     last: bool,
     // Une action de la ligne (toucher ou menu) est en cours.
     busy: bool,
+    chips: [UiChip],
+    // Ligne de commit : largeur de la colonne du graphe, nœud (-1 aucun, 0 commit, 1 fusion, 2 HEAD, 3 perdu,
+    // 4 remise), son abscisse et sa voie (couleur), les traits.
+    graph: bool,
+    graph-w: length,
+    node: int,
+    node-x: length,
+    node-lane: int,
+    segs: [GraphSeg],
 }
 
 // Un onglet d'écran : son chemin dans le module ; `active` : l'écran affiché.
@@ -378,6 +403,31 @@ export component SectionHeader inherits Rectangle {
     }
 }
 
+// Une étiquette : contour de sa couleur, pleine si elle est mise en avant.
+export component ChipView inherits Rectangle {
+    in property <UiChip> chip;
+    property <color> ink: chip.has-color ? chip.color : chip.tone > 0 ? Theme.tone(chip.tone) : Theme.text-dim;
+    height: 20px;
+    min-width: 24px;
+    preferred-width: min(110px, label.preferred-width + 12px);
+    max-width: self.preferred-width;
+    horizontal-stretch: 1;
+    border-radius: 6px;
+    background: chip.strong ? root.ink : root.ink.with-alpha(0.14);
+    border-width: chip.strong ? 0 : 1px;
+    border-color: root.ink.with-alpha(0.5);
+    label := Text {
+        x: 6px;
+        width: parent.width - 12px;
+        text: chip.glyph != "" ? chip.glyph + " " + chip.text : chip.text;
+        color: !chip.strong ? root.ink : Theme.dark ? #121316 : #ffffff;
+        font-size: 11.5px;
+        font-weight: chip.strong ? 700 : 500;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
 // Un bandeau : l'en-tête d'un groupe de lignes, qui se plie et se déplie d'un toucher n'importe où ; pastille de couleur,
 // glyphe, titre, texte à droite, pastille de ton (visible même plié), menu ⋯.
 export component BandHeader inherits Rectangle {
@@ -540,6 +590,17 @@ export component RowView inherits Rectangle {
                         tone: item.tone >= 3 ? item.tone : 1;
                     }
                 }
+                if item.chips.length > 0: HorizontalLayout {
+                    spacing: 5px;
+                    padding-top: 2px;
+                    padding-bottom: 2px;
+                    for c in item.chips: ChipView {
+                        chip: c;
+                    }
+                    Rectangle {
+                        horizontal-stretch: 0.01;
+                    }
+                }
                 if item.subtitle != "": Text {
                     text: item.subtitle;
                     color: Theme.text-dim;
@@ -587,6 +648,154 @@ export component RowView inherits Rectangle {
         ta := TouchArea {
             width: parent.width - (item.acts.length > 0 ? 46px : 0px);
             x: 0;
+            pointer-event(e) => {
+                if e.kind == PointerEventKind.down {
+                    root.long-fired = false;
+                }
+            }
+            clicked => {
+                if !root.long-fired {
+                    root.tapped();
+                }
+            }
+        }
+        Timer {
+            interval: 520ms;
+            running: ta.pressed && !root.long-fired && item.acts.length > 0;
+            triggered => {
+                root.long-fired = true;
+                root.haptic();
+                root.menu();
+            }
+        }
+    }
+}
+
+// Une ligne de commit : dense, la colonne du graphe sur toute la hauteur (les traits des lignes voisines se
+// raccordent), les étiquettes devant le titre, puis le sous-titre (auteur, date).
+export component CommitRowView inherits Rectangle {
+    in property <UiRow> item;
+    callback tapped();
+    callback menu();
+    callback haptic();
+    property <bool> long-fired;
+    height: 56px;
+    accessible-role: list-item;
+    accessible-label: item.title + (item.subtitle != "" ? ", " + item.subtitle : "");
+    accessible-action-default => { root.tapped(); }
+    Rectangle {
+        x: Theme.pad;
+        width: parent.width - 2 * Theme.pad;
+        background: ta.pressed && !root.long-fired ? Theme.pressed : Theme.surface;
+        animate background { duration: 90ms; }
+        border-top-left-radius: item.first ? Theme.radius : 0;
+        border-top-right-radius: item.first ? Theme.radius : 0;
+        border-bottom-left-radius: item.last ? Theme.radius : 0;
+        border-bottom-right-radius: item.last ? Theme.radius : 0;
+        clip: true;
+        Rectangle {
+            x: 2px;
+            width: item.graph-w;
+            clip: true;
+            for seg in item.segs: Path {
+                x: 0;
+                y: 0;
+                width: item.graph-w;
+                height: 56px;
+                viewbox-width: item.graph-w / 1px;
+                viewbox-height: 56;
+                commands: seg.d;
+                fill: transparent;
+                stroke: Theme.lane(seg.lane);
+                stroke-width: 2px;
+            }
+            // Le nœud : un disque (fusion : plus petit), un anneau pour HEAD, atténué s'il est perdu, carré pour une
+            // remise.
+            if item.node >= 0: Rectangle {
+                property <length> r: item.node == 2 ? 6px : item.node == 1 ? 3.8px : 4.6px;
+                property <color> ink: Theme.lane(item.node-lane);
+                x: item.node-x - self.r;
+                y: parent.height / 2 - self.r;
+                width: 2 * self.r;
+                height: 2 * self.r;
+                border-radius: item.node == 4 ? 2px : self.r;
+                background: item.node == 2 || item.node == 3 ? Theme.surface : self.ink;
+                border-width: item.node == 2 ? 2px : 1.5px;
+                border-color: item.node == 2 || item.node == 3 ? self.ink : Theme.surface;
+                opacity: item.node == 3 ? 0.5 : 1;
+                if item.node == 2: Rectangle {
+                    width: 5px;
+                    height: 5px;
+                    border-radius: 2.5px;
+                    background: parent.ink;
+                }
+            }
+        }
+        HorizontalLayout {
+            padding-left: item.graph-w + 8px;
+            padding-right: 6px;
+            spacing: 8px;
+            VerticalLayout {
+                alignment: center;
+                spacing: 3px;
+                HorizontalLayout {
+                    spacing: 5px;
+                    for c in item.chips: ChipView {
+                        chip: c;
+                    }
+                    Text {
+                        text: item.title;
+                        color: item.node == 3 ? Theme.text-dim : Theme.text;
+                        font-size: 14.5px;
+                        font-weight: item.node == 2 ? 600 : 400;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        min-width: 110px;
+                        horizontal-stretch: 2;
+                    }
+                }
+                if item.subtitle != "": Text {
+                    text: item.subtitle;
+                    color: Theme.text-dim;
+                    font-size: Theme.font-small;
+                    overflow: elide;
+                }
+            }
+            if item.detail != "": Text {
+                text: item.detail;
+                color: Theme.text-faint;
+                font-size: Theme.font-small;
+                vertical-alignment: center;
+                horizontal-alignment: right;
+                max-width: 90px;
+                overflow: elide;
+            }
+            if item.busy: VerticalLayout {
+                alignment: center;
+                Busy { }
+            }
+            if item.acts.length > 0: VerticalLayout {
+                alignment: center;
+                IconButton {
+                    icon: "more";
+                    label: "Plus d'actions";
+                    size: 40px;
+                    tint: Theme.text-dim;
+                    clicked => { root.menu(); }
+                }
+            }
+            if item.acts.length == 0 && item.opens: VerticalLayout {
+                alignment: center;
+                Icon {
+                    kind: "chevron";
+                    tint: Theme.text-faint;
+                    size: 22px;
+                }
+            }
+        }
+        ta := TouchArea {
+            x: 0;
+            width: parent.width - (item.acts.length > 0 ? 46px : 0px);
             pointer-event(e) => {
                 if e.kind == PointerEventKind.down {
                     root.long-fired = false;

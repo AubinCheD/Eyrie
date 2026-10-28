@@ -34,6 +34,15 @@ export global Theme {
     out property <length> font-title: 20px;
     out property <length> font-big: 28px;
 
+    // Les voies du graphe des commits : la palette de DragonTree (`theme.rs`, GRAPH_LIGHT et GRAPH_DARK).
+    out property <[color]> lanes: dark
+        ? [#5a9bf5, #f06c6c, #4cc77f, #f5ad6a, #b37ceb, #2ec4c4, #e8c13f, #f05c8e, #6ccbf2, #b09084]
+        : [#2f80ed, #e04f4f, #27ae60, #f2994a, #9b51e0, #00a3a3, #d4a000, #e91e63, #3bb4e5, #8d6e63];
+
+    public pure function lane(i: int) -> color {
+        return lanes[mod(i, 10)];
+    }
+
     // Ton : 0 aucun, 1 info, 2 ok, 3 attention, 4 danger.
     public pure function tone(t: int) -> color {
         if (t == 2) { return ok; }

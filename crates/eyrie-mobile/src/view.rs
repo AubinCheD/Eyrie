@@ -9,9 +9,11 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use slint::{Color, Model, ModelRc, SharedString, VecModel};
-use suite_mobile::ui::{Act, ActStyle, Block, Fold, Row, Screen, Tone};
+use suite_mobile::ui::{
+    Act, ActStyle, Block, Chip, Fold, GRAPH_BOTTOM, GRAPH_TOP, GraphCell, NODE_NONE, Row, Screen, Tone,
+};
 
-use crate::{UiAct, UiRow};
+use crate::{GraphSeg, UiAct, UiChip, UiRow};
 
 pub fn tone(t: Option<Tone>) -> i32 {
     match t {
@@ -290,8 +292,84 @@ fn empty(kind: i32, title: &str) -> UiRow {
     UiRow { kind, title: SharedString::from(title), acts: acts(&[], &Local::default()), ..Default::default() }
 }
 
+/// Largeur d'une voie du graphe des commits.
+pub const LANE_W: f32 = 14.0;
+/// Hauteur d'une ligne de commit : le graphe en occupe toute la hauteur, les traits des lignes voisines se raccordent.
+pub const COMMIT_H: f32 = 56.0;
+/// Marge de part et d'autre des voies.
+const GRAPH_PAD: f32 = 6.0;
+/// Voies dessinées au plus (au-delà, les traits sont coupés au bord de la colonne).
+pub const MAX_LANES: u8 = 8;
+
+/// Abscisse du milieu d'une voie, dans la colonne du graphe.
+fn lane_x(lane: u8) -> f32 {
+    GRAPH_PAD + LANE_W / 2.0 + f32::from(lane) * LANE_W
+}
+
+/// Largeur de la colonne du graphe.
+fn graph_w(lanes: u8) -> f32 {
+    2.0 * GRAPH_PAD + f32::from(lanes.clamp(1, MAX_LANES)) * LANE_W
+}
+
+/// Un trait du graphe, en commandes de chemin SVG (pixels de la cellule) : droit entre deux points d'une même voie,
+/// sinon la courbe de DragonTree (`graph_paint.rs`, points de contrôle à 0,6 de la hauteur). `GRAPH_TOP` : du haut de
+/// la ligne au nœud ; `GRAPH_BOTTOM` : du nœud au bas ; `GRAPH_THROUGH` : toute la hauteur.
+pub fn graph_path(part: u8, from: u8, to: u8) -> String {
+    let (h, mid) = (COMMIT_H, COMMIT_H / 2.0);
+    let (x1, y1, x2, y2) = match part {
+        GRAPH_TOP => (lane_x(from), 0.0, lane_x(to), mid),
+        GRAPH_BOTTOM => (lane_x(from), mid, lane_x(to), h),
+        _ => (lane_x(from), 0.0, lane_x(to), h),
+    };
+    // Au dixième de pixel : des commandes courtes et lisibles.
+    let px = |v: f32| (v * 10.0).round() / 10.0;
+    let (x1, y1, x2, y2) = (px(x1), px(y1), px(x2), px(y2));
+    if (x1 - x2).abs() < 0.5 {
+        format!("M {x1} {y1} L {x2} {y2}")
+    } else {
+        let dy = y2 - y1;
+        format!("M {x1} {y1} C {x1} {} {x2} {} {x2} {y2}", px(y1 + dy * 0.6), px(y2 - dy * 0.6))
+    }
+}
+
+/// La part du graphe d'une ligne de commit. Le nœud : -1 sans nœud, sinon sa sorte (`NODE_COMMIT`…).
+fn graph(ui: &mut UiRow, g: &GraphCell) {
+    ui.graph = true;
+    ui.graph_w = graph_w(g.lanes);
+    ui.node = if g.node == NODE_NONE { -1 } else { i32::from(g.kind) };
+    ui.node_x = lane_x(g.node.min(MAX_LANES - 1));
+    ui.node_lane = i32::from(g.color);
+    let segs = g
+        .lines
+        .iter()
+        .map(|&(part, from, to, color)| GraphSeg { d: graph_path(part, from, to).into(), lane: i32::from(color) });
+    ui.segs = ModelRc::new(VecModel::from(segs.collect::<Vec<_>>()));
+}
+
+/// Étiquettes montrées au plus ; les autres sont comptées (« +2 »).
+const CHIPS_SHOWN: usize = 3;
+
+fn chips(list: &[Chip]) -> ModelRc<UiChip> {
+    let mut out: Vec<UiChip> = list
+        .iter()
+        .take(CHIPS_SHOWN)
+        .map(|c| UiChip {
+            text: c.text.as_str().into(),
+            glyph: c.glyph.as_str().into(),
+            color: c.color.map(rgb).unwrap_or_default(),
+            has_color: c.color.is_some(),
+            tone: tone(c.tone),
+            strong: c.strong,
+        })
+        .collect();
+    if list.len() > CHIPS_SHOWN {
+        out.push(UiChip { text: format!("+{}", list.len() - CHIPS_SHOWN).into(), ..Default::default() });
+    }
+    ModelRc::new(VecModel::from(out))
+}
+
 fn row(r: &Row, first: bool, last: bool, local: &Local) -> UiRow {
-    UiRow {
+    let mut ui = UiRow {
         kind: 1,
         title: r.title.as_str().into(),
         subtitle: r.subtitle.as_str().into(),
@@ -311,8 +389,13 @@ fn row(r: &Row, first: bool, last: bool, local: &Local) -> UiRow {
         first,
         last,
         busy: r.tap.iter().chain(&r.acts).any(|a| local.busy(a)),
+        chips: chips(&r.chips),
         ..Default::default()
+    };
+    if let Some(g) = &r.graph {
+        graph(&mut ui, g);
     }
+    ui
 }
 
 /// Un bandeau (`kind` 8 : pliable, ou orné d'une couleur, d'un glyphe, d'une pastille, d'un menu), sinon un simple
@@ -450,7 +533,7 @@ pub fn ago(at: u64, now: u64) -> String {
 mod tests {
     use std::cell::Cell;
 
-    use suite_mobile::ui::{Band, Chip};
+    use suite_mobile::ui::{Band, GRAPH_THROUGH, NODE_HEAD};
 
     use super::*;
 
@@ -662,6 +745,50 @@ mod tests {
         let r = rows(&s, &local);
         assert_eq!((r.len(), r[0].kind, r[0].title.as_str()), (1, 5, "Aucun résultat pour « zzz »."));
         assert_eq!(plain("Œuvre ÉLUE à Noël"), "oeuvre elue a noel");
+    }
+
+    /// Les traits du graphe se raccordent d'une ligne à l'autre : un trait vertical va du haut au bas de la ligne, une
+    /// courbe part du nœud (au milieu) avec les points de contrôle de DragonTree.
+    #[test]
+    fn graph_lines_join_from_row_to_row() {
+        assert_eq!(graph_path(GRAPH_THROUGH, 1, 1), "M 27 0 L 27 56");
+        assert_eq!(graph_path(GRAPH_BOTTOM, 0, 1), "M 13 28 C 13 44.8 27 39.2 27 56");
+        assert_eq!(graph_path(GRAPH_TOP, 1, 0), "M 27 0 C 27 16.8 13 11.2 13 28");
+        assert_eq!(graph_path(GRAPH_TOP, 2, 2), "M 41 0 L 41 28");
+    }
+
+    /// Une ligne de commit : colonne à la largeur de ses voies (bornée), nœud et traits avec leurs couleurs ; les
+    /// étiquettes au-delà de trois sont comptées.
+    #[test]
+    fn a_commit_row_carries_its_graph_and_chips() {
+        let cell = GraphCell {
+            lanes: 2,
+            node: 1,
+            color: 3,
+            kind: NODE_HEAD,
+            lines: vec![(GRAPH_TOP, 1, 1, 3), (GRAPH_BOTTOM, 1, 0, 5), (GRAPH_THROUGH, 0, 0, 2)],
+        };
+        let mut s = Screen::new("Historique");
+        s.row(
+            Row::new("Corrige le push")
+                .key("abc123")
+                .graph(cell)
+                .chip(Chip::new("main").strong())
+                .chip(Chip::new("origin/main"))
+                .chip(Chip::new("v1.2"))
+                .chip(Chip::new("v1.2.1"))
+                .chip(Chip::new("v1.2.2")),
+        );
+        s.row(Row::new("Sans graphe").graph(GraphCell { lanes: 40, node: NODE_NONE, ..Default::default() }));
+        let r = rows(&s, &Local::default());
+        assert!(r[0].graph && r[0].node == i32::from(NODE_HEAD) && r[0].node_lane == 3);
+        assert_eq!((r[0].graph_w, r[0].node_x), (40.0, 27.0));
+        let lanes: Vec<i32> = r[0].segs.iter().map(|g| g.lane).collect();
+        assert_eq!(lanes, [3, 5, 2]);
+        let chips: Vec<String> = r[0].chips.iter().map(|c| c.text.to_string()).collect();
+        assert_eq!(chips, ["main", "origin/main", "v1.2", "+2"]);
+        assert!(r[0].chips.row_data(0).unwrap().strong);
+        assert_eq!((r[1].node, r[1].graph_w), (-1, 2.0 * GRAPH_PAD + 8.0 * LANE_W), "huit voies au plus");
     }
 
     #[test]

@@ -6,7 +6,7 @@ import { Theme } from "theme.slint";
 import { TailnetStatus } from "onboarding.slint";
 import {
     UiAct, UiRow, TabItem, ScreenTabs, ModuleItem, WaitItem, NoteItem, CommandItem, PcItem, Icon, IconButton, ModuleAvatar, Pill,
-    SectionHeader, RowView, NoteView, MeterView, TextBlock, ActButton, EmptyView, DiffLineView, BandHeader, SearchField
+    SectionHeader, RowView, CommitRowView, NoteView, MeterView, TextBlock, ActButton, EmptyView, DiffLineView, BandHeader, SearchField
 } from "widgets.slint";
 
 // L'écran d'un module : les blocs décrits par le PC.
@@ -29,6 +29,19 @@ export component ScreenPage inherits Rectangle {
     callback menu(UiRow);
     callback fold(string);
     callback haptic();
+
+    // Toucher une ligne : son écran, sinon son action, sinon son menu.
+    function tap(r: UiRow) {
+        if r.opens {
+            root.open-path(r.path);
+        } else if r.has-tap {
+            if !r.tap.busy {
+                root.act(r.tap);
+            }
+        } else if r.acts.length > 0 {
+            root.menu(r);
+        }
+    }
 
     property <length> applied-y;
     property <int> settle;
@@ -84,19 +97,15 @@ export component ScreenPage inherits Rectangle {
                     }
                     menu => { root.menu(r); }
                 }
-                if r.kind == 1: RowView {
+                if r.kind == 1 && !r.graph: RowView {
                     item: r;
-                    tapped => {
-                        if r.opens {
-                            root.open-path(r.path);
-                        } else if r.has-tap {
-                            if !r.tap.busy {
-                                root.act(r.tap);
-                            }
-                        } else if r.acts.length > 0 {
-                            root.menu(r);
-                        }
-                    }
+                    tapped => { root.tap(r); }
+                    menu => { root.menu(r); }
+                    haptic => { root.haptic(); }
+                }
+                if r.kind == 1 && r.graph: CommitRowView {
+                    item: r;
+                    tapped => { root.tap(r); }
                     menu => { root.menu(r); }
                     haptic => { root.haptic(); }
                 }
