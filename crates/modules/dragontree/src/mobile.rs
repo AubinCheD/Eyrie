@@ -1002,6 +1002,11 @@ impl Phone {
     /// fond (l'onglet affiché sur le PC ne change pas) et le retient parmi ses récents (`add_repo` : dans la liste
     /// aussitôt, en mémoire) ; cet onglet est celui du téléphone, refermé comme les autres. Déjà dans la liste (sous
     /// une autre forme du même chemin, peut-être) : le téléphone l'ouvre.
+    ///
+    /// Sur le fil d'Eyrie, une fois par geste (jamais à chaque image) : `add_repo` rend son verdict aussitôt, et lance
+    /// donc lui-même `git rev-parse` (une commande courte), après le contrôle du dossier (`canonicalize`). Un
+    /// `add_repo` qui ouvrirait l'onglet tout de suite et dirait ensuite pourquoi git le refuse (`open_error`, que les
+    /// écrans du dépôt montrent déjà) sortirait git de ce fil ; DragonTree ne le propose pas.
     fn add(&mut self, app: &mut DragonTreeApp, input: Option<&str>) -> Result<(String, bool), String> {
         let raw = input.map(str::trim).filter(|t| !t.is_empty()).ok_or("Aucun dossier choisi.")?;
         let dir = check_repo_dir(Path::new(raw), &self.forbidden)?;
