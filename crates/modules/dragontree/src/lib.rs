@@ -16,6 +16,7 @@
 //!   onglets, sa file d'opérations, ses comptes, ses notifications et son bandeau de conflits sur le PC).
 
 pub mod depot;
+pub mod liste;
 pub mod mobile;
 
 use std::cell::RefCell;
@@ -120,11 +121,16 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
         accounts_dir: bcx.host.accounts_dir(),
         ..Default::default()
     };
+    // La liste de son dernier scan est dans le profil d'essai, sinon dans son dossier de cache.
+    let scan = match &profile_dir {
+        Some(dir) => dir.join("repos-cache.json"),
+        None => dragontree_app::settings::cache_dir().join("repos-cache.json"),
+    };
     let profile = profile_dir.unwrap_or_else(dragontree_app::settings::config_dir);
     let key = single_instance::profile_key(&profile);
-    // Le téléphone lit la liste des dépôts dans le même fichier de réglages que DragonTree (`StartOptions::profile_dir`,
-    // sinon le profil par défaut) ; le reste, il le demande à DragonTree.
-    let phone = Rc::new(RefCell::new(mobile::Phone::new(profile.join("settings.json"))));
+    // Le téléphone lit la liste des dépôts dans les mêmes fichiers que DragonTree (réglages et liste du scan, dans
+    // `StartOptions::profile_dir`, sinon le profil par défaut) ; le reste, il le demande à DragonTree.
+    let phone = Rc::new(RefCell::new(mobile::Phone::new(profile.join("settings.json"), scan)));
     let (phone_actions, phone_logic) = (phone.clone(), phone.clone());
     let instance = match single_instance::start(&key, &Forwarded { open: Vec::new() }, Duration::from_secs(3)) {
         Startup::Primary(i) => Some(i),
