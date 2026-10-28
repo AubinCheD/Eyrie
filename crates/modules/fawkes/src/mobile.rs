@@ -190,7 +190,9 @@ fn term_acts(t: &TermSpec, s: &Seen) -> Vec<Act> {
 /// La ligne d'un terminal : son état se lit au glyphe, au ton et au texte de droite (◐ Claude travaille, ✳ Claude,
 /// 🌙 en veille) ; un bouton visible quand un geste s'impose (réveiller, relancer).
 fn term_row(t: &TermSpec, g: &Group, s: &Seen) -> Row {
-    let claude = t.claude.is_some() || s.claude;
+    // Fawkes garde la session d'un terminal où Claude s'est arrêté (pour la reprendre) : seul Claude qui tourne, ou
+    // qui reprendra au réveil, fait un ✳.
+    let claude = t.claude.as_ref().is_some_and(|c| c.running) || s.claude;
     let (glyph, detail) = match s.state {
         State::Working => ("◐", "travaille".to_string()),
         State::Asleep => ("🌙", "en veille".to_string()),
@@ -845,6 +847,7 @@ pub fn term_input(app: &mut App, id: &str, input: &TermInput, cx: &mut Cx) -> Re
 
 #[cfg(test)]
 mod tests {
+    use fawkes::model::ClaudeState;
     use suite_sdk::mobile::ui::{Block, Fold};
 
     use super::*;
@@ -1019,6 +1022,10 @@ mod tests {
         let shell = row(running(State::Running));
         assert_eq!((shell.glyph.as_str(), shell.tone, trailing(&shell)), ("›_", None, None));
         assert_eq!((shell.key.as_str(), shell.open.as_deref()), ("3", Some("t/3")));
+        // Fawkes garde la session d'un Claude arrêté : le shell qui reste n'est pas une session Claude.
+        let ran = |running| TermSpec { claude: Some(ClaudeState { running, ..Default::default() }), ..term(3, 5) };
+        assert_eq!(term_row(&ran(false), &g, &running(State::Running)).glyph, "›_", "Claude s'est arrêté");
+        assert_eq!(term_row(&ran(true), &g, &running(State::Running)).glyph, "✳", "Claude tourne, ou reprendra");
         // Le geste visible est aussi dans le menu : la liste blanche du pont l'accepte de l'un ou de l'autre.
         let menu: Vec<&str> = asleep.acts.iter().map(|a| a.id.as_str()).collect();
         assert!(menu.contains(&"reveiller:3") && !menu.contains(&"veille:3"));
