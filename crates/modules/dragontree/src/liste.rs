@@ -324,7 +324,7 @@ fn row_of(e: &Entry) -> Row {
 /// relevé ; `add` : l'action « Ajouter un dépôt existant… ».
 pub fn home(entries: &[Entry], sweeping: bool, add: Option<Act>) -> Screen {
     let mut s = Screen::new("DragonTree").search("Chercher un dépôt");
-    s.acts.extend(add);
+    s.acts.extend(add.clone());
     s.acts.push(Act::new("actualiser", "Actualiser").glyph("🔄"));
     if sweeping {
         s.subtitle = "Relevé de l'état des dépôts…".into();
@@ -340,6 +340,9 @@ pub fn home(entries: &[Entry], sweeping: bool, add: Option<Act>) -> Screen {
     }
     if entries.is_empty() {
         s.empty("Aucun dépôt : ajoutez-en un, ou ouvrez-en un dans DragonTree sur le PC.");
+        if let Some(a) = add {
+            s.buttons(vec![a.primary()]);
+        }
     }
     let mut i = 0;
     while i < entries.len() {

@@ -33,7 +33,7 @@ use dragontree_git::{
     LogOrder, LogScope, Oid, RefsSnapshot, Repo, StatusEntry, StatusSnapshot,
 };
 use suite_sdk::mobile::msg::OPEN_PREFIX;
-use suite_sdk::mobile::ui::{Act, Block, GraphCell, PROGRESS_UNKNOWN, Screen, Tone};
+use suite_sdk::mobile::ui::{Act, Block, FOLDER_REPO, FolderInput, GraphCell, PROGRESS_UNKNOWN, Place, Screen, Tone};
 
 use crate::branches;
 use crate::depot::{self, RepoView, file_key};
@@ -53,6 +53,8 @@ const REFRESH_EVERY: Duration = Duration::from_secs(20);
 const DIFF_EVERY: Duration = Duration::from_secs(15);
 /// Une opération attend au plus 30 s que DragonTree ait ouvert son dépôt.
 const OPEN_WAIT: Duration = Duration::from_secs(30);
+/// Dossiers de dépôts connus proposés en raccourcis du sélecteur, au plus.
+const PLACES_OF_REPOS: usize = 6;
 /// Au-delà, un dépôt que DragonTree n'a toujours pas lu le dit (lecture longue, ou ratée).
 const SLOW_AFTER: Duration = Duration::from_secs(15);
 /// Une erreur de git montrée est coupée au-delà (caractères).
@@ -381,6 +383,24 @@ fn read_state(git: &Result<Git, String>, path: &Path) -> RepoState {
     RepoState { branch, upstream: None, ahead: q.ahead, behind: q.behind, changes: q.dirty as usize, error }
 }
 
+/// Un dossier de dépôt désigné depuis le téléphone : un chemin absolu d'un disque du PC (ni réseau, ni `\\?\`, ni
+/// `..`), un dossier qui a un `.git` (dossier, ou fichier d'un worktree). Le pont l'a déjà contrôlé ; ceci n'en
+/// dépend pas.
+fn check_repo_dir(dir: &Path) -> Result<(), String> {
+    let text = dir.to_string_lossy();
+    let local = dir.is_absolute() && !text.starts_with(r"\\") && !text.starts_with("//");
+    if !local || dir.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        return Err("Chemin refusé : un dossier d'un disque du PC est attendu (C:\\…).".into());
+    }
+    if !dir.is_dir() {
+        return Err(format!("{} n'est pas un dossier du PC.", dir.display()));
+    }
+    if !dir.join(".git").exists() {
+        return Err(format!("{} n'est pas un dépôt git.", dir.display()));
+    }
+    Ok(())
+}
+
 /// Ce qu'un fichier lu de DragonTree (réglages, liste du scan) était quand il a été lu.
 fn stamp_of(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
@@ -577,7 +597,55 @@ impl Phone {
         self.sweep(shown, folded, false);
         let sweeping = lock(&self.sweep).running;
         let entries: Vec<Entry> = repos.into_iter().map(|r| self.entry(app, r)).collect();
-        liste::home(&entries, sweeping, None)
+        let add = self.add_act(&entries);
+        liste::home(&entries, sweeping, Some(add))
+    }
+
+    /// « Ajouter un dépôt existant… » : un dossier du PC, choisi dans le sélecteur du téléphone, qui doit être un dépôt
+    /// git. Raccourcis : le dossier de clonage et les dossiers analysés de DragonTree, puis les dossiers où sont déjà
+    /// ses dépôts ; ceux-ci sont marqués « déjà là ».
+    fn add_act(&self, entries: &[Entry]) -> Act {
+        let mut places = Vec::new();
+        let mut seen = HashSet::new();
+        let mut place = |label: String, path: &Path, glyph: &str| {
+            let fresh = seen.insert(path_key(path));
+            if fresh {
+                places.push(Place { label, path: path.display().to_string(), glyph: glyph.into() });
+            }
+            fresh
+        };
+        if let Some(dir) = &self.settings.default_clone_dir {
+            place("Dossier de clonage".into(), dir, "📥");
+        }
+        for root in &self.settings.scan_roots {
+            place(format!("Dossier analysé : {}", liste::repo_name(root)), root, "📁");
+        }
+        let mut parents = 0;
+        for p in entries.iter().filter_map(|e| e.repo.path.parent()) {
+            if parents < PLACES_OF_REPOS && place(format!("Dépôts de {}", liste::repo_name(p)), p, "🗂️") {
+                parents += 1;
+            }
+        }
+        let known = entries.iter().map(|e| e.repo.path.display().to_string()).collect();
+        let spec = FolderInput { want: FOLDER_REPO, places, known, ..Default::default() };
+        Act::new("ajouter", "Ajouter un dépôt existant…")
+            .glyph("➕")
+            .input("Dépôt à ajouter", r"C:\…\mon-depot")
+            .folder("Dépôt à ajouter", spec)
+    }
+
+    /// Ajoute à DragonTree le dépôt du dossier `input` (choisi sur le PC dans le sélecteur du téléphone) et l'ouvre sur
+    /// le téléphone. Comme « Ouvrir un dépôt… » sur le PC : DragonTree l'affiche et le retient.
+    fn add(&mut self, app: &mut DragonTreeApp, input: Option<&str>) -> Result<(String, bool), String> {
+        let dir = PathBuf::from(input.map(str::trim).filter(|t| !t.is_empty()).ok_or("Aucun dossier choisi.")?);
+        check_repo_dir(&dir)?;
+        let key = repo_key(&dir);
+        if !self.repos(app).iter().any(|r| repo_key(&r.path) == key) {
+            app.show_repo(&dir);
+            self.added.retain(|p| repo_key(p) != key);
+            self.added.insert(0, dir);
+        }
+        Ok((format!("{OPEN_PREFIX}depot/{key}"), false))
     }
 
     /// Le dépôt regardé est ouvert dans un onglet de DragonTree (en fond), et relu par lui au plus toutes les 20 s.
@@ -863,6 +931,9 @@ impl Phone {
         input: Option<&str>,
     ) -> Result<(String, bool), String> {
         let in_repo = path.strip_prefix("depot/").map(|r| r.split_once('/').map_or(r, |(k, _)| k).to_string());
+        if action == "ajouter" && in_repo.is_none() {
+            return self.add(app, input);
+        }
         if action == "actualiser" && in_repo.is_none() {
             let mut closed = Vec::new();
             for r in self.repos(app) {
@@ -982,6 +1053,73 @@ mod tests {
     use super::*;
 
     type H = Harness<'static, DragonTreeApp>;
+
+    /// « Ajouter un dépôt existant… » ouvre le sélecteur de dossiers du PC sur un dépôt git, avec en raccourcis le
+    /// dossier de clonage, les dossiers analysés et six dossiers de dépôts connus au plus, sans doublon ; les dépôts
+    /// connus y sont marqués.
+    #[test]
+    fn adding_a_repo_offers_the_pc_folders_of_dragontree() {
+        let mut phone = Phone::new(PathBuf::from("absent.json"), PathBuf::from("absent-scan.json"));
+        phone.settings = Settings {
+            default_clone_dir: Some(r"C:\dev".into()),
+            scan_roots: vec![r"C:\dev".into(), r"D:\sources".into()],
+            ..Default::default()
+        };
+        let entries: Vec<Entry> = (0..9)
+            .map(|i| {
+                let path = PathBuf::from(format!(r"C:\p{}\depot{i}", i % 8));
+                let repo = Listed {
+                    title: liste::repo_name(&path),
+                    path,
+                    group: liste::Group::Recent,
+                    kind: dragontree_git::discovery::RepoKind::Normal,
+                    active: false,
+                };
+                Entry { repo, state: None, job: None, color: None }
+            })
+            .collect();
+        let add = phone.add_act(&entries);
+        assert_eq!(add.id, "ajouter");
+        let spec = add.input.as_ref().and_then(|i| i.folder.clone()).expect("un sélecteur de dossiers");
+        assert_eq!(spec.want, FOLDER_REPO);
+        let places: Vec<&str> = spec.places.iter().map(|p| p.path.as_str()).collect();
+        assert_eq!(places, [r"C:\dev", r"D:\sources", r"C:\p0", r"C:\p1", r"C:\p2", r"C:\p3", r"C:\p4", r"C:\p5"]);
+        assert_eq!(spec.known.len(), 9);
+        let s = liste::home(&[], false, Some(add));
+        assert!(s.action_ids().contains("ajouter"), "aussi en bouton quand la liste est vide : {s:?}");
+    }
+
+    /// Un dépôt ajouté depuis le téléphone l'est par DragonTree (affiché sur le PC, comme « Ouvrir un dépôt… »), entre
+    /// tout de suite dans la liste, et le téléphone l'ouvre. Un dossier qui n'est pas un dépôt, un chemin relatif ou
+    /// réseau sont refusés.
+    #[test]
+    fn an_existing_repo_is_added_by_dragontree_and_opened() {
+        let Ok(git) = Git::discover() else { return };
+        let dir = std::env::temp_dir().join(format!("suite-dragontree-ajout-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let repo = dir.join("nouveau");
+        new_repo(&git, &repo);
+        let profile = dir.join("profil");
+        let mut phone = phone_scanning(&profile, &dir.join("autre"));
+        let mut h = dragontree(&profile);
+        h.step();
+        let key = repo_key(&repo);
+        assert!(phone.screen(h.state_mut(), &format!("depot/{key}")).is_none(), "pas encore connu");
+        let plain = dir.join("pas-un-depot");
+        std::fs::create_dir_all(&plain).unwrap();
+        for bad in [plain.display().to_string(), "nouveau".into(), r"\\serveur\partage\depot".into(), String::new()] {
+            assert!(phone.action(h.state_mut(), "", "ajouter", Some(&bad)).is_err(), "{bad}");
+        }
+        let (open, show) = phone.action(h.state_mut(), "", "ajouter", Some(&repo.display().to_string())).unwrap();
+        assert_eq!((open, show), (format!("{OPEN_PREFIX}depot/{key}"), false));
+        assert_eq!(h.state().active_repo_dir().map(path_key), Some(path_key(&repo)), "affiché par DragonTree");
+        let home = phone.screen(h.state_mut(), "").unwrap();
+        assert!(home.opens().contains(&format!("depot/{key}")), "dans la liste tout de suite : {home:?}");
+        let s = wait_screen(&mut h, &mut phone, &format!("depot/{key}"), "lisez-moi.txt");
+        assert!(format!("{s:?}").contains("lisez-moi.txt"), "{s:?}");
+        drop(h);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// Une opération en cours se montre avec sa progression, arrondie à 5 % (un écran ne repart pas au téléphone à
     /// chaque pour cent), et le moyen de l'arrêter ; une opération qui attend l'ouverture du dépôt n'a ni l'un ni
