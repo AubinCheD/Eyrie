@@ -82,14 +82,19 @@ func (c fakeChild) release() {
 
 const essaiLogin = "aubin@exemple.org"
 
+// Le compte Tailscale d'un autre appareil appairé (appareil-3).
+const autreLogin = "autre@exemple.org"
+
 // newWake : un veilleur d'essai sur la boucle locale, avec un appareil appairé « Pixel 8 » (clé publique 0x02…,
-// compte essaiLogin), un autre appairé hors du tailnet (sans compte), et la clé du veilleur 0x01….
+// compte essaiLogin), un autre appairé hors du tailnet (sans compte), un troisième d'un autre compte (clé 0x05…), et
+// la clé du veilleur 0x01….
 func newWake(t *testing.T) *wakeFixture {
 	t.Helper()
 	mobile := t.TempDir()
 	devices := []map[string]any{
 		{"id": "appareil-1", "name": "Pixel 8", "key": hex.EncodeToString(filled(2)), "login": essaiLogin, "paired_at": 1},
 		{"id": "appareil-2", "name": "Essai", "key": hex.EncodeToString(filled(4)), "login": "", "paired_at": 1},
+		{"id": "appareil-3", "name": "Tablette", "key": hex.EncodeToString(filled(5)), "login": autreLogin, "paired_at": 1},
 	}
 	b, _ := json.Marshal(devices)
 	if err := os.WriteFile(filepath.Join(mobile, "appareils.json"), b, 0o600); err != nil {
@@ -383,6 +388,26 @@ func TestWrongProofsBlockThePeer(t *testing.T) {
 	}
 	if x := f.start(); !x.reply.OK || len(f.launches()) != 1 {
 		t.Fatalf("débloqué : %+v", x)
+	}
+}
+
+// Un appareil est lié à son compte Tailscale : sa preuve, valable, ne vaut pas depuis la connexion d'un autre compte
+// appairé (un téléphone qui rejouerait l'identifiant et le secret d'un autre).
+func TestADeviceIsBoundToItsAccount(t *testing.T) {
+	f := newWake(t)
+	tablet := func(challenge []byte) []byte {
+		return wakeProof(deviceSecret(filled(1), filled(5)), challenge, "appareil-3", wakeStart)
+	}
+	x, err := f.ask("appareil-3", wakeStart, tablet)
+	if err != nil || x.reply.OK || x.reply.Reason != "preuve refusée" || len(f.launches()) != 0 {
+		t.Fatalf("depuis le compte %s : %+v %v", essaiLogin, x, err)
+	}
+	if j := f.journal(); len(j) != 1 || !strings.Contains(j[0].Text, essaiLogin) || j[0].Device != "" {
+		t.Fatalf("journal : %+v", j)
+	}
+	f.set(func(f *wakeFixture) { f.login = autreLogin })
+	if x, err := f.ask("appareil-3", wakeStart, tablet); err != nil || !x.reply.OK || len(f.launches()) != 1 {
+		t.Fatalf("depuis son compte : %+v %v", x, err)
 	}
 }
 

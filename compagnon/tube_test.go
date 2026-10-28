@@ -159,6 +159,31 @@ func TestEyrieAttachesThroughThePipe(t *testing.T) {
 	})
 }
 
+// Une Eyrie qui ne lit plus ses lignes d'état est lâchée (2 s au plus par ligne) : le veilleur n'en reste pas
+// bloqué, le relais est coupé, et une autre se rattache.
+func TestAnEyrieThatStopsReadingIsDropped(t *testing.T) {
+	f := newStandby(t, self(t))
+	stuck := f.dial()
+	stuck.send(t, `{"relais":"127.0.0.1:5000","jeton":"abc"}`)
+	eventually(t, "consigne de relais ignorée", func() bool { return f.relay.current.Load() != nil })
+	big := map[string]string{"state": "error", "message": strings.Repeat("x", 4096)}
+	start := time.Now()
+	// Bien plus que les tampons du tube : une écriture finit par attendre, puis la séance est coupée.
+	for i := 0; i < 500 && f.relay.current.Load() != nil; i++ {
+		emit(big)
+	}
+	eventually(t, "Eyrie muette toujours rattachée", func() bool {
+		return f.relay.current.Load() == nil && !f.tube.busy.Load()
+	})
+	if d := time.Since(start); d > 10*time.Second {
+		t.Fatalf("le veilleur est resté bloqué %v", d)
+	}
+	again := f.dial()
+	if got := again.next(t); got["state"] != "error" || len(got["message"]) != 4096 {
+		t.Fatalf("dernier état : %v", got["state"])
+	}
+}
+
 // Un seul client à la fois : un second est éconduit, sauf pour arrêter le veilleur.
 func TestOneClientAtATimeButAnyCanStopIt(t *testing.T) {
 	f := newStandby(t, self(t))
