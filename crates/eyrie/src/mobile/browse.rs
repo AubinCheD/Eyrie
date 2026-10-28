@@ -453,7 +453,7 @@ fn root(env: &Env, ask: &Ask, known: &Known) -> Listing {
         }
     }
     let mut parents: Vec<(usize, PathBuf)> = parents.into_values().collect();
-    parents.sort_by(|a, b| b.0.cmp(&a.0));
+    parents.sort_by_key(|(count, _)| std::cmp::Reverse(*count));
     let roots = parents.into_iter().take(MAX_ROOTS).map(|(_, d)| (String::new(), d));
     let mut quick = Vec::new();
     for (label, dir) in env.quick.iter().cloned().chain(roots) {
