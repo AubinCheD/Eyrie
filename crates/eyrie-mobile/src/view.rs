@@ -10,7 +10,8 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 
 use slint::{Color, Model, ModelRc, SharedString, VecModel};
 use suite_mobile::ui::{
-    Act, ActStyle, Block, Chip, Fold, GRAPH_BOTTOM, GRAPH_TOP, GraphCell, NODE_NONE, Row, Screen, Tone,
+    Act, ActStyle, Block, Chip, Fold, GRAPH_BOTTOM, GRAPH_TOP, GraphCell, NODE_NONE, PROGRESS_UNKNOWN, Row, Screen,
+    Tone,
 };
 
 use crate::{GraphSeg, UiAct, UiChip, UiRow};
@@ -368,6 +369,15 @@ fn chips(list: &[Chip]) -> ModelRc<UiChip> {
     ModelRc::new(VecModel::from(out))
 }
 
+/// Une progression en pour cent ([`PROGRESS_UNKNOWN`] : indéterminée) dans une ligne : la barre, et sa valeur.
+fn progress(ui: &mut UiRow, p: Option<u8>) {
+    if let Some(p) = p {
+        ui.has_progress = true;
+        ui.indeterminate = p > 100 || p == PROGRESS_UNKNOWN;
+        ui.value = f32::from(p.min(100)) / 100.0;
+    }
+}
+
 fn row(r: &Row, first: bool, last: bool, local: &Local) -> UiRow {
     let mut ui = UiRow {
         kind: 1,
@@ -395,6 +405,7 @@ fn row(r: &Row, first: bool, last: bool, local: &Local) -> UiRow {
     if let Some(g) = &r.graph {
         graph(&mut ui, g);
     }
+    progress(&mut ui, r.progress);
     ui
 }
 
@@ -434,7 +445,11 @@ pub fn ui_row(item: &Item, local: &Local) -> UiRow {
     match &item.what {
         What::Section { block, open } => section(block, *open, local),
         What::Row { row: r, first, last } => row(r, *first, *last, local),
-        What::Block(Block::Note { text, tone: t, .. }) => UiRow { tone: tone(Some(*t)), ..empty(2, text) },
+        What::Block(Block::Note { text, tone: t, progress: p, acts: list }) => {
+            let mut ui = UiRow { tone: tone(Some(*t)), acts: acts(list, local), ..empty(2, text) };
+            progress(&mut ui, *p);
+            ui
+        }
         What::Block(Block::Meter { label, value, text, tone: t }) => {
             UiRow { detail: text.as_str().into(), value: *value, tone: tone(Some(*t)), ..empty(3, label) }
         }
@@ -789,6 +804,20 @@ mod tests {
         assert_eq!(chips, ["main", "origin/main", "v1.2", "+2"]);
         assert!(r[0].chips.row_data(0).unwrap().strong);
         assert_eq!((r[1].node, r[1].graph_w), (-1, 2.0 * GRAPH_PAD + 8.0 * LANE_W), "huit voies au plus");
+    }
+
+    /// Une progression : une barre sous la ligne, ou dans la note d'une opération en cours avec son « Annuler » ;
+    /// indéterminée hors de 0 à 100.
+    #[test]
+    fn progress_shows_under_a_row_and_in_a_note_with_its_cancel() {
+        let mut s = Screen::new("Dépôt");
+        s.progress("Fetch… 42 %", Some(42), Some(Act::new("annuler", "Annuler")));
+        s.row(Row::new("Clonage").progress(None)).row(Row::new("Rien"));
+        let r = rows(&s, &Local::default());
+        assert_eq!((r[0].kind, r[0].has_progress, r[0].indeterminate, r[0].value), (2, true, false, 0.42));
+        assert_eq!(r[0].acts.row_data(0).map(|a| a.label.to_string()), Some("Annuler".into()));
+        assert!(r[1].has_progress && r[1].indeterminate);
+        assert!(!r[2].has_progress);
     }
 
     #[test]

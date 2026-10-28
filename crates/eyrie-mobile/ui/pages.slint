@@ -112,6 +112,11 @@ export component ScreenPage inherits Rectangle {
                 if r.kind == 2: NoteView {
                     text: r.title;
                     tone: r.tone;
+                    has-progress: r.has-progress;
+                    indeterminate: r.indeterminate;
+                    value: r.value;
+                    acts: r.acts;
+                    act(a) => { root.act(a); }
                 }
                 if r.kind == 3: MeterView {
                     label: r.title;

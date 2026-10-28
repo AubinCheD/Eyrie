@@ -61,6 +61,9 @@ export struct UiRow {
     last: bool,
     // Une action de la ligne (toucher ou menu) est en cours.
     busy: bool,
+    // Barre de progression (ligne, note) : `value` de 0 à 1, ou indéterminée.
+    has-progress: bool,
+    indeterminate: bool,
     chips: [UiChip],
     // Ligne de commit : largeur de la colonne du graphe, nœud (-1 aucun, 0 commit, 1 fusion, 2 HEAD, 3 perdu,
     // 4 remise), son abscisse et sa voie (couleur), les traits.
@@ -185,6 +188,32 @@ export component Busy inherits Rectangle {
     }
 }
 
+// Une barre de progression fine ; indéterminée : un segment qui file.
+export component ThinProgress inherits Rectangle {
+    in property <float> value;
+    in property <bool> indeterminate;
+    in property <color> tint: Theme.accent;
+    height: 4px;
+    border-radius: 2px;
+    background: root.tint.with-alpha(0.18);
+    clip: true;
+    accessible-role: progress-indicator;
+    accessible-value: root.indeterminate ? "" : "\{round(root.value * 100)} %";
+    if !root.indeterminate: Rectangle {
+        x: 0;
+        width: parent.width * max(0, min(1, root.value));
+        border-radius: 2px;
+        background: root.tint;
+        animate width { duration: 300ms; easing: ease-out; }
+    }
+    if root.indeterminate: Rectangle {
+        width: parent.width * 0.3;
+        x: mod(animation-tick() / 1ms, 1400) / 1400 * (parent.width + self.width) - self.width;
+        border-radius: 2px;
+        background: root.tint;
+    }
+}
+
 // Un bouton rond, une icône dedans.
 export component IconButton inherits Rectangle {
     in property <string> icon;
@@ -270,6 +299,61 @@ export component SearchField inherits Rectangle {
             font-size: 15px;
             vertical-alignment: center;
         }
+    }
+}
+
+// Un bouton plein (`style` : 0 normal, 1 principal, 2 danger), avec le glyphe de l'action devant son libellé ;
+// `busy` : l'action est en cours (indicateur à la place du glyphe, bouton inactif).
+export component ActButton inherits Rectangle {
+    in property <string> text;
+    in property <string> glyph;
+    in property <int> style: 0;
+    in property <bool> enabled: true;
+    in property <bool> busy;
+    callback clicked();
+    property <color> ink: root.style == 1 ? Theme.on-accent : root.style == 2 ? Theme.danger : Theme.text;
+    height: 48px;
+    preferred-width: content.preferred-width + 32px;
+    border-radius: 24px;
+    opacity: !enabled ? 0.45 : busy ? 0.7 : 1;
+    background: style == 1 ? (ta.pressed ? Theme.accent.darker(0.15) : Theme.accent)
+        : style == 2 ? (ta.pressed ? Theme.danger.with-alpha(0.25) : Theme.danger.with-alpha(0.14))
+        : (ta.pressed ? Theme.pressed : Theme.surface-2);
+    animate background { duration: 100ms; }
+    accessible-role: button;
+    accessible-label: root.busy ? root.text + " (en cours)" : root.text;
+    accessible-enabled: root.enabled && !root.busy;
+    accessible-action-default => { root.clicked(); }
+    content := HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        spacing: 7px;
+        alignment: center;
+        if root.busy: VerticalLayout {
+            alignment: center;
+            Busy {
+                size: 18px;
+                tint: root.ink;
+            }
+        }
+        if !root.busy && root.glyph != "": Text {
+            text: root.glyph;
+            color: root.ink;
+            font-size: 15px;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.text;
+            color: root.ink;
+            font-size: 15px;
+            font-weight: 600;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+    ta := TouchArea {
+        enabled: root.enabled && !root.busy;
+        clicked => { root.clicked(); }
     }
 }
 
@@ -637,6 +721,15 @@ export component RowView inherits Rectangle {
                 size: 22px;
             }
         }
+        // Une opération en cours sur la ligne : une barre en bas.
+        if item.has-progress: ThinProgress {
+            x: 62px;
+            y: parent.height - 7px;
+            width: parent.width - 62px - 14px;
+            value: item.value;
+            indeterminate: item.indeterminate;
+            tint: item.tone >= 3 ? Theme.tone(item.tone) : Theme.accent;
+        }
         // Séparateur sous la ligne, sauf la dernière de la section.
         if !item.last: Rectangle {
             x: 62px;
@@ -819,9 +912,16 @@ export component CommitRowView inherits Rectangle {
     }
 }
 
+// Un bandeau d'information ou d'alerte ; avec une progression, une opération en cours, sa barre et ses boutons
+// (« Annuler »).
 export component NoteView inherits Rectangle {
     in property <string> text;
     in property <int> tone;
+    in property <bool> has-progress;
+    in property <bool> indeterminate;
+    in property <float> value;
+    in property <[UiAct]> acts;
+    callback act(UiAct);
     height: layout.preferred-height + 12px;
     Rectangle {
         x: Theme.pad;
@@ -840,12 +940,32 @@ export component NoteView inherits Rectangle {
                 border-radius: 2px;
                 background: Theme.tone(root.tone);
             }
-            Text {
-                text: root.text;
-                color: Theme.text;
-                font-size: 14px;
-                wrap: word-wrap;
-                vertical-alignment: center;
+            VerticalLayout {
+                spacing: 10px;
+                alignment: center;
+                Text {
+                    text: root.text;
+                    color: Theme.text;
+                    font-size: 14px;
+                    wrap: word-wrap;
+                    vertical-alignment: center;
+                }
+                if root.has-progress: ThinProgress {
+                    value: root.value;
+                    indeterminate: root.indeterminate;
+                    tint: Theme.tone(root.tone);
+                }
+                if root.acts.length > 0: HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    for a in root.acts: ActButton {
+                        text: a.label;
+                        glyph: a.glyph;
+                        style: a.style;
+                        busy: a.busy;
+                        clicked => { root.act(a); }
+                    }
+                }
             }
         }
     }
@@ -919,61 +1039,6 @@ export component TextBlock inherits Rectangle {
             font-size: root.mono ? 11.5px : 14px;
             wrap: word-wrap;
         }
-    }
-}
-
-// Un bouton plein (`style` : 0 normal, 1 principal, 2 danger), avec le glyphe de l'action devant son libellé ;
-// `busy` : l'action est en cours (indicateur à la place du glyphe, bouton inactif).
-export component ActButton inherits Rectangle {
-    in property <string> text;
-    in property <string> glyph;
-    in property <int> style: 0;
-    in property <bool> enabled: true;
-    in property <bool> busy;
-    callback clicked();
-    property <color> ink: root.style == 1 ? Theme.on-accent : root.style == 2 ? Theme.danger : Theme.text;
-    height: 48px;
-    preferred-width: content.preferred-width + 32px;
-    border-radius: 24px;
-    opacity: !enabled ? 0.45 : busy ? 0.7 : 1;
-    background: style == 1 ? (ta.pressed ? Theme.accent.darker(0.15) : Theme.accent)
-        : style == 2 ? (ta.pressed ? Theme.danger.with-alpha(0.25) : Theme.danger.with-alpha(0.14))
-        : (ta.pressed ? Theme.pressed : Theme.surface-2);
-    animate background { duration: 100ms; }
-    accessible-role: button;
-    accessible-label: root.busy ? root.text + " (en cours)" : root.text;
-    accessible-enabled: root.enabled && !root.busy;
-    accessible-action-default => { root.clicked(); }
-    content := HorizontalLayout {
-        padding-left: 16px;
-        padding-right: 16px;
-        spacing: 7px;
-        alignment: center;
-        if root.busy: VerticalLayout {
-            alignment: center;
-            Busy {
-                size: 18px;
-                tint: root.ink;
-            }
-        }
-        if !root.busy && root.glyph != "": Text {
-            text: root.glyph;
-            color: root.ink;
-            font-size: 15px;
-            vertical-alignment: center;
-        }
-        Text {
-            text: root.text;
-            color: root.ink;
-            font-size: 15px;
-            font-weight: 600;
-            vertical-alignment: center;
-            overflow: elide;
-        }
-    }
-    ta := TouchArea {
-        enabled: root.enabled && !root.busy;
-        clicked => { root.clicked(); }
     }
 }
 
