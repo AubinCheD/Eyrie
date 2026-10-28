@@ -108,6 +108,14 @@ pub fn run_line(companion: &Path, node: &Path, mobile: &Path, hostname: &str) ->
     )
 }
 
+/// L'exécutable que lance une commande inscrite par [`run_line`] : son premier argument, toujours entre guillemets
+/// (un chemin n'en contient pas).
+pub fn run_exe(line: &str) -> Option<PathBuf> {
+    let rest = line.trim_start().strip_prefix('"')?;
+    let (exe, _) = rest.split_once('"')?;
+    (!exe.is_empty()).then(|| PathBuf::from(exe))
+}
+
 /// `mobile\veille.dpapi`, déchiffré (`wakeConfig` de `compagnon/veille.go`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Config {
@@ -162,6 +170,10 @@ pub struct Veille {
     companion: Option<PathBuf>,
     /// Pourquoi le veilleur voulu n'est pas possible (emplacement d'Eyrie, compagnon introuvable…).
     pub problem: Option<String>,
+    /// Le veilleur voulu, que cette Eyrie ne peut pas lancer, mais qu'une autre `eyrie.exe` a inscrit à l'ouverture de
+    /// session depuis un dossier à l'abri (une Eyrie de `target\debug` à côté de celle de `target\release`) : son
+    /// exécutable. Il reste inscrit, son réglage suit l'accès depuis le téléphone, sa clé sert aux téléphones.
+    pub kept: Option<PathBuf>,
     /// Ce qui n'a pas pu être écrit (registre, `veille.dpapi`).
     pub error: Option<String>,
     /// La commande inscrite à l'ouverture de session, lue après écriture.
@@ -201,6 +213,18 @@ fn usable(os: &dyn Os, want: &Want) -> Result<PathBuf, String> {
     Ok(companion)
 }
 
+/// Le veilleur que lance la commande inscrite `line`, s'il se garde : le compagnon d'Eyrie, lui et l'`eyrie.exe`
+/// rangé à côté de lui à l'abri des autres comptes du poste (un exécutable effacé ne l'est pas).
+fn registered(os: &dyn Os, line: &str) -> Option<PathBuf> {
+    let exe = run_exe(line)?;
+    if !exe.file_name().is_some_and(|n| n.eq_ignore_ascii_case(crate::tailnet::COMPANION)) {
+        return None;
+    }
+    os.place_safe(&exe).ok()?;
+    os.place_safe(&exe.with_file_name("eyrie.exe")).ok()?;
+    Some(exe)
+}
+
 /// La clé du veilleur gardée dans `veille.dpapi`, si elle s'y lit.
 fn read_key(os: &dyn Os, path: &Path) -> Option<[u8; 32]> {
     let plain = os.unseal(&std::fs::read(path).ok()?).ok()?;
@@ -210,8 +234,9 @@ fn read_key(os: &dyn Os, path: &Path) -> Option<[u8; 32]> {
 
 impl Veille {
     /// Applique les réglages s'ils ont changé depuis la dernière fois : la valeur Run (inscrite pour un veilleur
-    /// voulu et possible, retirée sinon) et `veille.dpapi` (écrit dès qu'il sert, ou réécrit `actif: false` s'il
-    /// existe). Les exécutables ne sont cherchés qu'alors.
+    /// voulu et possible, retirée quand il n'est plus voulu) et `veille.dpapi` (écrit dès qu'il sert, ou réécrit
+    /// `actif: false` s'il existe). Les exécutables ne sont cherchés qu'alors. Une Eyrie qui ne peut pas lancer le
+    /// veilleur voulu (rangée ailleurs que lui) laisse celui qu'une autre a inscrit ([`Veille::kept`]).
     pub fn apply(&mut self, os: &dyn Os, want: &Want) {
         if self.applied.as_ref() == Some(want) {
             return;
@@ -220,6 +245,7 @@ impl Veille {
         self.problem = None;
         self.error = None;
         self.companion = None;
+        self.kept = None;
         if want.on {
             match usable(os, want) {
                 Ok(c) => self.companion = Some(c),
@@ -227,8 +253,16 @@ impl Veille {
             }
         }
         if want.main {
-            let line = self.companion.as_ref().map(|c| run_line(c, &want.node, &want.mobile, &want.hostname));
-            if os.run_value() != line
+            let current = os.run_value();
+            if want.on && self.companion.is_none() {
+                self.kept = current.as_deref().and_then(|l| registered(os, l));
+            }
+            let line = match (&self.companion, &self.kept) {
+                (Some(c), _) => Some(run_line(c, &want.node, &want.mobile, &want.hostname)),
+                (None, Some(_)) => current.clone(),
+                (None, None) => None,
+            };
+            if current != line
                 && let Err(e) = os.set_run_value(line.as_deref())
             {
                 self.error = Some(format!("démarrage à l'ouverture de session : {e}"));
@@ -236,7 +270,7 @@ impl Veille {
             self.run = os.run_value();
         }
         let path = want.mobile.join(CONFIG);
-        if (self.companion.is_some() || path.exists())
+        if (self.companion.is_some() || self.kept.is_some() || path.exists())
             && let Err(e) = self.write_config(os, want, &path)
         {
             self.error = Some(format!("{CONFIG} non enregistré : {e}"));
@@ -250,7 +284,7 @@ impl Veille {
         };
         let config = Config {
             v: 1,
-            actif: self.companion.is_some() && want.active,
+            actif: (self.companion.is_some() || self.kept.is_some()) && want.active,
             cle: crate::mobile::store::hex(&key),
             instance: want.instance.clone(),
             reduite: true,
@@ -274,9 +308,10 @@ impl Veille {
         Some((self.companion.clone()?, standby_args(&want.node, &want.mobile, &want.hostname)))
     }
 
-    /// La clé dont les téléphones tirent leur secret de démarrage : seulement pour un veilleur voulu et possible.
+    /// La clé dont les téléphones tirent leur secret de démarrage : seulement pour un veilleur voulu, et possible ou
+    /// gardé.
     pub fn key(&self) -> Option<[u8; 32]> {
-        self.companion.as_ref().and(self.key)
+        (self.companion.is_some() || self.kept.is_some()).then_some(self.key).flatten()
     }
 }
 
@@ -1051,6 +1086,12 @@ mod tests {
         assert_eq!(quote(r#"a\"b"#, true), r#""a\\\"b""#);
         assert_eq!(quote("nom avec espace", false), r#""nom avec espace""#);
         assert_eq!(quote("", false), r#""""#);
+        // L'exécutable se relit dans la commande inscrite.
+        assert_eq!(
+            run_exe(&line).as_deref(),
+            Some(Path::new(r"C:\Users\Aubin Chedotal\AppData\Local\Programs\Eyrie\eyrie-tailnet.exe"))
+        );
+        assert_eq!(run_exe(r"C:\x\eyrie-tailnet.exe --veille"), None);
         // Les mêmes arguments pour le veilleur lancé par Eyrie.
         let args = standby_args(Path::new(r"C:\n"), Path::new(r"C:\m"), "h");
         assert_eq!(

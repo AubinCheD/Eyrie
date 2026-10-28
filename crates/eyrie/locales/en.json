@@ -306,6 +306,8 @@
   "Le veilleur du PC garde Eyrie joignable sur le tailnet quand elle est fermée : un téléphone appairé peut alors la démarrer (elle s'ouvre réduite). Le PC doit être allumé, éveillé, et la session Windows ouverte (verrouillée, ça va).": "The PC's standby keeps Eyrie reachable on the tailnet while it is closed: a paired phone can then start it (it opens minimized). The PC must be on, awake, with the Windows session open (locked is fine).",
   "Tailscale est coupé, le veilleur aussi : activez-le dans la page Tailscale.": "Tailscale is off, so is the standby: turn it on in the Tailscale page.",
   "Impossible :": "Not possible:",
+  "Cette Eyrie ne peut pas lancer le veilleur :": "This Eyrie cannot start the standby:",
+  "Celui qu'une autre Eyrie a inscrit à l'ouverture de session reste en place :": "The one another Eyrie registered at sign-in stays in place:",
   "Le veilleur tient le nœud : Eyrie fermée, le téléphone pourra la démarrer.": "The standby holds the node: once Eyrie is closed, the phone can start it.",
   "Accès depuis le téléphone coupé : le veilleur refuse de démarrer Eyrie.": "Access from the phone is off: the standby refuses to start Eyrie.",
   "Le veilleur ne tourne pas :": "The standby is not running:",

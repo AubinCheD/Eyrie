@@ -532,8 +532,10 @@ impl Tailnet {
             r.standby = true;
         }
         let current = self.running.as_ref().map(|r| (r.hostname.clone(), r.standby));
-        // Un veilleur dont on ne veut pas (réglage coupé) s'arrête ; parti de lui-même, il attend la relance.
-        let unwanted = self.standby_attached() && !wanted.as_ref().is_some_and(|(_, s)| *s);
+        // Un veilleur dont on ne veut pas (réglage coupé) s'arrête ; parti de lui-même, il attend la relance. Celui
+        // qu'une autre eyrie.exe a inscrit, et que cette Eyrie ne peut pas lancer, est voulu aussi : il reste.
+        let kept = want.on && self.veille.kept.is_some();
+        let unwanted = self.standby_attached() && !kept && !wanted.as_ref().is_some_and(|(_, s)| *s);
         if wanted != current || unwanted {
             self.release(if attached { Leave::Halt } else { Leave::Detach });
             if let Some((h, _)) = wanted {
@@ -950,6 +952,78 @@ mod tests {
         assert_eq!(b.t.wake_key(), None);
         let _child = b.fake.child();
         assert_eq!(b.launches(), (1, 0));
+    }
+
+    /// Une Eyrie sur le dossier par défaut, mais rangée ailleurs que le veilleur inscrit (celle de `target\debug` à côté
+    /// de celle de `target\release`), ne peut pas le lancer : elle ne le désinscrit pas, ne l'arrête pas, ne coupe pas
+    /// son réglage, et les téléphones gardent leur clé. L'accès coupé le suit ; le réglage coupé le retire.
+    #[test]
+    fn an_eyrie_that_cannot_host_the_standby_keeps_the_registered_one() {
+        let mut b = Bench::new();
+        let exe = b.dir.path().join(COMPANION);
+        let (node, mobile) = (b.dir.path().join("tailnet"), b.dir.path().join("mobile"));
+        let line = veille::run_line(&exe, &node, &mobile, "essai");
+        *b.fake.run.lock().unwrap() = Some(line.clone());
+        let written = veille::Config {
+            v: 1,
+            actif: true,
+            cle: "07".repeat(32),
+            instance: veille::instance_lock(b.dir.path()),
+            reduite: true,
+        };
+        std::fs::create_dir_all(&mobile).unwrap();
+        let sealed = b.fake.seal(&serde_json::to_vec(&written).unwrap()).unwrap();
+        std::fs::write(mobile.join(veille::CONFIG), sealed).unwrap();
+        *b.fake.eyrie.lock().unwrap() = Some(b.dir.path().join("debug").join("eyrie.exe"));
+        b.fake.standby_up();
+        b.mobile.wake = true;
+        b.poll();
+        assert!(b.t.veille.problem.as_deref().is_some_and(|p| p.contains("rangé à côté")), "{:?}", b.t.veille.problem);
+        assert_eq!(b.t.veille.kept.as_deref(), Some(exe.as_path()));
+        assert_eq!((*b.fake.run_writes.lock().unwrap(), b.fake.run.lock().unwrap().clone()), (0, Some(line.clone())));
+        assert_eq!(b.config(), Some(written.clone()), "réglage du veilleur inchangé");
+        assert_eq!(b.t.wake_key(), Some([7; 32]));
+
+        // Le veilleur sur le nœud n'est pas arrêté : en partant, cette Eyrie lui laisse le nœud.
+        let mut pipe = b.fake.pipe();
+        pipe.say(RUNNING);
+        b.until(|b| b.t.relays());
+        assert_eq!(pipe.line().as_deref(), Some(relay_json().as_str()));
+        for _ in 0..20 {
+            b.poll();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(b.launches(), (0, 0));
+
+        // L'accès depuis le téléphone coupé : le veilleur gardé refuse de démarrer Eyrie, comme partout.
+        b.mobile.enabled = false;
+        b.poll();
+        assert_eq!(b.config(), Some(veille::Config { actif: false, ..written }));
+        assert_eq!(*b.fake.run_writes.lock().unwrap(), 0);
+
+        b.t.stop();
+        assert_eq!(pipe.line().as_deref(), Some(r#"{"relais":""}"#), "pas d'arrêt");
+
+        // Le réglage coupé : plus voulu, il est désinscrit.
+        b.mobile.wake = false;
+        b.poll();
+        assert_eq!(*b.fake.run.lock().unwrap(), None);
+        assert_eq!(b.t.wake_key(), None);
+    }
+
+    /// Une valeur Run qui lance un compagnon d'un dossier exposé aux autres comptes n'est pas gardée.
+    #[test]
+    fn a_registered_standby_in_an_unsafe_place_is_not_kept() {
+        let mut b = Bench::new();
+        let exe = b.dir.path().join(COMPANION);
+        let line = veille::run_line(&exe, &b.dir.path().join("tailnet"), &b.dir.path().join("mobile"), "essai");
+        *b.fake.run.lock().unwrap() = Some(line);
+        *b.fake.unsafe_place.lock().unwrap() = Some(r"C:\Outils peut être modifié par un autre compte".into());
+        b.mobile.wake = true;
+        b.poll();
+        assert_eq!(b.t.veille.kept, None);
+        assert_eq!(*b.fake.run.lock().unwrap(), None, "valeur Run retirée");
+        assert_eq!(b.t.wake_key(), None);
     }
 
     /// Une Eyrie d'essai (autre dossier) ne touche jamais la valeur Run du compte, même pour la retirer.

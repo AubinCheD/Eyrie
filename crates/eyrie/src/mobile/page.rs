@@ -331,7 +331,22 @@ fn standby(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui) {
     let attached = tailnet.standby_attached();
     let mut retry = false;
     if let Some(problem) = &tailnet.veille.problem {
-        line(ui, &format!("{} {problem}", tr("Impossible :")), p.danger);
+        match &tailnet.veille.kept {
+            // Une Eyrie rangée ailleurs que le veilleur (celle de target\debug) : celui de l'autre reste inscrit.
+            Some(exe) => {
+                line(ui, &format!("{} {problem}", tr("Cette Eyrie ne peut pas lancer le veilleur :")), p.warn);
+                line(
+                    ui,
+                    &format!(
+                        "{} {}",
+                        tr("Celui qu'une autre Eyrie a inscrit à l'ouverture de session reste en place :"),
+                        exe.display()
+                    ),
+                    p.text_dim,
+                );
+            }
+            None => line(ui, &format!("{} {problem}", tr("Impossible :")), p.danger),
+        }
         retry = ui.button(tr("Réessayer")).clicked();
     } else if attached {
         line(ui, tr("Le veilleur tient le nœud : Eyrie fermée, le téléphone pourra la démarrer."), p.ok);
