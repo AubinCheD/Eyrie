@@ -87,7 +87,7 @@ fn build(bcx: &BuildCx) -> Result<Box<dyn Module>, Unavailable> {
         .key_commands(commands())
         .settings_panel(|app, ui| app.settings_ui(ui))
         .on_settings_left(|app| app.settings_left())
-        .mobile_screens(move |_, path, _| phone.borrow_mut().screen(path))
+        .mobile_screens(move |_, path, cx| phone.borrow_mut().screen(path, cx.host.is_running("gringotts")))
         .mobile_actions(move |_, _, action, _, _| phone_actions.borrow_mut().action(action))
         // Ses couleurs suivent le thème clair ou sombre de la suite (sans toucher à son réglage).
         .before_logic(|app, cx| {
