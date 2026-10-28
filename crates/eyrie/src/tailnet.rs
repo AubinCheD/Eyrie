@@ -524,7 +524,7 @@ impl Tailnet {
             if since.elapsed() >= delay {
                 self.restarts += 1;
                 // Relancé juste après, comme un compagnon voulu mais absent.
-                self.release(Leave::Detach);
+                self.release(Leave::Detach, false);
             }
         }
         if matches!(self.state(), Some(TailnetState::Running { .. })) {
@@ -547,7 +547,7 @@ impl Tailnet {
         let kept = want.on && self.veille.kept.is_some();
         let unwanted = self.standby_attached() && !kept && !wanted.as_ref().is_some_and(|(_, s)| *s);
         if wanted != current || unwanted {
-            self.release(if attached { Leave::Halt } else { Leave::Detach });
+            self.release(if attached { Leave::Halt } else { Leave::Detach }, false);
             if let Some((h, _)) = wanted {
                 self.launch(h, standby, &want.node, ctx, false);
             }
@@ -615,8 +615,10 @@ impl Tailnet {
         }
     }
 
-    /// Lâche le lien en cours.
-    fn release(&mut self, leave: Leave) {
+    /// Lâche le lien en cours. Un compagnon lancé par Eyrie est attendu (3 s au plus) quand elle part (`wait`) ; sinon
+    /// dans un fil, sans retenir l'interface (le lien suivant attend qu'il lâche le nœud). Le veilleur reçoit sa
+    /// consigne tout de suite : le lien suivant ne doit pas s'y rattacher avant.
+    fn release(&mut self, leave: Leave, wait: bool) {
         self.exited = None;
         let Some(r) = self.running.take() else { return };
         let conn = {
@@ -627,8 +629,12 @@ impl Tailnet {
         if leave == Leave::Halt {
             self.halted = true;
         }
-        if let Some(c) = conn {
-            close(c, leave);
+        match conn {
+            Some(c @ Conn::Child { .. }) if !wait => {
+                let _ = std::thread::Builder::new().name("tailnet-fin".into()).spawn(move || close(c, leave));
+            }
+            Some(c) => close(c, leave),
+            None => {}
         }
     }
 
@@ -680,14 +686,14 @@ impl Tailnet {
         if self.running.as_ref().is_some_and(|r| {
             r.standby && (!r.link.standby.load(Ordering::Relaxed) || r.link.ended.load(Ordering::Relaxed))
         }) {
-            self.release(Leave::Detach);
+            self.release(Leave::Detach, false);
         }
     }
 
     /// Eyrie part : un compagnon lancé par elle s'arrête (son entrée fermée, de force au bout de 3 s) ; le veilleur
     /// garde le nœud, sans plus rien relayer.
     pub fn stop(&mut self) {
-        self.release(Leave::Detach);
+        self.release(Leave::Detach, true);
     }
 
     pub fn status_line(&self, p: &suite_sdk::theme::Palette) -> (String, Color32) {
@@ -972,6 +978,36 @@ mod tests {
         b.until(|b| b.t.relays());
         assert_eq!(child.line().as_deref(), Some(relay_json().as_str()));
         assert_eq!(b.launches(), (2, 1));
+    }
+
+    /// Changer de compagnon ne retient pas l'interface : celui qu'Eyrie avait lancé, s'il traîne à s'arrêter, est
+    /// attendu puis arrêté de force dans un fil. Quand Eyrie part, il est attendu.
+    #[test]
+    fn a_slow_companion_is_stopped_off_the_interface_thread() {
+        let mut b = Bench::new();
+        *b.fake.stubborn.lock().unwrap() = true;
+        b.poll();
+        let mut child = b.fake.child();
+        b.until(|b| b.t.relays());
+        assert_eq!(child.line().as_deref(), Some(relay_json().as_str()));
+        b.mobile.wake = true;
+        let started = Instant::now();
+        b.poll();
+        assert!(started.elapsed() < Duration::from_secs(1), "l'interface n'attend pas : {:?}", started.elapsed());
+        let _pipe = b.fake.pipe();
+        b.until(|_| !child.alive.load(Ordering::Relaxed));
+        assert!(started.elapsed() >= Duration::from_millis(2900), "arrêté de force au bout de 3 s");
+
+        // Eyrie part : le compagnon est attendu.
+        b.mobile.wake = false;
+        b.fake.standby_down();
+        b.poll();
+        let child = b.fake.child();
+        b.until(|b| b.t.relays());
+        let started = Instant::now();
+        b.t.stop();
+        assert!(started.elapsed() >= Duration::from_millis(2900));
+        assert!(!child.alive.load(Ordering::Relaxed));
     }
 
     /// Un veilleur trouvé sur le nœud alors que le réglage est coupé : arrêté, puis le compagnon d'Eyrie.

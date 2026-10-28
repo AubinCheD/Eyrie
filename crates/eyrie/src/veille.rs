@@ -889,6 +889,8 @@ pub mod fake {
         pub standby_fails: Mutex<bool>,
         /// Eyrie tourne en administrateur.
         pub elevated: Mutex<bool>,
+        /// Le compagnon ne s'arrête pas quand son entrée se ferme : Eyrie doit le tuer au bout de 3 s.
+        pub stubborn: Mutex<bool>,
         pub standby_launches: Mutex<Vec<(PathBuf, Vec<OsString>)>>,
         pub companion_launches: Mutex<Vec<(PathBuf, Vec<OsString>)>>,
         /// Les bouts des tubes du veilleur, puis ceux des compagnons, dans l'ordre d'ouverture.
@@ -981,8 +983,9 @@ pub mod fake {
             let (stdout, stdin, end) = ends();
             let alive = end.alive.clone();
             self.children.lock().unwrap().push(end);
+            let closes = if *self.stubborn.lock().unwrap() { Arc::new(AtomicBool::new(true)) } else { alive.clone() };
             Ok(Spawned {
-                stdin: Box::new(Stdin(stdin, alive.clone())),
+                stdin: Box::new(Stdin(stdin, closes)),
                 stdout: Box::new(stdout),
                 process: Box::new(Proc(alive)),
             })
