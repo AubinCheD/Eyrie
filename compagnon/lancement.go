@@ -23,6 +23,19 @@ type child interface {
 	release()
 }
 
+// elevated : le veilleur tourne-t-il en administrateur ? Il démarrerait alors Eyrie en administrateur, et refuse de
+// tourner (`main.go`). Une variable, pour les essais.
+var elevated = tokenElevated
+
+// tokenElevated : le jeton du processus est-il élevé (lancé « en tant qu'administrateur ») ? Illisible : on le
+// suppose, par prudence, comme `elevated` de crates/eyrie/src/veille.rs.
+func tokenElevated() bool {
+	var e, n uint32
+	err := windows.GetTokenInformation(windows.GetCurrentProcessToken(), windows.TokenElevation,
+		(*byte)(unsafe.Pointer(&e)), uint32(unsafe.Sizeof(e)), &n)
+	return err != nil || e != 0
+}
+
 // process : un processus lancé, par son handle.
 type process struct {
 	h windows.Handle

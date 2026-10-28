@@ -575,17 +575,23 @@ type journalLine struct {
 
 // journal ajoute une ligne « veille » au journal du pont, que la page Téléphones d'Eyrie montre.
 func (w *waker) journal(device, text string, at time.Time) {
-	path := filepath.Join(w.mobile, "journal.jsonl")
+	if err := writeJournal(w.mobile, device, text, at); err != nil {
+		w.logf("veille : journal : %v", err)
+	}
+}
+
+// writeJournal ajoute une ligne « veille » au journal du pont de `mobile`.
+func writeJournal(mobile, device, text string, at time.Time) error {
+	path := filepath.Join(mobile, "journal.jsonl")
 	if st, err := os.Stat(path); err == nil && st.Size() > journalMax {
-		_ = os.Rename(path, filepath.Join(w.mobile, "journal.1.jsonl"))
+		_ = os.Rename(path, filepath.Join(mobile, "journal.1.jsonl"))
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
-		w.logf("veille : journal : %v", err)
-		return
+		return err
 	}
 	defer f.Close()
 	enc := json.NewEncoder(f)
 	enc.SetEscapeHTML(false)
-	_ = enc.Encode(journalLine{At: at.Unix(), Device: device, Kind: "veille", Text: text})
+	return enc.Encode(journalLine{At: at.Unix(), Device: device, Kind: "veille", Text: text})
 }

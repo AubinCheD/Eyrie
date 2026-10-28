@@ -191,6 +191,16 @@ func run(args []string) int {
 		}
 		return exitFailed
 	}
+	// Lancé en administrateur, le veilleur démarrerait Eyrie en administrateur à la demande d'un téléphone : il ne
+	// tourne pas, et le dit aussi au journal du pont. Eyrie ne le lance pas ainsi (crates/eyrie/src/tailnet.rs) ; ceci
+	// vaut pour tout autre lancement.
+	if *standby && elevated() {
+		msg := "lancé en administrateur, il démarrerait Eyrie en administrateur depuis le téléphone"
+		if err := writeJournal(*mobile, "", "Le veilleur ne tourne pas : "+msg, time.Now()); err != nil {
+			logf("veille : journal : %v", err)
+		}
+		return failed(msg)
+	}
 
 	emit(map[string]string{"state": "starting"})
 	ctx, cancel := context.WithCancel(context.Background())

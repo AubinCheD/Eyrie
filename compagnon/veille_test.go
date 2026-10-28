@@ -235,7 +235,13 @@ func (f *wakeFixture) start() exchange {
 
 func (f *wakeFixture) journal() []journalLine {
 	f.t.Helper()
-	raw, _ := os.ReadFile(filepath.Join(f.w.mobile, "journal.jsonl"))
+	return readJournal(f.t, f.w.mobile)
+}
+
+// readJournal : les lignes du journal du pont `mobile`.
+func readJournal(t *testing.T, mobile string) []journalLine {
+	t.Helper()
+	raw, _ := os.ReadFile(filepath.Join(mobile, "journal.jsonl"))
 	var out []journalLine
 	for _, l := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
 		if l == "" {
@@ -243,7 +249,7 @@ func (f *wakeFixture) journal() []journalLine {
 		}
 		var j journalLine
 		if err := json.Unmarshal([]byte(l), &j); err != nil {
-			f.t.Fatalf("ligne du journal : %q %v", l, err)
+			t.Fatalf("ligne du journal : %q %v", l, err)
 		}
 		out = append(out, j)
 	}
