@@ -112,12 +112,38 @@ pub fn run() -> Result<(), slint::PlatformError> {
     ui.run()
 }
 
-/// Capture de la fenêtre puis fermeture (essais, documentation).
+/// Les touchers à simuler avant une capture : `EYRIE_MOBILE_TAP=x,y;x,y` (pixels logiques de la fenêtre).
+#[cfg(not(target_os = "android"))]
+fn taps(spec: &str) -> Vec<(f32, f32)> {
+    let tap = |t: &str| {
+        let (x, y) = t.trim().split_once(',')?;
+        Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
+    };
+    spec.split(';').filter_map(tap).collect()
+}
+
+/// Capture de la fenêtre puis fermeture (essais, documentation). Avant, les touchers de `EYRIE_MOBILE_TAP`, un toutes
+/// les 400 ms à partir de 700 ms : la capture montre ce qu'ils ont ouvert (le vrai chemin des événements, sans
+/// téléphone).
 #[cfg(not(target_os = "android"))]
 fn capture(ui: &AppWindow, path: std::path::PathBuf) {
+    use slint::platform::{PointerEventButton, WindowEvent};
+    let taps = taps(&std::env::var("EYRIE_MOBILE_TAP").unwrap_or_default());
+    for (i, (x, y)) in taps.iter().copied().enumerate() {
+        let weak = ui.as_weak();
+        slint::Timer::single_shot(std::time::Duration::from_millis(700 + 400 * i as u64), move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let position = slint::LogicalPosition::new(x, y);
+            let button = PointerEventButton::Left;
+            ui.window().dispatch_event(WindowEvent::PointerMoved { position });
+            ui.window().dispatch_event(WindowEvent::PointerPressed { position, button });
+            ui.window().dispatch_event(WindowEvent::PointerReleased { position, button });
+        });
+    }
     let weak = ui.as_weak();
+    let after_taps = 700 + 400 * taps.len() as u64 + 500;
     let delay = std::env::var("EYRIE_MOBILE_CAPTURE_AFTER_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1500);
-    slint::Timer::single_shot(std::time::Duration::from_millis(delay), move || {
+    slint::Timer::single_shot(std::time::Duration::from_millis(delay.max(after_taps)), move || {
         let Some(ui) = weak.upgrade() else { return };
         match ui.window().take_snapshot() {
             Ok(buf) => {
