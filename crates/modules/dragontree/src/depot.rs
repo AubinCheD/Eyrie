@@ -1,6 +1,7 @@
 //! Un dépôt sur le téléphone : un client git presque complet, mené par DragonTree sur le PC.
 //!
-//! Les écrans, tous sous `depot/<clé>` :
+//! Les écrans, tous sous `depot/<clé>` (chemins absolus dans le module : le téléphone demande au PC le chemin tel
+//! quel, `base` est `depot/<clé>`) :
 //! - l'accueil du dépôt : branche, suivi, opération en cours (fusion, rebase…) à poursuivre ou abandonner, fetch,
 //!   pull, push, et les rubriques ;
 //! - `modifs` : conflits (garder une version, marquer résolu), indexé, non indexé ; indexer, désindexer, annuler,
@@ -172,12 +173,12 @@ pub fn render_diff(d: &FileDiff) -> Vec<(u8, String)> {
 
 /// Le bandeau d'une opération en cours, et ses boutons (comme celui de DragonTree : continuer une fois les conflits
 /// résolus).
-fn op_block(s: &mut Screen, v: &RepoView) {
+fn op_block(s: &mut Screen, base: &str, v: &RepoView) {
     let Some(op) = v.op.filter(|o| *o != OpState::None) else { return };
     let conflicts = v.status().map_or(0, |st| st.conflicted().len());
     let text = if conflicts > 0 {
         format!(
-            "{} en cours : {conflicts} conflit(s) à résoudre (Modifications, ou dans DragonTree sur le PC), puis              continuer.",
+            "{} en cours : {conflicts} conflit(s) à résoudre (Modifications, ou dans DragonTree sur le PC), puis continuer.",
             op_name(&op)
         )
     } else {
@@ -187,7 +188,11 @@ fn op_block(s: &mut Screen, v: &RepoView) {
     let mut acts = Vec::new();
     if conflicts > 0 {
         s.row(
-            Row::new("Voir les conflits").detail(conflicts.to_string()).glyph("⚠️").tone(Tone::Danger).open("modifs"),
+            Row::new("Voir les conflits")
+                .detail(conflicts.to_string())
+                .glyph("⚠️")
+                .tone(Tone::Danger)
+                .open(format!("{base}/modifs")),
         );
     } else {
         acts.push(Act::new("continuer", "Continuer").primary());
@@ -204,7 +209,7 @@ fn op_block(s: &mut Screen, v: &RepoView) {
 }
 
 /// L'accueil d'un dépôt. `job` : ce qu'a donné la dernière opération (ou celle en cours, `busy`).
-pub fn overview(name: &str, path: &str, v: &RepoView, job: Option<(&str, Tone)>, busy: bool) -> Screen {
+pub fn overview(base: &str, name: &str, path: &str, v: &RepoView, job: Option<(&str, Tone)>, busy: bool) -> Screen {
     let mut s = Screen::new(name).subtitle(path);
     s.acts.push(Act::new("actualiser", "Actualiser").glyph("🔄"));
     s.acts.push(Act::new("pc", "Ouvrir dans DragonTree sur le PC").glyph("🖥️"));
@@ -222,9 +227,9 @@ pub fn overview(name: &str, path: &str, v: &RepoView, job: Option<(&str, Tone)>,
         }
         Some(Ok(st)) => st,
     };
-    op_block(&mut s, v);
+    op_block(&mut s, base, v);
     let branch = st.branch.clone().unwrap_or_else(|| "HEAD détachée".into());
-    s.row(Row::new("Branche").detail(branch).glyph("🌿").open("branches"));
+    s.row(Row::new("Branche").detail(branch).glyph("🌿").open(format!("{base}/branches")));
     let upstream = st.upstream.clone().unwrap_or_else(|| "aucune".into());
     let tone = if st.ahead > 0 && st.behind > 0 { Tone::Warn } else { Tone::Ok };
     s.row(Row::new("Suivi").subtitle(upstream).detail(sync(st.ahead, st.behind)).glyph("🔁").tone(tone));
@@ -264,25 +269,35 @@ pub fn overview(name: &str, path: &str, v: &RepoView, job: Option<(&str, Tone)>,
     } else {
         format!("{changes} fichier(s), dont {staged} indexé(s)")
     };
-    let mut row = Row::new("Modifications").subtitle(sub).glyph("✏️").open("modifs");
+    let mut row = Row::new("Modifications").subtitle(sub).glyph("✏️").open(format!("{base}/modifs"));
     if changes > 0 {
         row = row.badge(changes.to_string());
     }
     s.row(row);
-    s.row(Row::new("Historique").subtitle("Les derniers commits").glyph("🕘").open("historique"));
+    s.row(Row::new("Historique").subtitle("Les derniers commits").glyph("🕘").open(format!("{base}/historique")));
     let (locals, remotes) = v.refs.as_ref().map_or((0, 0), |r| (r.locals.len(), r.remotes.len()));
     s.row(
         Row::new("Branches")
             .subtitle(format!("{locals} locale(s), {remotes} distante(s)"))
             .glyph("🌿")
-            .open("branches"),
+            .open(format!("{base}/branches")),
     );
-    s.row(Row::new("Remises").subtitle(format!("{} remise(s) (stash)", v.stashes.len())).glyph("📦").open("remises"));
+    s.row(
+        Row::new("Remises")
+            .subtitle(format!("{} remise(s) (stash)", v.stashes.len()))
+            .glyph("📦")
+            .open(format!("{base}/remises")),
+    );
     let tags = v.refs.as_ref().map_or(0, |r| r.tags.len());
-    s.row(Row::new("Étiquettes").subtitle(format!("{tags} étiquette(s)")).glyph("🏷️").open("etiquettes"));
+    s.row(
+        Row::new("Étiquettes").subtitle(format!("{tags} étiquette(s)")).glyph("🏷️").open(format!("{base}/etiquettes")),
+    );
     if v.worktrees.len() > 1 {
         s.row(
-            Row::new("Worktrees").subtitle(format!("{} worktree(s)", v.worktrees.len())).glyph("🌳").open("worktrees"),
+            Row::new("Worktrees")
+                .subtitle(format!("{} worktree(s)", v.worktrees.len()))
+                .glyph("🌳")
+                .open(format!("{base}/worktrees")),
         );
     }
     s
@@ -311,9 +326,9 @@ fn conflict_acts(v: &RepoView, e: &StatusEntry) -> Vec<Act> {
     ]
 }
 
-fn file_row(v: &RepoView, e: &StatusEntry, staged: bool) -> Row {
+fn file_row(base: &str, v: &RepoView, e: &StatusEntry, staged: bool) -> Row {
     let key = file_key(&e.path);
-    let mut row = Row::new(&e.path).glyph(letter(e, staged).to_string()).open(format!("fichier/{key}"));
+    let mut row = Row::new(&e.path).glyph(letter(e, staged).to_string()).open(format!("{base}/fichier/{key}"));
     if let Some(old) = &e.orig_path {
         row = row.subtitle(format!("renommé depuis {old}"));
     }
@@ -344,7 +359,7 @@ fn quiet(mut row: Row, busy: bool) -> Row {
 }
 
 /// Les modifications : conflits, indexé, non indexé, et ce qu'on peut en faire.
-pub fn changes(v: &RepoView, busy: bool) -> Screen {
+pub fn changes(base: &str, v: &RepoView, busy: bool) -> Screen {
     let mut s = Screen::new("Modifications");
     let Some(st) = v.status() else {
         s.empty("Lecture du dépôt…");
@@ -398,19 +413,19 @@ pub fn changes(v: &RepoView, busy: bool) -> Screen {
     if !conflicts.is_empty() {
         s.section("Conflits", conflicts.len().to_string());
         for e in conflicts {
-            s.row(quiet(file_row(v, e, false), busy));
+            s.row(quiet(file_row(base, v, e, false), busy));
         }
     }
     if !staged.is_empty() {
         s.section("Indexé", staged.len().to_string());
         for e in staged {
-            s.row(quiet(file_row(v, e, true), busy));
+            s.row(quiet(file_row(base, v, e, true), busy));
         }
     }
     if !unstaged.is_empty() {
         s.section("Non indexé", unstaged.len().to_string());
         for e in unstaged {
-            s.row(quiet(file_row(v, e, false), busy));
+            s.row(quiet(file_row(base, v, e, false), busy));
         }
     }
     if !busy && !st.staged().is_empty() {
@@ -423,8 +438,13 @@ pub fn changes(v: &RepoView, busy: bool) -> Screen {
     s
 }
 
-/// Le diff d'un fichier du dossier de travail (indexé et non indexé).
+/// Le diff d'un fichier du dossier de travail (indexé et non indexé) ; `None` : il n'est plus dans les modifications.
 pub fn file(v: &RepoView, key: &str, busy: bool) -> Option<Screen> {
+    if v.status().is_none() {
+        let mut s = Screen::new("Fichier");
+        s.empty("Lecture du dépôt…");
+        return Some(s);
+    }
     let e = v.entry(key)?;
     let mut s = Screen::new(e.path.rsplit('/').next().unwrap_or(&e.path)).subtitle(&e.path);
     let staged = e.conflict.is_none() && !matches!(e.index, FileState::Unmodified | FileState::Untracked);
@@ -457,7 +477,7 @@ pub fn file(v: &RepoView, key: &str, busy: bool) -> Option<Screen> {
 }
 
 /// L'historique de la branche courante.
-pub fn history(v: &RepoView, now: i64) -> Screen {
+pub fn history(base: &str, v: &RepoView, now: i64) -> Screen {
     let mut s = Screen::new("Historique").subtitle(v.current_branch().unwrap_or_else(|| "HEAD détachée".into()));
     s.acts.push(Act::new("actualiser", "Actualiser").glyph("🔄"));
     match &v.log {
@@ -478,7 +498,7 @@ pub fn history(v: &RepoView, now: i64) -> Screen {
                         .subtitle(format!("{} · {}", c.author, ago(c.author_time, now)))
                         .detail(c.id.short())
                         .glyph(glyph)
-                        .open(format!("commit/{}", c.id.to_hex())),
+                        .open(format!("{base}/commit/{}", c.id.to_hex())),
                 );
             }
         }
@@ -487,7 +507,7 @@ pub fn history(v: &RepoView, now: i64) -> Screen {
 }
 
 /// Un commit : son message, ses fichiers, et ce qu'on peut en faire.
-pub fn commit(v: &RepoView, id: &str, now: i64, busy: bool) -> Screen {
+pub fn commit(base: &str, v: &RepoView, id: &str, now: i64, busy: bool) -> Screen {
     let short: String = id.chars().take(8).collect();
     let mut s = Screen::new(format!("Commit {short}"));
     let current = v.current_branch();
@@ -560,7 +580,7 @@ pub fn commit(v: &RepoView, id: &str, now: i64, busy: bool) -> Screen {
             for f in files {
                 let mut row = Row::new(&f.path)
                     .glyph(change_letter(f).to_string())
-                    .open(format!("commit/{id}/{}", file_key(&f.path)));
+                    .open(format!("{base}/commit/{id}/{}", file_key(&f.path)));
                 if let Some(old) = &f.old_path {
                     row = row.subtitle(format!("depuis {old}"));
                 }
@@ -571,9 +591,21 @@ pub fn commit(v: &RepoView, id: &str, now: i64, busy: bool) -> Screen {
     s
 }
 
-/// Le diff d'un fichier d'un commit.
+/// Le diff d'un fichier d'un commit ; `None` : le commit lu n'a pas ce fichier.
 pub fn commit_file(v: &RepoView, id: &str, key: &str) -> Option<Screen> {
-    let Ok((_, files)) = v.commits.get(id)? else { return None };
+    let files = match v.commits.get(id) {
+        Some(Ok((_, files))) => files,
+        Some(Err(e)) => {
+            let mut s = Screen::new("Fichier");
+            s.note(e, Tone::Danger);
+            return Some(s);
+        }
+        None => {
+            let mut s = Screen::new("Fichier");
+            s.empty("Lecture du commit…");
+            return Some(s);
+        }
+    };
     let f = files.iter().find(|f| file_key(&f.path) == key)?;
     let mut s = Screen::new(f.path.rsplit('/').next().unwrap_or(&f.path)).subtitle(&f.path);
     match v.diffs.get(&format!("c:{id}:{key}")) {
@@ -719,7 +751,7 @@ pub fn stashes(v: &RepoView, now: i64, busy: bool) -> Screen {
 }
 
 /// Les étiquettes.
-pub fn tags(v: &RepoView, busy: bool) -> Screen {
+pub fn tags(base: &str, v: &RepoView, busy: bool) -> Screen {
     let mut s = Screen::new("Étiquettes");
     if !busy {
         s.acts.push(Act::new("nouvelle-etiquette", "Nouvelle étiquette sur HEAD…").glyph("🏷️").input("Nom", "v1.2.0"));
@@ -729,7 +761,8 @@ pub fn tags(v: &RepoView, busy: bool) -> Screen {
         s.empty("Aucune étiquette.");
     }
     for t in list.iter().rev() {
-        let mut row = Row::new(&t.name).detail(t.oid.short()).glyph("🏷️").open(format!("commit/{}", t.oid.to_hex()));
+        let mut row =
+            Row::new(&t.name).detail(t.oid.short()).glyph("🏷️").open(format!("{base}/commit/{}", t.oid.to_hex()));
         if t.annotated {
             row = row.subtitle("annotée");
         }
@@ -1006,7 +1039,7 @@ mod tests {
     #[test]
     fn changes_are_split_and_each_file_has_its_gestures() {
         let v = view();
-        let s = changes(&v, false);
+        let s = changes("depot/k", &v, false);
         let sections: Vec<&str> = s
             .blocks
             .iter()
@@ -1021,7 +1054,7 @@ mod tests {
         let b = file_key("src/b.rs");
         assert!(ids.contains(&format!("desindexer:{a}")) && ids.contains(&format!("indexer:{b}")));
         assert!(ids.contains(&format!("annuler:{b}")) && ids.contains("valider") && ids.contains("corriger"));
-        assert!(changes(&v, true).action_ids().is_empty(), "rien pendant une opération");
+        assert!(changes("depot/k", &v, true).action_ids().is_empty(), "rien pendant une opération");
     }
 
     #[test]
@@ -1073,17 +1106,20 @@ mod tests {
     fn an_operation_in_progress_can_be_continued_or_aborted() {
         let mut v = view();
         v.op = Some(OpState::Rebase { interactive: false });
-        let s = overview("ozmo", r"C:\dev\ozmo", &v, None, false);
+        let s = overview("depot/k", "ozmo", r"C:\dev\ozmo", &v, None, false);
         let ids = s.action_ids();
         // Un conflit reste : comme dans DragonTree, pas de « Continuer » avant sa résolution.
         assert!(!ids.contains("continuer") && ids.contains("abandonner") && ids.contains("passer"));
-        assert!(s.opens().contains("modifs"), "les conflits à voir");
+        assert!(s.opens().contains("depot/k/modifs"), "les conflits à voir, par un chemin absolu");
         assert!(s.blocks.iter().any(|b| matches!(b, Block::Note { text, .. } if text.contains("1 conflit"))));
         assert!(ids.contains("push"), "en avance seulement : push simple");
         if let Some(Ok(st)) = &mut v.status {
             st.entries.retain(|e| e.conflict.is_none());
         }
-        assert!(overview("ozmo", "", &v, None, false).action_ids().contains("continuer"), "résolu : continuer");
+        assert!(
+            overview("depot/k", "ozmo", "", &v, None, false).action_ids().contains("continuer"),
+            "résolu : continuer"
+        );
     }
 
     #[test]
@@ -1091,7 +1127,7 @@ mod tests {
         let mut v = view();
         v.op = Some(OpState::Merge);
         let c = file_key("conflit.rs");
-        let ids = changes(&v, false).action_ids();
+        let ids = changes("depot/k", &v, false).action_ids();
         assert!(ids.contains(&format!("garder-local:{c}")) && ids.contains(&format!("garder-entrant:{c}")));
         assert_eq!(
             parse(&v, &format!("garder-entrant:{c}"), None).unwrap().0,
@@ -1102,7 +1138,7 @@ mod tests {
         assert!(s.action_ids().contains(&format!("garder-local:{c}")));
         // Dans un rebase, « notre » version est celle de la base.
         v.op = Some(OpState::Rebase { interactive: false });
-        let s = changes(&v, false);
+        let s = changes("depot/k", &v, false);
         assert!(s.all_acts().iter().any(|a| a.label == "Garder la version de la base"));
     }
 

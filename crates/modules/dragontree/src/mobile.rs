@@ -703,23 +703,25 @@ impl Phone {
         let busy = job.as_ref().is_some_and(|j| j.tone == Tone::Info);
         let stoppable = t.running.iter().any(|o| !o.silent);
         let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+        // Les chemins des sous-écrans sont absolus dans le module : le téléphone les demande tels quels.
+        let base = format!("depot/{key}");
         let mut screen = match parts.as_slice() {
             [""] => {
                 let j = job.as_ref().map(|j| (j.text.as_str(), j.tone));
-                let mut s = depot::overview(&repo_name(&repo), &repo.display().to_string(), &view, j, busy);
+                let mut s = depot::overview(&base, &repo_name(&repo), &repo.display().to_string(), &view, j, busy);
                 if stoppable {
                     s.acts.push(stop_act());
                 }
                 return Some(s);
             }
-            ["modifs"] => depot::changes(&view, busy),
+            ["modifs"] => depot::changes(&base, &view, busy),
             ["fichier", f] => depot::file(&view, f, busy)?,
-            ["historique"] => depot::history(&view, now),
-            ["commit", id] => depot::commit(&view, id, now, busy),
+            ["historique"] => depot::history(&base, &view, now),
+            ["commit", id] => depot::commit(&base, &view, id, now, busy),
             ["commit", id, f] => depot::commit_file(&view, id, f)?,
             ["branches"] => depot::branches(&view, busy),
             ["remises"] => depot::stashes(&view, now, busy),
-            ["etiquettes"] => depot::tags(&view, busy),
+            ["etiquettes"] => depot::tags(&base, &view, busy),
             ["worktrees"] => depot::worktrees(&view, busy),
             _ => return None,
         };
@@ -988,26 +990,23 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Un vrai dépôt, mené par DragonTree : modifier, voir le diff, indexer, valider, retrouver le commit dans son
-    /// historique, créer une branche ; un nom refusé par git est dit.
-    #[test]
-    fn a_change_is_staged_and_committed_by_dragontree() {
-        let Ok(git) = Git::discover() else { return };
-        let dir = std::env::temp_dir().join(format!("suite-dragontree-git-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let repo = dir.join("depot");
-        std::fs::create_dir_all(&repo).unwrap();
-        let sh = |args: &[&str]| {
-            let ok = std::process::Command::new(git.exe())
-                .args(args)
-                .current_dir(&repo)
-                .env("GIT_CONFIG_NOSYSTEM", "1")
-                .output()
-                .unwrap()
-                .status
-                .success();
-            assert!(ok, "git {args:?}");
-        };
+    /// Lance git dans `repo` (sans la configuration du système).
+    fn sh(git: &Git, repo: &Path, args: &[&str]) {
+        let ok = std::process::Command::new(git.exe())
+            .args(args)
+            .current_dir(repo)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "git {args:?}");
+    }
+
+    /// Un dépôt d'essai dans `repo` : un premier commit sur `main`, et `lisez-moi.txt` modifié depuis.
+    fn new_repo(git: &Git, repo: &Path) {
+        std::fs::create_dir_all(repo).unwrap();
+        let sh = |args: &[&str]| sh(git, repo, args);
         sh(&["init", "-q", "-b", "main"]);
         sh(&["config", "user.name", "Essai"]);
         sh(&["config", "user.email", "essai@exemple.org"]);
@@ -1016,6 +1015,91 @@ mod tests {
         sh(&["add", "."]);
         sh(&["commit", "-q", "-m", "Premier commit"]);
         std::fs::write(repo.join("lisez-moi.txt"), "un\ndeux\n").unwrap();
+    }
+
+    /// Fait tourner DragonTree jusqu'à ce que l'écran `path` ait fini de lire ce qu'il montre (au plus 10 s).
+    fn settle(h: &mut H, phone: &mut Phone, path: &str) -> Option<Screen> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            h.step();
+            phone.after_logic(h.state_mut());
+            let s = phone.screen(h.state_mut(), path)?;
+            if !format!("{s:?}").contains("Lecture") || Instant::now() > deadline {
+                return Some(s);
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    /// Parcourt les écrans que le téléphone peut ouvrir depuis `start` (au plus `max`) : chaque chemin qu'un écran
+    /// ouvre (ligne, onglet, action d'écran) doit exister sur le PC. Rend les chemins visités.
+    fn walk(h: &mut H, phone: &mut Phone, start: &str, max: usize) -> Vec<String> {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut todo = std::collections::VecDeque::from([start.to_string()]);
+        while let Some(path) = todo.pop_front() {
+            if seen.len() >= max || !seen.insert(path.clone()) {
+                continue;
+            }
+            let s = settle(h, phone, &path).unwrap_or_else(|| panic!("l'écran « {path} » n'existe pas sur le PC"));
+            for open in s.opens() {
+                assert!(
+                    open.is_empty() || open.starts_with("depot/"),
+                    "« {path} » ouvre « {open} », un chemin qui n'est pas absolu dans le module"
+                );
+                assert!(
+                    phone.screen(h.state_mut(), &open).is_some(),
+                    "« {path} » ouvre « {open} », que le PC ne trouve pas"
+                );
+                todo.push_back(open);
+            }
+        }
+        seen.into_iter().collect()
+    }
+
+    /// Le défaut du 28/10 : les sous-écrans d'un dépôt ouvraient des chemins relatifs, que le PC ne trouvait pas.
+    /// Depuis la liste, chaque écran atteignable existe, sur un vrai dépôt avec un commit, une modification, une
+    /// seconde branche, une étiquette et une remise.
+    #[test]
+    fn every_screen_reachable_from_the_list_exists_on_the_pc() {
+        let Ok(git) = Git::discover() else { return };
+        let dir = std::env::temp_dir().join(format!("suite-dragontree-ecrans-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let repo = dir.join("depot");
+        new_repo(&git, &repo);
+        let sh = |args: &[&str]| sh(&git, &repo, args);
+        sh(&["tag", "v1"]);
+        sh(&["branch", "feature/essai"]);
+        std::fs::write(repo.join("remise.txt"), "de côté\n").unwrap();
+        sh(&["add", "remise.txt"]);
+        sh(&["stash", "push", "-q", "-m", "Une remise", "--", "remise.txt"]);
+
+        let profile = dir.join("profil");
+        let mut phone = phone_for(&profile, &repo);
+        let mut h = dragontree(&profile);
+        let base = format!("depot/{}", repo_key(&repo));
+        wait_screen(&mut h, &mut phone, &base, "fichier(s)");
+        let seen = walk(&mut h, &mut phone, "", 80);
+        let has = |p: &str| seen.iter().any(|s| s.starts_with(&format!("{base}/{p}")));
+        for p in ["modifs", "fichier/", "historique", "commit/", "branches"] {
+            assert!(has(p), "{p} visité : {seen:?}");
+        }
+        assert!(
+            seen.iter().any(|s| s.starts_with(&format!("{base}/commit/")) && s.matches('/').count() == 4),
+            "le diff d'un fichier d'un commit : {seen:?}"
+        );
+        drop(h);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Un vrai dépôt, mené par DragonTree : modifier, voir le diff, indexer, valider, retrouver le commit dans son
+    /// historique, créer une branche ; un nom refusé par git est dit.
+    #[test]
+    fn a_change_is_staged_and_committed_by_dragontree() {
+        let Ok(git) = Git::discover() else { return };
+        let dir = std::env::temp_dir().join(format!("suite-dragontree-git-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let repo = dir.join("depot");
+        new_repo(&git, &repo);
 
         let profile = dir.join("profil");
         let mut phone = phone_for(&profile, &repo);
