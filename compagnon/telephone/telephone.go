@@ -151,7 +151,8 @@ func EyrieTailnetDial(caddr *C.char, fd C.int, timeoutMs C.int) *C.char {
 // « hôte:port ») : quand le PC ne répond pas, est-il sur le tailnet (Eyrie fermée) ou non (éteint, en veille, hors
 // réseau) ? Rend {"connu":bool,"enligne":bool,"vu":<secondes Unix>} (connu : un appareil du tailnet a cette adresse ;
 // vu : sa dernière connexion à Tailscale, maintenant s'il est en ligne, 0 si on l'ignore), ou NULL si le nœud est
-// arrêté ou son état illisible.
+// arrêté, son état illisible, ou s'il n'est pas lui-même en ligne (téléphone hors réseau : ce qu'il sait du PC est
+// périmé ; voir noeud.ChercherPair).
 //
 //export EyrieTailnetPeer
 func EyrieTailnetPeer(caddr *C.char) *C.char {
@@ -168,7 +169,11 @@ func EyrieTailnetPeer(caddr *C.char) *C.char {
 	if err != nil {
 		return nil
 	}
-	b, _ := json.Marshal(noeud.ChercherPair(st, addr, time.Now()))
+	pair, ok := noeud.ChercherPair(st, addr, time.Now())
+	if !ok {
+		return nil
+	}
+	b, _ := json.Marshal(pair)
 	return C.CString(string(b))
 }
 

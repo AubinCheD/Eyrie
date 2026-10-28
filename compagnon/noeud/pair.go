@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
 )
 
@@ -22,33 +23,38 @@ type Pair struct {
 }
 
 // ChercherPair cherche dans `st` l'appareil d'adresse `addr` (« hôte » ou « hôte:port », l'hôte étant une adresse
-// du tailnet, un nom MagicDNS complet ou court) ; à nom égal, celui qui est en ligne.
-func ChercherPair(st *ipnstate.Status, addr string, now time.Time) Pair {
+// du tailnet, un nom MagicDNS complet ou court, ou à défaut le nom d'hôte d'un appareil). Le nom court est d'abord
+// celui que MagicDNS résout (dans le tailnet du nœud), puis le premier mot d'un nom MagicDNS ; un appareil ne vient
+// par son seul nom d'hôte que si aucun nom MagicDNS ne correspond. À égalité, celui qui est en ligne.
+//
+// Rend faux quand le nœud lui-même n'est pas en ligne (pas connecté au serveur de coordination : téléphone hors
+// réseau) : ce qu'il sait des autres est alors périmé, et un PC éteint depuis passerait pour en ligne.
+func ChercherPair(st *ipnstate.Status, addr string, now time.Time) (Pair, bool) {
+	if st.BackendState != ipn.Running.String() || st.Self == nil || !st.Self.Online {
+		return Pair{}, false
+	}
 	host := addr
 	if h, _, err := net.SplitHostPort(addr); err == nil {
 		host = h
 	}
 	host = strings.TrimSuffix(strings.ToLower(host), ".")
-	ip, ipErr := netip.ParseAddr(host)
+	suffix := ""
+	if st.CurrentTailnet != nil {
+		suffix = strings.Trim(strings.ToLower(st.CurrentTailnet.MagicDNSSuffix), ".")
+	}
 	var found *ipnstate.PeerStatus
+	best := 0
 	for _, p := range st.Peer {
 		if p == nil {
 			continue
 		}
-		match := false
-		if ipErr == nil {
-			match = slices.Contains(p.TailscaleIPs, ip)
-		} else {
-			full := strings.TrimSuffix(strings.ToLower(p.DNSName), ".")
-			short, _, _ := strings.Cut(full, ".")
-			match = host != "" && (host == full || host == short || strings.EqualFold(host, p.HostName))
-		}
-		if match && (found == nil || (p.Online && !found.Online)) {
-			found = p
+		rank := matchRank(p, host, suffix)
+		if rank > best || (rank == best && rank > 0 && p.Online && !found.Online) {
+			found, best = p, rank
 		}
 	}
 	if found == nil {
-		return Pair{}
+		return Pair{}, true
 	}
 	out := Pair{Connu: true, EnLigne: found.Online}
 	switch {
@@ -57,5 +63,31 @@ func ChercherPair(st *ipnstate.Status, addr string, now time.Time) Pair {
 	case !found.LastSeen.IsZero():
 		out.Vu = found.LastSeen.Unix()
 	}
-	return out
+	return out, true
+}
+
+// matchRank : à quel point l'appareil `p` répond à `host` (en minuscules, sans point final) ; 0 : pas du tout. 3 :
+// son adresse, son nom MagicDNS complet, ou le nom court que MagicDNS résout vers lui (`host`.`suffix`) ; 2 : le
+// premier mot de son nom MagicDNS (un appareil partagé d'un autre tailnet) ; 1 : son seul nom d'hôte.
+func matchRank(p *ipnstate.PeerStatus, host, suffix string) int {
+	if host == "" {
+		return 0
+	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		if slices.Contains(p.TailscaleIPs, ip) {
+			return 3
+		}
+		return 0
+	}
+	full := strings.TrimSuffix(strings.ToLower(p.DNSName), ".")
+	short, _, _ := strings.Cut(full, ".")
+	switch {
+	case full != "" && (host == full || (suffix != "" && host+"."+suffix == full)):
+		return 3
+	case short != "" && host == short:
+		return 2
+	case strings.EqualFold(host, p.HostName):
+		return 1
+	}
+	return 0
 }
