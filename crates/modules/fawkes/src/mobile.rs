@@ -290,16 +290,43 @@ fn group_acts(g: &Group, n: &Tally) -> Vec<Act> {
         )));
     }
     if n.terms > 0 {
-        let what = if n.terms == 1 { "le terminal".to_string() } else { format!("les {} terminaux", n.terms) };
         acts.push(
             Act::new(format!("redemarrer:g{gid}"), "Tout redémarrer")
                 .glyph("🔄")
                 .danger()
-                .confirm(format!("Redémarrer {what} de « {} » ? Ce qui y tourne s'arrête, puis repart.", g.name)),
+                .confirm(restart_question(g, n)),
         );
     }
     acts.push(Act::new(format!("montrer:g{gid}"), "Montrer sur le PC").glyph("🖥️"));
     acts
+}
+
+/// La question de « Tout redémarrer ». Fawkes (`App::restart_group`) relance sans l'écran gardé à la mise en veille,
+/// que « Tout réveiller » rejouerait : elle le dit dès qu'un terminal du groupe dort, et ne parle de ce qui tourne que
+/// s'il tourne quelque chose.
+fn restart_question(g: &Group, n: &Tally) -> String {
+    let name = &g.name;
+    let one = n.terms == 1;
+    if n.asleep == n.terms {
+        let (what, their) = if one {
+            ("le terminal en veille".to_string(), "son")
+        } else {
+            (format!("les {} terminaux en veille", n.terms), "leur")
+        };
+        return format!("Relancer {what} de « {name} » sans {their} ancien écran ? « Tout réveiller » le garde.");
+    }
+    let what = if one { "le terminal".to_string() } else { format!("les {} terminaux", n.terms) };
+    let mut q = if n.live > 0 {
+        format!("Redémarrer {what} de « {name} » ? Ce qui y tourne s'arrête, puis repart.")
+    } else {
+        format!("Relancer {what} de « {name} » ?")
+    };
+    match n.asleep {
+        0 => {}
+        1 => q += " Celui en veille repart sans son ancien écran (« Tout réveiller » le garde).",
+        k => q += &format!(" Les {k} en veille repartent sans leur ancien écran (« Tout réveiller » le garde)."),
+    }
+    q
 }
 
 /// Le bandeau d'un groupe : clé tirée de son identifiant (elle survit à un renommage), « ✻2 · 5 » (sessions Claude,
@@ -1142,7 +1169,11 @@ mod tests {
             )
         );
         let one = s.all_acts().into_iter().find(|a| a.id == "redemarrer:g7").unwrap();
-        assert!(one.confirm.as_ref().is_some_and(|q| q.starts_with("Redémarrer le terminal de « Ozmo » ?")));
+        assert_eq!(
+            one.confirm.as_deref(),
+            Some("Relancer le terminal en veille de « Ozmo » sans son ancien écran ? « Tout réveiller » le garde."),
+            "tout en veille : rien ne tourne, et le redémarrage efface l'écran gardé"
+        );
         let labels: Vec<String> = s
             .blocks
             .iter()
@@ -1163,6 +1194,39 @@ mod tests {
         seen.insert(1, Seen { remote: true, ..claude(State::Ready) });
         let ids = home(&st, &seen).action_ids();
         assert!(!ids.contains("remote:g5") && !ids.contains("remote:1"), "déjà sous Remote Control");
+    }
+
+    /// « Tout redémarrer » efface l'écran que Fawkes a gardé à la mise en veille (« Tout réveiller » le rejoue) : la
+    /// question le dit dès qu'un terminal du groupe dort, et ne parle de ce qui tourne que s'il tourne quelque chose.
+    #[test]
+    fn restarting_a_group_warns_that_sleeping_terminals_lose_their_screen() {
+        let g = group(7, "Ozmo", &[1, 2, 3]);
+        let ask = |n: Tally| restart_question(&g, &n);
+        assert_eq!(
+            ask(Tally { terms: 3, live: 3, ..Default::default() }),
+            "Redémarrer les 3 terminaux de « Ozmo » ? Ce qui y tourne s'arrête, puis repart."
+        );
+        assert_eq!(
+            ask(Tally { terms: 3, live: 2, asleep: 1, ..Default::default() }),
+            "Redémarrer les 3 terminaux de « Ozmo » ? Ce qui y tourne s'arrête, puis repart. Celui en veille repart \
+             sans son ancien écran (« Tout réveiller » le garde)."
+        );
+        assert_eq!(
+            ask(Tally { terms: 3, live: 1, asleep: 2, ..Default::default() }),
+            "Redémarrer les 3 terminaux de « Ozmo » ? Ce qui y tourne s'arrête, puis repart. Les 2 en veille \
+             repartent sans leur ancien écran (« Tout réveiller » le garde)."
+        );
+        assert_eq!(
+            ask(Tally { terms: 3, asleep: 3, ..Default::default() }),
+            "Relancer les 3 terminaux en veille de « Ozmo » sans leur ancien écran ? « Tout réveiller » le garde."
+        );
+        assert_eq!(
+            ask(Tally { terms: 3, failed: 2, asleep: 1, ..Default::default() }),
+            "Relancer les 3 terminaux de « Ozmo » ? Celui en veille repart sans son ancien écran (« Tout réveiller » \
+             le garde).",
+            "rien ne tourne : en échec, ou en veille"
+        );
+        assert_eq!(ask(Tally { terms: 1, failed: 1, ..Default::default() }), "Relancer le terminal de « Ozmo » ?");
     }
 
     /// Chaque action que proposent l'accueil et les écrans « nouveau terminal » est comprise, tout redémarrer un groupe
