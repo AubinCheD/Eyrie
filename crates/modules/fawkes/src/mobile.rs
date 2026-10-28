@@ -324,7 +324,8 @@ pub fn waiting(app: &App) -> Vec<(String, Option<String>)> {
 }
 
 /// Les dossiers proposés pour un nouveau terminal, 12 au plus : ceux du groupe visé d'abord (son dépôt, puis ceux de
-/// ses terminaux, 6 au plus ; marqués `true`), les récents, puis les dépôts des groupes.
+/// ses terminaux, 6 au plus ; marqués `true`), les récents, puis les dépôts des groupes. Un seul par [`dir_key`] :
+/// c'est la clé de sa ligne et de ses actions.
 fn known_dirs(st: &AppState, group: Option<&Group>) -> Vec<(String, bool)> {
     let own = group.into_iter().flat_map(|g| {
         let cwds = g.terminals.iter().filter_map(|id| st.term(*id)).map(|t| t.cwd.clone());
@@ -334,7 +335,7 @@ fn known_dirs(st: &AppState, group: Option<&Group>) -> Vec<(String, bool)> {
     let mut out: Vec<(String, bool)> = Vec::new();
     for (d, mine) in own.chain(others.map(|d| (d, false))) {
         let full = mine && out.len() >= 6;
-        if full || d.trim().is_empty() || out.iter().any(|(o, _)| o.eq_ignore_ascii_case(&d)) {
+        if full || d.trim().is_empty() || out.iter().any(|(o, _)| dir_key(o) == dir_key(&d)) {
             continue;
         }
         out.push((d, mine));
@@ -1234,6 +1235,26 @@ mod tests {
             Ok(format!("Remote Control activé sur 1 session Claude ; non activé sur 1 : {}", busy[0]))
         );
         assert_eq!(count(0, "terminal réveillé", "terminaux réveillés"), "Aucun terminal réveillé");
+    }
+
+    /// Un dossier écrit de plusieurs façons (casse des lettres accentuées comprise) n'est proposé qu'une fois : sa clé
+    /// est celle de sa ligne et de ses actions.
+    #[test]
+    fn a_folder_is_offered_once_whatever_its_case() {
+        let (mut st, _) = three_groups();
+        st.recent_dirs = vec![
+            r"C:\Users\Élodie\proj".into(),
+            r"C:\Users\élodie\proj".into(),
+            r"C:\USERS\ÉLODIE\PROJ".into(),
+            r"C:\DEV\Ozmo".into(),
+        ];
+        let dirs: Vec<String> = known_dirs(&st, None).into_iter().map(|(d, _)| d).collect();
+        assert_eq!(dirs, [r"C:\Users\Élodie\proj", r"C:\DEV\Ozmo"], "le premier venu");
+        let s = new_terminal(&st, None);
+        let keys: Vec<&str> =
+            s.blocks.iter().filter_map(|b| if let Block::Row(r) = b { Some(r.key.as_str()) } else { None }).collect();
+        let unique: std::collections::BTreeSet<&str> = keys.iter().copied().collect();
+        assert_eq!((keys.len(), unique.len()), (3, 3), "deux dossiers et « Autre dossier… », une ligne par clé");
     }
 
     #[test]
