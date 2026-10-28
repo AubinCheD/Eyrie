@@ -238,8 +238,8 @@ mod tests {
         if let Some(egui_tiles::Tile::Container(c)) = tiles.get_mut(tabs) {
             c.add_child(tabs);
         }
-        let looped = SavedLayout { main: Tree::new(egui::Id::new("boucle"), tabs, tiles), windows: Vec::new() };
-        let fine = SavedLayout { main: Tree::empty(egui::Id::new("vide")), windows: Vec::new() };
+        let looped = SavedLayout { main: Tree::new(egui::Id::unique("boucle"), tabs, tiles), windows: Vec::new() };
+        let fine = SavedLayout { main: Tree::empty(egui::Id::unique("vide")), windows: Vec::new() };
         let mut st = SuiteState { layout: Some(looped.clone()), ..SuiteState::default() };
         st.layouts.insert("boucle".into(), looped);
         st.layouts.insert("vide".into(), fine);
