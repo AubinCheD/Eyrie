@@ -5,7 +5,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use suite_mobile::msg::{CommandCard, ModuleCard, Note, Rights, ToPc, ToPhone, Waiting, module_target};
@@ -29,6 +29,8 @@ const EXTRAS: [&str; 3] = ["notes", "commandes", "reglages"];
 const TEXT_SIZES: [f32; 3] = [1.0, 1.35, 1.7];
 /// Une action sans résultat du PC passé ce délai : « Le PC n'a pas répondu ».
 const ANSWER_WITHIN: Duration = Duration::from_secs(15);
+/// Le temps qu'un bandeau garde son pliage après une action de son menu (et après son résultat).
+const HOLD_FOLD: Duration = Duration::from_secs(6);
 
 fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
@@ -132,6 +134,45 @@ impl Pendings {
     fn acts(&self, key: &(String, String)) -> HashSet<String> {
         let here = self.sent.values().filter(|p| p.module == key.0 && p.path == key.1);
         here.map(|p| p.act.clone()).collect()
+    }
+}
+
+/// Les bandeaux dont le menu vient de servir : leur pliage du moment, gardé quelques secondes après l'action et après
+/// son résultat, même si l'état de départ que donne le PC change (« Tout mettre en veille » : le groupe tout en veille,
+/// plié par défaut, ne se replie pas sous le doigt). Le choix de l'utilisateur, lui, l'emporte toujours.
+#[derive(Default)]
+struct Holds(HashMap<(String, String, String), Held>);
+
+struct Held {
+    open: bool,
+    act: String,
+    until: Instant,
+}
+
+impl Holds {
+    /// Le bandeau `band` de l'écran `(module, path)` garde ce pliage pendant que l'action `act` part.
+    fn hold(&mut self, module: &str, path: &str, band: &str, open: bool, act: &str, now: Instant) {
+        let key = (module.to_string(), path.to_string(), band.to_string());
+        self.0.insert(key, Held { open, act: act.to_string(), until: now + HOLD_FOLD });
+    }
+
+    /// Le résultat de l'action est arrivé : ses bandeaux gardent leur pliage encore un peu (le PC change leur état de
+    /// départ après l'action). `true` : il y en avait.
+    fn answered(&mut self, module: &str, path: &str, act: &str, now: Instant) -> bool {
+        let mut any = false;
+        for ((m, p, _), h) in self.0.iter_mut() {
+            if m == module && p == path && h.act == act && h.until > now {
+                h.until = now + HOLD_FOLD;
+                any = true;
+            }
+        }
+        any
+    }
+
+    /// Le pliage gardé de ce bandeau, s'il l'est encore (les gardes passées sont oubliées).
+    fn open(&mut self, module: &str, path: &str, band: &str, now: Instant) -> Option<bool> {
+        self.0.retain(|_, h| h.until > now);
+        self.0.get(&(module.to_string(), path.to_string(), band.to_string())).map(|h| h.open)
     }
 }
 
@@ -389,6 +430,8 @@ pub struct Controller {
     last_tabs: Option<Tabs>,
     /// Les actions envoyées sans résultat du PC : pas de second envoi de la même.
     pendings: Pendings,
+    /// Les bandeaux dont le menu vient de servir, qui gardent leur pliage un moment.
+    holds: Holds,
     target: Option<Target>,
     /// Ce qui a déjà été signalé (bulle ou notification du système) : rien deux fois, et rien à la première connexion
     /// à un PC (l'état initial n'est pas une nouveauté). Après une coupure, ou un arrêt de l'application par Android,
@@ -513,6 +556,7 @@ impl Controller {
             bubble_timer: slint::Timer::default(),
             last_tabs: None,
             pendings: Pendings::default(),
+            holds: Holds::default(),
             target: None,
             signalled: Signalled::default(),
             demo,
@@ -801,6 +845,11 @@ impl Controller {
             }
             ToPhone::Result { req, ok, message } => {
                 let done = self.pendings.answer(req);
+                if let Some(p) = &done
+                    && self.holds.answered(&p.module, &p.path, &p.act, Instant::now())
+                {
+                    self.settle_holds();
+                }
                 if !ok {
                     self.toast(&message, 4);
                     haptic_error();
@@ -1030,11 +1079,15 @@ impl Controller {
         }
         let pc = self.store.prefs.current.clone().unwrap_or_default();
         let mut changed = Vec::new();
+        let now = Instant::now();
         for (band, default_open, tone) in bands(self.screens.get(key)) {
             let chosen = self.store.folded(&pc, &key.0, &key.1, &band).map(|f| (f.open, f.tone));
             let (open, keep) = view::band_open(chosen, default_open, tone);
             if chosen.is_some() {
                 local.open.insert(band.clone(), open);
+            } else if let Some(held) = self.holds.open(&key.0, &key.1, &band, now) {
+                // Son menu vient de servir : l'état de départ du PC attend un peu.
+                local.open.insert(band.clone(), held);
             }
             if let Some(keep) = keep {
                 changed.push((band, keep));
@@ -1435,12 +1488,43 @@ impl Controller {
         let (module, path) = self.nav.key();
         // Une seule fois tant que le PC n'a pas répondu.
         let Some(req) = self.pendings.send(&module, &path, &a.id) else { return };
+        self.hold_bands(&module, &path, &a.id);
         let input = (a.has_input).then(|| input.to_string());
         self.send(ToPc::Action { req, module, path, action: a.id.to_string(), input });
         slint::Timer::single_shot(ANSWER_WITHIN, move || {
             with(|c| c.no_answer(req));
         });
         self.refresh_screen();
+    }
+
+    /// Une action part du menu d'un bandeau : il garde son pliage du moment quelques secondes.
+    fn hold_bands(&mut self, module: &str, path: &str, act: &str) {
+        let key = (module.to_string(), path.to_string());
+        let local = self.local(&key);
+        let Some(screen) = self.screens.get(&key) else { return };
+        let now = Instant::now();
+        let mut any = false;
+        for b in &screen.blocks {
+            if let Block::Section { key: band, fold, acts, .. } = b
+                && !band.is_empty()
+                && *fold != Fold::No
+                && acts.iter().any(|a| a.id == act)
+            {
+                let open = local.open.get(band).copied().unwrap_or(*fold == Fold::Open);
+                self.holds.hold(module, path, band, open, act, now);
+                any = true;
+            }
+        }
+        if any {
+            self.settle_holds();
+        }
+    }
+
+    /// La garde finie, l'état de départ du PC revient.
+    fn settle_holds(&self) {
+        slint::Timer::single_shot(HOLD_FOLD + Duration::from_millis(100), || {
+            with(|c| c.refresh_screen());
+        });
     }
 
     /// Le PC n'a pas donné le résultat d'une action à temps : elle redevient possible.
@@ -1608,6 +1692,7 @@ impl Controller {
         self.missing.clear();
         self.nav = Nav::new();
         self.pendings.sent.clear();
+        self.holds = Holds::default();
         self.followed = None;
         self.term = TermBuf::default();
         self.term_model.set_vec(Vec::new());
@@ -2128,6 +2213,23 @@ mod tests {
         assert_eq!(stack(&nav, "fawkes"), ["", "t/3"]);
         assert!(nav.open("@module fawkes nouveau"), "le même module : l'écran s'empile");
         assert_eq!(stack(&nav, "fawkes"), ["", "t/3", "nouveau"]);
+    }
+
+    /// Le menu d'un bandeau vient de servir : son pliage du moment tient quelques secondes, prolongées au résultat de
+    /// l'action, puis l'état de départ du PC revient ; un autre bandeau, ou une autre action, n'y change rien.
+    #[test]
+    fn a_band_keeps_its_fold_for_a_while_after_its_menu_was_used() {
+        let t = Instant::now();
+        let mut h = Holds::default();
+        h.hold("fawkes", "", "g2", true, "veille:g2", t);
+        assert_eq!(h.open("fawkes", "", "g2", t + Duration::from_secs(2)), Some(true));
+        assert_eq!(h.open("fawkes", "", "g1", t), None, "un autre bandeau");
+        assert_eq!(h.open("fawkes", "nouveau", "g2", t), None, "un autre écran");
+        assert!(!h.answered("fawkes", "", "reveiller:g2", t + Duration::from_secs(4)), "une autre action");
+        assert!(h.answered("fawkes", "", "veille:g2", t + Duration::from_secs(4)));
+        assert_eq!(h.open("fawkes", "", "g2", t + HOLD_FOLD + Duration::from_secs(1)), Some(true), "prolongée");
+        assert_eq!(h.open("fawkes", "", "g2", t + Duration::from_secs(4) + HOLD_FOLD), None, "puis finie");
+        assert!(!h.answered("fawkes", "", "veille:g2", t + Duration::from_secs(20)), "oubliée");
     }
 
     #[test]
