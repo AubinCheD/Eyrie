@@ -532,6 +532,8 @@ mod tests {
         }]);
         let mut c = open(&server, &phone);
         client::hello(&mut c, &s.key.public, "x", "y").unwrap();
+        // Gardé comme l'hôte le garde : lâcher son envoi ferme la connexion, qui tomberait alors à la place du `Ping`.
+        let _connected = wait_inbox(&s, |i| matches!(i, Inbound::Connected { .. }));
         std::thread::sleep(OPENING + Duration::from_secs(2));
         c.tx.send(&ToPc::Ping).unwrap();
         let Inbound::Message { msg, .. } =
