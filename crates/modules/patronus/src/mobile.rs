@@ -1,5 +1,7 @@
-//! Patronus sur le téléphone : les tâches (lancer, arrêter), la boîte de réception, le détail d'une exécution (journal,
-//! marquer lu, archiver, appliquer le diff, supprimer le worktree), la pause et le budget du mois.
+//! Patronus sur le téléphone : l'accueil en trois bandeaux (ce qui tourne, la boîte de réception, les tâches), le détail
+//! d'une tâche (lancer, arrêter) et d'une exécution (journal, marquer lu, archiver, appliquer le diff, supprimer le
+//! worktree), la pause et le budget du mois ; un résultat se marque lu ou s'archive depuis son menu, et toute la boîte
+//! se marque lue d'un geste, comme le bouton du PC.
 //!
 //! Tout passe par Patronus : son moteur public (`App::engine`), verrouillé le temps de relever ce qu'il faut (les
 //! écrans sont mis en forme sans le verrou), et, pour appliquer le diff ou supprimer le worktree, les mêmes actions que
@@ -16,7 +18,7 @@ use patronus_core::exec::Context;
 use patronus_core::run::{Run, RunStore, Status, now};
 use patronus_core::task::Loaded;
 use suite_sdk::Cx;
-use suite_sdk::mobile::ui::{Act, Row, Screen, Tone};
+use suite_sdk::mobile::ui::{Act, Band, Row, Screen, Tone};
 
 /// Exécutions montrées dans la boîte de réception.
 const INBOX: usize = 30;
@@ -26,6 +28,8 @@ const JOURNAL: u64 = 4000;
 const COST_EVERY: Duration = Duration::from_secs(10);
 /// Le résultat d'une action sur un résultat reste affiché une minute.
 const JOB_SHOWN: Duration = Duration::from_secs(60);
+/// Au-delà, le bandeau des tâches est plié au départ.
+const TASKS_OPEN: usize = 6;
 
 /// Une tâche, relevée sous le verrou du moteur.
 #[derive(Clone, Debug, PartialEq)]
@@ -37,6 +41,8 @@ pub struct TaskLine {
     pub problem: Option<String>,
     pub next: Option<NaiveDateTime>,
     pub running: bool,
+    /// Début de l'exécution en cours.
+    pub since: Option<NaiveDateTime>,
     /// Un départ attend la fin de l'exécution en cours.
     pub pending: bool,
     pub last: Option<(Status, NaiveDateTime)>,
@@ -68,6 +74,7 @@ impl TaskLine {
             problem,
             next: e.next_run(&l.id),
             running: e.is_running(&l.id),
+            since: e.running_run_id(&l.id).and_then(|run| e.runs.iter().find(|r| r.id == run)).map(|r| r.debut),
             pending: e.is_pending(&l.id),
             last: e.last_run(&l.id).map(|r| (r.statut, r.debut)),
         }
@@ -94,6 +101,21 @@ impl Snapshot {
 
 fn unread(r: &Run) -> bool {
     !r.lu && r.statut != Status::EnCours
+}
+
+/// Le glyphe d'un état d'exécution : réussie, en échec, en cours, arrêtée.
+pub fn status_glyph(s: Status) -> &'static str {
+    match s {
+        Status::EnCours => "◐",
+        Status::Reussie => "✓",
+        Status::Echouee | Status::Impossible => "✗",
+        Status::Arretee
+        | Status::DureeDepassee
+        | Status::ToursAtteints
+        | Status::BudgetAtteint
+        | Status::Interrompue => "⏹",
+        Status::Manquee => "⏭",
+    }
 }
 
 pub fn status_tone(s: Status) -> Tone {
@@ -123,6 +145,15 @@ pub fn when(at: NaiveDateTime, today: NaiveDate) -> String {
 /// « 12,34 $ ».
 pub fn money(usd: f64) -> String {
     format!("{usd:.2} $").replace('.', ",")
+}
+
+/// « depuis 4 min ».
+fn since(start: NaiveDateTime, now: NaiveDateTime) -> String {
+    match (now - start).num_seconds().max(0) {
+        s if s < 60 => "depuis moins d'une minute".into(),
+        s if s < 3600 => format!("depuis {} min", s / 60),
+        s => format!("depuis {} h {:02}", s / 3600, (s % 3600) / 60),
+    }
 }
 
 fn duration(secs: i64) -> String {
@@ -179,6 +210,7 @@ fn task_row(t: &TaskLine, today: NaiveDate) -> Row {
         t.last.map(|(s, _)| status_tone(s))
     };
     let mut row = Row::new(&t.name)
+        .key(format!("tache/{}", t.id))
         .subtitle(task_state(t, today))
         .glyph(if t.running { "◐" } else { "✦" })
         .open(format!("tache/{}", t.id));
@@ -192,20 +224,66 @@ fn task_row(t: &TaskLine, today: NaiveDate) -> Row {
     row
 }
 
+/// Une tâche qui tourne, dans « En cours » : depuis quand, et « Arrêter » à portée de pouce.
+fn running_row(t: &TaskLine, now: NaiveDateTime) -> Row {
+    let mut sub = t.since.map(|at| since(at, now)).unwrap_or_else(|| "en cours".into());
+    if t.pending {
+        sub = format!("{sub} · relancée à la fin");
+    }
+    let mut row = Row::new(&t.name)
+        .key(format!("cours/{}", t.id))
+        .subtitle(sub)
+        .glyph("◐")
+        .tone(Tone::Info)
+        .progress(None)
+        .open(format!("tache/{}", t.id))
+        .trailing(
+            Act::new(format!("arreter:{}", t.id), "Arrêter")
+                .glyph("⏹️")
+                .danger()
+                .confirm(format!("Arrêter « {} » ?", t.name)),
+        );
+    row.acts = task_acts(t);
+    row
+}
+
+/// L'ordre des tâches : celles qui ne peuvent pas partir, puis la prochaine échéance, les inactives à la fin.
+fn task_order(t: &TaskLine) -> (u8, Option<NaiveDateTime>, String) {
+    let rank = match (&t.problem, t.active, t.next) {
+        (Some(_), ..) => 0,
+        (None, true, Some(_)) => 1,
+        (None, true, None) => 2,
+        (None, false, _) => 3,
+    };
+    (rank, t.next, t.name.to_lowercase())
+}
+
+/// Un résultat : son état en glyphe, et son menu (lu ou non lu, archiver) pour trier la boîte sans l'ouvrir.
 fn run_row(r: &Run, today: NaiveDate) -> Row {
     let mut sub = format!("{} · {}", r.statut.label(), when(r.debut, today));
     if let Some(c) = &r.cout {
         sub = format!("{sub} · {}", money(c.usd));
     }
-    let mut row = Row::new(&r.tache_nom).subtitle(sub).tone(status_tone(r.statut)).open(format!("run/{}", r.id));
-    if unread(r) {
-        row = row.badge("non lu");
+    let mut row = Row::new(&r.tache_nom)
+        .key(format!("run/{}", r.id))
+        .subtitle(sub)
+        .glyph(status_glyph(r.statut))
+        .tone(status_tone(r.statut))
+        .open(format!("run/{}", r.id));
+    if r.statut == Status::EnCours {
+        return row;
     }
-    row
+    row = if r.lu {
+        row.act(Act::new(format!("non_lu:{}", r.id), "Marquer non lu").glyph("●"))
+    } else {
+        row.badge("non lu").act(Act::new(format!("lu:{}", r.id), "Marquer lu").glyph("✅"))
+    };
+    row.act(Act::new(format!("archiver:{}", r.id), "Archiver").glyph("🗄️"))
 }
 
-/// L'accueil.
-pub fn home(s: &Snapshot, today: NaiveDate) -> Screen {
+/// L'accueil : ce qui tourne, la boîte de réception, puis les tâches (pliées au-delà de [`TASKS_OPEN`]).
+pub fn home(s: &Snapshot, now: NaiveDateTime) -> Screen {
+    let today = now.date();
     let mut parts = Vec::new();
     if s.running > 0 {
         parts.push(format!("{} en cours", s.running));
@@ -245,22 +323,42 @@ pub fn home(s: &Snapshot, today: NaiveDate) -> Screen {
         }
         None => {}
     }
-    screen.section("Tâches", s.tasks.len().to_string());
-    if s.tasks.is_empty() {
-        screen.empty("Aucune tâche : créez-en une sur le PC.");
+
+    let running: Vec<&TaskLine> = s.tasks.iter().filter(|t| t.running).collect();
+    if !running.is_empty() {
+        screen.band(Band::new("en-cours", "En cours").aside(running.len().to_string()).glyph("◐").tone(Tone::Info));
+        for t in running {
+            screen.row(running_row(t, now));
+        }
     }
-    for t in &s.tasks {
-        screen.row(task_row(t, today));
+
+    let mut inbox = Band::new("boite", "Boîte de réception").glyph("📥");
+    if s.unread > 0 {
+        inbox =
+            inbox.badge(plural(s.unread, "non lu", "non lus")).act(Act::new("tout_lu", "Tout marquer lu").glyph("✅"));
     }
-    screen.section(
-        "Boîte de réception",
-        if s.unread > 0 { plural(s.unread, "non lu", "non lus") } else { String::new() },
-    );
+    screen.band(inbox);
     if s.runs.is_empty() {
         screen.empty("Aucun résultat.");
     }
     for r in &s.runs {
         screen.row(run_row(r, today));
+    }
+
+    let mut tasks: Vec<&TaskLine> = s.tasks.iter().collect();
+    tasks.sort_by_key(|t| task_order(t));
+    let blocked = tasks.iter().filter(|t| t.problem.is_some()).count();
+    let mut band =
+        Band::new("taches", "Tâches").aside(s.tasks.len().to_string()).glyph("✦").open(s.tasks.len() <= TASKS_OPEN);
+    if blocked > 0 {
+        band = band.badge(plural(blocked, "bloquée", "bloquées")).tone(Tone::Danger);
+    }
+    screen.band(band);
+    if tasks.is_empty() {
+        screen.empty("Aucune tâche : créez-en une sur le PC.");
+    }
+    for t in tasks {
+        screen.row(task_row(t, today));
     }
     screen
 }
@@ -349,7 +447,8 @@ pub fn run(r: &Run, journal: &str, has_diff: bool, job: Option<&(String, Tone)>,
     if !acts.is_empty() {
         s.buttons(acts);
     }
-    s.section("Journal", "fin");
+    // Le résumé dit l'essentiel : le journal se déplie à la demande.
+    s.band(Band::new("journal", "Journal").aside("fin").glyph("📜").open(r.resume.trim().is_empty()));
     if journal.trim().is_empty() {
         s.empty("Journal vide.");
     } else {
@@ -384,17 +483,18 @@ fn job_note(j: &RunJob) -> Option<(String, Tone)> {
 }
 
 pub fn screen(app: &mut App, phone: &Shared, path: &str) -> Option<Screen> {
-    let today = now().date();
+    let now = now();
+    let today = now.date();
     if path.is_empty() {
         let cached = lock(phone).cost.filter(|(at, _)| at.elapsed() < COST_EVERY).map(|(_, c)| c);
         let e = app.engine();
-        let cost = cached.unwrap_or_else(|| e.month_cost(now()));
+        let cost = cached.unwrap_or_else(|| e.month_cost(now));
         let snap = Snapshot::read(&e, cost);
         drop(e);
         if cached.is_none() {
             lock(phone).cost = Some((Instant::now(), cost));
         }
-        return Some(home(&snap, today));
+        return Some(home(&snap, now));
     }
     if let Some(id) = path.strip_prefix("tache/") {
         let e = app.engine();
@@ -478,6 +578,17 @@ fn act_with(e: &mut Engine, path: &str, action: &str, input: Option<&str>) -> Re
         };
     }
     match action.split_once(':') {
+        Some((verb @ ("lu" | "non_lu" | "archiver"), id)) => {
+            if e.runs.iter().all(|r| r.id != id) {
+                return Err("Cette exécution n'existe plus.".into());
+            }
+            if verb == "archiver" {
+                e.archive(id);
+                return Ok(Some("Archivé".into()));
+            }
+            e.mark_read(id, verb == "lu");
+            Ok(Some(if verb == "lu" { "Marqué lu" } else { "Marqué non lu" }.into()))
+        }
         Some((verb @ ("lancer" | "lancer-note"), id)) => {
             if e.task(id).is_none() {
                 return Err("Cette tâche n'existe plus ou ne peut pas être lue.".into());
@@ -501,6 +612,19 @@ fn act_with(e: &mut Engine, path: &str, action: &str, input: Option<&str>) -> Re
             Ok(Some("Arrêt demandé".into()))
         }
         _ => match action {
+            "tout_lu" => {
+                // Comme « Tout marquer comme lu » sur le PC : une boucle sur `mark_read`.
+                let ids: Vec<String> =
+                    e.runs.iter().filter(|r| unread(r) && !r.archive).map(|r| r.id.clone()).collect();
+                for id in &ids {
+                    e.mark_read(id, true);
+                }
+                Ok(Some(match ids.len() {
+                    0 => "Rien à marquer".into(),
+                    1 => "1 résultat marqué lu".into(),
+                    n => format!("{n} résultats marqués lus"),
+                }))
+            }
             "tout_arreter" => {
                 let n = e.running_count();
                 e.stop_all();
@@ -520,7 +644,7 @@ mod tests {
     use std::path::PathBuf;
 
     use patronus_core::run::Cost;
-    use suite_sdk::mobile::ui::Block;
+    use suite_sdk::mobile::ui::{Block, Fold};
 
     use super::*;
 
@@ -550,6 +674,7 @@ mod tests {
                     problem: None,
                     next: Some(at(27, 20)),
                     running: true,
+                    since: Some(at(27, 12) - chrono::TimeDelta::minutes(4)),
                     pending: false,
                     last: Some((Status::Echouee, at(27, 8))),
                 },
@@ -560,6 +685,7 @@ mod tests {
                     problem: Some("fichier illisible".into()),
                     next: None,
                     running: false,
+                    since: None,
                     pending: false,
                     last: None,
                 },
@@ -568,9 +694,30 @@ mod tests {
         }
     }
 
+    fn rows(s: &Screen) -> Vec<&Row> {
+        s.blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::Row(r) => Some(r),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Les bandeaux d'un écran : (clé, pliage, pastille).
+    fn bands(s: &Screen) -> Vec<(&str, Fold, &str)> {
+        s.blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::Section { key, fold, badge, .. } => Some((key.as_str(), *fold, badge.as_str())),
+                _ => None,
+            })
+            .collect()
+    }
+
     #[test]
-    fn the_home_shows_the_pause_the_budget_the_tasks_and_the_inbox() {
-        let s = home(&sample(), at(27, 12).date());
+    fn the_home_shows_what_runs_the_inbox_and_the_tasks_in_bands() {
+        let s = home(&sample(), at(27, 12));
         assert_eq!(s.subtitle, "1 en cours · 1 non lu");
         assert!(matches!(&s.blocks[0], Block::Note { tone: Tone::Warn, .. }), "bandeau de pause");
         assert!(s.blocks.contains(&Block::Meter {
@@ -579,31 +726,79 @@ mod tests {
             text: "42,00 $ sur 50,00 $".into(),
             tone: Tone::Warn,
         }));
+        assert_eq!(
+            bands(&s),
+            [("en-cours", Fold::Open, ""), ("boite", Fold::Open, "1 non lu"), ("taches", Fold::Open, "1 bloquée")]
+        );
         let ids: Vec<String> = s.action_ids().into_iter().collect();
         assert_eq!(
             ids,
             [
+                "archiver:r0",
+                "archiver:r1",
                 "arreter:build",
                 "lancer-note:build",
                 "lancer-note:casse",
                 "lancer:build",
                 "lancer:casse",
+                "lu:r1",
+                "non_lu:r0",
                 "reprendre",
-                "tout_arreter"
+                "tout_arreter",
+                "tout_lu"
             ]
         );
         assert_eq!(s.opens().into_iter().collect::<Vec<_>>(), ["run/r0", "run/r1", "tache/build", "tache/casse"]);
-        let rows: Vec<&Row> = s
-            .blocks
-            .iter()
-            .filter_map(|b| match b {
-                Block::Row(r) => Some(r),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(rows[1].tone, Some(Tone::Danger), "tâche qui ne peut pas partir");
-        assert_eq!((rows[2].badge.as_str(), rows[2].tone), ("non lu", Some(Tone::Danger)));
-        assert_eq!(rows[2].subtitle, "échouée · aujourd'hui 08:00 · 0,50 $");
+        let rows = rows(&s);
+        // En cours : depuis quand, une barre qui tourne, « Arrêter » visible (avec confirmation).
+        assert_eq!((rows[0].key.as_str(), rows[0].subtitle.as_str()), ("cours/build", "depuis 4 min"));
+        assert_eq!(rows[0].progress, Some(suite_sdk::mobile::ui::PROGRESS_UNKNOWN));
+        assert!(rows[0].trailing.as_ref().is_some_and(|a| a.id == "arreter:build" && a.confirm.is_some()));
+        // La boîte : l'état en glyphe, non lus marqués.
+        assert_eq!((rows[1].badge.as_str(), rows[1].tone, rows[1].glyph.as_str()), ("non lu", Some(Tone::Danger), "✗"));
+        assert_eq!(rows[1].subtitle, "échouée · aujourd'hui 08:00 · 0,50 $");
+        assert_eq!((rows[2].glyph.as_str(), rows[2].badge.as_str()), ("✓", ""));
+        // Les tâches : celle qui ne peut pas partir d'abord.
+        assert_eq!((rows[3].key.as_str(), rows[3].tone), ("tache/casse", Some(Tone::Danger)));
+        assert_eq!(rows[4].key, "tache/build");
+    }
+
+    /// Les tâches : bloquées, puis par prochaine échéance, inactives à la fin ; pliées au-delà de six. Rien ne tourne :
+    /// pas de bandeau « En cours », et une boîte lue n'offre pas « Tout marquer lu ».
+    #[test]
+    fn many_tasks_are_sorted_and_folded() {
+        let task = |id: &str, active: bool, next: Option<NaiveDateTime>| TaskLine {
+            id: id.into(),
+            name: id.into(),
+            active,
+            problem: None,
+            next,
+            running: false,
+            since: None,
+            pending: false,
+            last: None,
+        };
+        let mut tasks = vec![
+            task("inactive", false, None),
+            task("demain", true, Some(at(28, 8))),
+            task("sans-echeance", true, None),
+            task("ce-soir", true, Some(at(27, 20))),
+        ];
+        tasks.push(TaskLine { problem: Some("dossier absent".into()), ..task("bloquee", true, Some(at(27, 13))) });
+        tasks.extend((0..3).map(|i| task(&format!("z{i}"), false, None)));
+        let s = home(&Snapshot { tasks, ..Default::default() }, at(27, 12));
+        assert_eq!(bands(&s), [("boite", Fold::Open, ""), ("taches", Fold::Closed, "1 bloquée")]);
+        assert!(!s.action_ids().contains("tout_lu"));
+        let order: Vec<&str> = rows(&s).iter().map(|r| r.title.as_str()).collect();
+        assert_eq!(order, ["bloquee", "ce-soir", "demain", "sans-echeance", "inactive", "z0", "z1", "z2"]);
+    }
+
+    #[test]
+    fn a_run_tells_how_long_it_has_been_running() {
+        assert_eq!(since(at(27, 12), at(27, 12)), "depuis moins d'une minute");
+        assert_eq!(since(at(27, 11), at(27, 12) - chrono::TimeDelta::minutes(1)), "depuis 59 min");
+        assert_eq!(since(at(27, 9), at(27, 12) + chrono::TimeDelta::minutes(5)), "depuis 3 h 05");
+        assert_eq!(status_glyph(Status::DureeDepassee), "⏹");
     }
 
     #[test]
@@ -616,6 +811,14 @@ mod tests {
         let s = run(&r, "ligne 1\nligne 2\n", true, None, today);
         assert_eq!(s.action_ids().into_iter().collect::<Vec<_>>(), ["archiver", "diff", "lu", "worktree"]);
         assert!(s.blocks.contains(&Block::Text { text: "ligne 1\nligne 2".into(), mono: true }));
+        assert_eq!(bands(&s), [("journal", Fold::Open, "")], "sans résumé, le journal est ouvert");
+        r.resume = "Le build casse sur le module de facturation.".into();
+        let s = run(&r, "ligne 1\n", true, None, today);
+        assert_eq!(
+            bands(&s),
+            [("", Fold::No, ""), ("journal", Fold::Closed, "")],
+            "le résumé d'abord, le journal plié"
+        );
         let links = s.all_acts().into_iter().filter(|a| a.url.is_some()).count();
         assert_eq!(links, 1, "seuls les liens http(s)");
         // Pendant une action git : ni diff ni worktree, et ce qui se passe est dit.
@@ -654,6 +857,23 @@ mod tests {
         assert!(act(&mut e, "", "lancer:inconnue").is_err());
         assert!(act(&mut e, "run/inconnue", "lu").is_err());
         assert!(act(&mut e, "", "autre").is_err());
+        // Le menu d'un résultat et « Tout marquer lu », comme les boutons du PC.
+        assert!(act(&mut e, "", "lu:inconnue").is_err());
+        assert_eq!(act(&mut e, "", "tout_lu"), Ok(Some("Rien à marquer".into())));
+        for (id, statut) in [("r1", Status::Echouee), ("r2", Status::Reussie), ("r3", Status::EnCours)] {
+            let mut r = Run::new(id.into(), "build", "Build du soir", "08:00", at(27, 8));
+            r.statut = statut;
+            e.runs.push(r);
+        }
+        assert_eq!(e.unread_count(), 2);
+        assert_eq!(act(&mut e, "", "lu:r1"), Ok(Some("Marqué lu".into())));
+        assert_eq!(e.unread_count(), 1);
+        assert_eq!(act(&mut e, "tache/build", "non_lu:r1"), Ok(Some("Marqué non lu".into())));
+        assert_eq!(act(&mut e, "", "tout_lu"), Ok(Some("2 résultats marqués lus".into())));
+        assert_eq!(e.unread_count(), 0);
+        assert!(!e.runs.iter().find(|r| r.id == "r3").unwrap().lu, "une exécution en cours n'est pas un résultat");
+        assert_eq!(act(&mut e, "", "archiver:r2"), Ok(Some("Archivé".into())));
+        assert!(e.runs.iter().find(|r| r.id == "r2").unwrap().archive);
         drop(e);
         let _ = std::fs::remove_dir_all(&dir);
     }
