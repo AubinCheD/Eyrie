@@ -895,6 +895,20 @@ export component CommitRowView inherits Rectangle {
         border-bottom-left-radius: item.last ? Theme.radius : 0;
         border-bottom-right-radius: item.last ? Theme.radius : 0;
         clip: true;
+        // Sous le contenu, sur toute la ligne : ⋯ et le bouton visible reçoivent leurs touchers (par-dessus, la zone
+        // couvrait ⋯ dès que la ligne avait aussi un chevron), le reste va à la ligne.
+        ta := TouchArea {
+            pointer-event(e) => {
+                if e.kind == PointerEventKind.down {
+                    root.long-fired = false;
+                }
+            }
+            clicked => {
+                if !root.long-fired {
+                    root.tapped();
+                }
+            }
+        }
         Rectangle {
             x: 2px;
             width: item.graph-w;
@@ -1023,20 +1037,6 @@ export component CommitRowView inherits Rectangle {
             value: item.value;
             indeterminate: item.indeterminate;
             tint: item.tone >= 3 ? Theme.tone(item.tone) : Theme.accent;
-        }
-        ta := TouchArea {
-            x: 0;
-            width: parent.width - (item.acts.length > 0 ? 46px : 0px);
-            pointer-event(e) => {
-                if e.kind == PointerEventKind.down {
-                    root.long-fired = false;
-                }
-            }
-            clicked => {
-                if !root.long-fired {
-                    root.tapped();
-                }
-            }
         }
         Timer {
             interval: 520ms;
