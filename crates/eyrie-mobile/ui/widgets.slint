@@ -40,8 +40,9 @@ export struct GraphSeg {
 
 // Une ligne d'écran. `kind` : 0 section, 1 ligne, 2 note, 3 jauge, 4 texte, 5 vide, 6 boutons, 7 ligne de diff (`tone` :
 // 0 contexte, 1 ajout, 2 retrait, 3 en-tête ; `subtitle` et `detail` : ancien et nouveau numéro ; `gutter` : chiffres
-// de la gouttière, 0 sans numéros), 8 bandeau (`key` : sa clé ; `fold` : 0 ne se plie pas, 1 ouvert, 2 plié), 9 en-tête
-// d'un diff (`title` : ajouts et retraits). `wrap` : les lignes des diffs passent à la ligne.
+// de la gouttière, 0 sans numéros), 8 bandeau (`key` : sa clé ; `fold` : 0 ne se plie pas, 1 ouvert, 2 plié, 3 ouvert
+// le temps d'une recherche, sans se plier), 9 en-tête d'un diff (`title` : ajouts et retraits). `wrap` : les lignes des
+// diffs passent à la ligne.
 export struct UiRow {
     kind: int,
     key: string,
@@ -560,12 +561,12 @@ component ChipLine inherits Rectangle {
 }
 
 // Un bandeau : l'en-tête d'un groupe de lignes, qui se plie et se déplie d'un toucher n'importe où ; pastille de couleur,
-// glyphe, titre, texte à droite, pastille de ton (visible même plié), menu ⋯.
+// glyphe, titre, texte à droite, pastille de ton (visible même plié), menu ⋯. Pendant une recherche, il reste ouvert.
 export component BandHeader inherits Rectangle {
     in property <UiRow> item;
     callback toggle();
     callback menu();
-    property <bool> foldable: item.fold != 0;
+    property <bool> foldable: item.fold == 1 || item.fold == 2;
     height: 52px;
     accessible-role: button;
     accessible-label: item.title + (item.detail != "" ? ", " + item.detail : "") + (item.badge != "" ? ", " + item.badge : "");

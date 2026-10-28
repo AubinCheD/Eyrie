@@ -861,10 +861,19 @@ impl Controller {
         local
     }
 
+    /// Une recherche filtre cet écran : ses bandeaux restent ouverts, sans se plier.
+    fn searching(&self, key: &(String, String)) -> bool {
+        self.screens.get(key).is_some_and(|s| !s.search.is_empty())
+            && self.search.get(key).is_some_and(|t| !t.trim().is_empty())
+    }
+
     /// Plie ou déplie des bandeaux de l'écran affiché (`None` : celui-ci seulement, à l'inverse de son état), sur le
-    /// téléphone seulement.
+    /// téléphone seulement. Rien pendant une recherche : le pliage, caché, changerait sans que rien ne bouge.
     fn fold_bands(&mut self, only: Option<&str>, open: bool) {
         let Some(key) = self.shown_for.clone() else { return };
+        if self.searching(&key) {
+            return;
+        }
         let local = self.local(&key);
         let pc = self.store.prefs.current.clone().unwrap_or_default();
         for (band, default_open, tone) in bands(self.screens.get(&key)) {
@@ -989,7 +998,7 @@ impl Controller {
         let local = screen_follow.as_ref().map(|k| self.local(k)).unwrap_or_default();
         let acts: Vec<Act> = acts.into_iter().filter(|a| a.id != "@pc").collect();
         let mut mine = Vec::new();
-        if screen_follow.as_ref().is_some_and(|k| bands(self.screens.get(k)).len() >= 2) {
+        if screen_follow.as_ref().is_some_and(|k| bands(self.screens.get(k)).len() >= 2 && !self.searching(k)) {
             mine.push(Act::new("@replier", "Tout replier").glyph("▸"));
             mine.push(Act::new("@deplier", "Tout déplier").glyph("▾"));
         }
@@ -1049,11 +1058,12 @@ impl Controller {
         self.refresh_screen();
     }
 
-    /// Le texte cherché dans l'écran affiché a changé : la liste est filtrée sur le téléphone, depuis son début.
+    /// Le texte cherché dans l'écran affiché a changé : la liste est filtrée sur le téléphone, depuis son début (et le
+    /// menu ⋯ perd « Tout replier » le temps de la recherche).
     pub(crate) fn search_edited(&mut self, text: &str) {
         let Some(key) = self.shown_for.clone() else { return };
-        self.search.insert(key.clone(), text.to_string());
-        self.refresh_rows(Some(&key));
+        self.search.insert(key, text.to_string());
+        self.refresh_screen();
         self.scroll_to(0.0);
     }
 

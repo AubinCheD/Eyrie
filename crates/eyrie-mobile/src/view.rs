@@ -288,7 +288,7 @@ pub fn items<'a>(s: &'a Screen, local: &Local) -> Vec<Item<'a>> {
         hash_block(&mut h, b, local);
         let (base, what) = match b {
             Block::Section { title, key, .. } => {
-                open.hash(&mut h);
+                (open, needle.is_empty()).hash(&mut h);
                 (format!("s:{}", if key.is_empty() { title } else { key }), What::Section { block: b, open })
             }
             Block::Row(r) => {
@@ -464,7 +464,8 @@ fn row(r: &Row, first: bool, last: bool, local: &Local) -> UiRow {
 }
 
 /// Un bandeau (`kind` 8 : pliable, ou orné d'une couleur, d'un glyphe, d'une pastille, d'un menu), sinon un simple
-/// titre de section (`kind` 0).
+/// titre de section (`kind` 0). Pendant une recherche, un bandeau pliable est ouvert et ne se plie pas (`fold` 3) :
+/// son pliage, caché, changerait sans que rien ne bouge à l'écran.
 fn section(b: &Block, open: Option<bool>, local: &Local) -> UiRow {
     let Block::Section { title, aside, key, color, glyph, badge, tone: t, acts: list, .. } = b else {
         return empty(5, "");
@@ -486,6 +487,7 @@ fn section(b: &Block, open: Option<bool>, local: &Local) -> UiRow {
         acts: menu_acts(list, local),
         fold: match open {
             None => 0,
+            Some(_) if !local.search.trim().is_empty() => 3,
             Some(true) => 1,
             Some(false) => 2,
         },
@@ -883,7 +885,11 @@ mod tests {
         s.row(Row::new("Dépôt").chip(Chip::new("release/été")));
         let mut local = Local { search: "  GIT ".into(), ..Default::default() };
         assert_eq!(shown(&s, &local), ["s:g2", "r:t/7"], "Ozmo, plié au départ, est déplié");
-        assert_eq!(rows(&s, &local)[0].fold, 1);
+        assert_eq!(rows(&s, &local)[0].fold, 3, "ouvert le temps de la recherche : il ne se plie pas");
+        let sig = |l: &Local| items(&s, l).into_iter().find(|i| i.key == "s:g2").map(|i| i.sig);
+        let open = Local { open: [("g2".to_string(), true)].into(), ..Default::default() };
+        let open_searching = Local { search: "git".into(), ..open.clone() };
+        assert_ne!(sig(&open), sig(&open_searching), "le bandeau est redessiné quand la recherche commence");
         local.search = "ete".into();
         assert_eq!(shown(&s, &local), ["s:Récents", "r:Dépôt\u{1f}"], "dans une étiquette, sans accent");
         local.search = "claude".into();
