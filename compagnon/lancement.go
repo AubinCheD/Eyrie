@@ -15,35 +15,57 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+// child : l'Eyrie que le veilleur a lancée, qu'il suit tant qu'elle démarre (`veille.go`).
+type child interface {
+	// running : tourne-t-elle encore ? Vrai dans le doute.
+	running() bool
+	// release : le veilleur ne la suit plus.
+	release()
+}
+
+// process : un processus lancé, par son handle.
+type process struct {
+	h windows.Handle
+}
+
+func (p *process) running() bool {
+	ev, err := windows.WaitForSingleObject(p.h, 0)
+	return err != nil || ev == uint32(windows.WAIT_TIMEOUT)
+}
+
+func (p *process) release() {
+	windows.CloseHandle(p.h)
+}
+
 // launchEyrie démarre `exe` avec `args`, dans la session de l'utilisateur, détaché du veilleur : l'environnement de
 // l'utilisateur relu (pas celui, figé, de l'ouverture de session), avec `env` en plus ; le dossier de
 // l'exécutable comme dossier de travail ; aucun handle hérité ; son propre groupe de processus, hors du job du
 // veilleur quand ce job le permet.
-func launchEyrie(exe string, args, env []string) error {
+func launchEyrie(exe string, args, env []string) (child, error) {
 	tok, err := windows.OpenCurrentProcessToken()
 	if err != nil {
-		return fmt.Errorf("compte de l'utilisateur : %w", err)
+		return nil, fmt.Errorf("compte de l'utilisateur : %w", err)
 	}
 	defer tok.Close()
 	base, err := tok.Environ(false)
 	if err != nil {
-		return fmt.Errorf("environnement de l'utilisateur : %w", err)
+		return nil, fmt.Errorf("environnement de l'utilisateur : %w", err)
 	}
 	block, err := envBlock(withEnv(base, env))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	app, err := windows.UTF16PtrFromString(exe)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	cmdline, err := windows.UTF16PtrFromString(windows.ComposeCommandLine(append([]string{exe}, args...)))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	dir, err := windows.UTF16PtrFromString(filepath.Dir(exe))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	si := &windows.StartupInfo{}
 	si.Cb = uint32(unsafe.Sizeof(*si))
@@ -55,11 +77,10 @@ func launchEyrie(exe string, args, env []string) error {
 		err = windows.CreateProcess(app, cmdline, nil, nil, false, flags, &block[0], dir, si, &pi)
 	}
 	if err != nil {
-		return fmt.Errorf("lancement de %s : %w", exe, err)
+		return nil, fmt.Errorf("lancement de %s : %w", exe, err)
 	}
 	windows.CloseHandle(pi.Thread)
-	windows.CloseHandle(pi.Process)
-	return nil
+	return &process{h: pi.Process}, nil
 }
 
 // withEnv : `base` où les variables de `extra` (« NOM=valeur ») remplacent celles du même nom.

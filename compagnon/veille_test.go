@@ -55,8 +55,28 @@ type wakeFixture struct {
 	login  string
 	runs   []launchCall
 	unsafe error
+	// La dernière Eyrie lancée est sortie ; combien ne sont plus suivies par le veilleur.
+	exited   bool
+	released int
 	// Tant qu'il est ouvert, WhoIs attend (connexions en cours).
 	hold chan struct{}
+}
+
+// fakeChild : une Eyrie lancée pour de faux, qui tourne tant que la fixture ne la dit pas sortie.
+type fakeChild struct {
+	f *wakeFixture
+}
+
+func (c fakeChild) running() bool {
+	c.f.mu.Lock()
+	defer c.f.mu.Unlock()
+	return !c.f.exited
+}
+
+func (c fakeChild) release() {
+	c.f.mu.Lock()
+	defer c.f.mu.Unlock()
+	c.f.released++
 }
 
 const essaiLogin = "aubin@exemple.org"
@@ -109,11 +129,12 @@ func newWake(t *testing.T) *wakeFixture {
 		defer f.mu.Unlock()
 		return f.unsafe
 	}
-	f.w.launch = func(exe string, args, env []string) error {
+	f.w.launch = func(exe string, args, env []string) (child, error) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.runs = append(f.runs, launchCall{exe, args, env})
-		return nil
+		f.exited = false
+		return fakeChild{f}, nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -256,6 +277,65 @@ func TestAPairedPhoneStartsEyrie(t *testing.T) {
 		len(f.launches()) != 1 {
 		t.Fatalf("ouverte : %+v, %d lancements", x, len(f.launches()))
 	}
+}
+
+// Eyrie ouverte puis refermée dans la minute n'est plus « en démarrage » : le téléphone peut la redémarrer, une fois
+// passées les 30 s entre deux démarrages.
+func TestEyrieOpenedThenClosedCanBeStartedAgain(t *testing.T) {
+	f := newWake(t)
+	f.start()
+	f.set(func(f *wakeFixture) {
+		f.clock = f.clock.Add(5 * time.Second)
+		f.open = true
+	})
+	if x := f.start(); x.hello.Eyrie != eyrieOpen {
+		t.Fatalf("ouverte : %+v", x)
+	}
+	f.set(func(f *wakeFixture) {
+		f.clock = f.clock.Add(5 * time.Second)
+		f.open = false
+	})
+	x := f.start()
+	if x.hello.Eyrie != eyrieClosed || x.reply.OK || !strings.Contains(x.reply.Reason, "réessayez dans 20 s") {
+		t.Fatalf("refermée après 10 s : %+v", x)
+	}
+	f.set(func(f *wakeFixture) { f.clock = f.clock.Add(20 * time.Second) })
+	if x := f.start(); x.hello.Eyrie != eyrieClosed || !x.reply.OK || len(f.launches()) != 2 {
+		t.Fatalf("après 30 s : %+v, %d lancements", x, len(f.launches()))
+	}
+	f.set(func(f *wakeFixture) {
+		if f.released != 1 {
+			t.Errorf("Eyrie ouverte encore suivie : %d", f.released)
+		}
+	})
+}
+
+// Une Eyrie lancée qui sort aussitôt (plantage au démarrage) n'est plus « en démarrage ».
+func TestALaunchedEyrieThatExitsIsClosed(t *testing.T) {
+	f := newWake(t)
+	f.start()
+	f.set(func(f *wakeFixture) {
+		f.clock = f.clock.Add(31 * time.Second)
+		f.exited = true
+	})
+	x := f.start()
+	if x.hello.Eyrie != eyrieClosed || !x.reply.OK || len(f.launches()) != 2 {
+		t.Fatalf("sortie : %+v, %d lancements", x, len(f.launches()))
+	}
+	// La seconde, toujours là, démarre encore ; au bout d'une minute, elle n'est plus suivie.
+	f.set(func(f *wakeFixture) { f.clock = f.clock.Add(10 * time.Second) })
+	if x := f.start(); x.hello.Eyrie != eyrieStarting || len(f.launches()) != 2 {
+		t.Fatalf("en démarrage : %+v", x)
+	}
+	f.set(func(f *wakeFixture) { f.clock = f.clock.Add(startingFor) })
+	if x := f.start(); x.hello.Eyrie != eyrieClosed || len(f.launches()) != 3 {
+		t.Fatalf("une minute après : %+v", x)
+	}
+	f.set(func(f *wakeFixture) {
+		if f.released != 2 {
+			t.Errorf("Eyrie suivies : %d relâchées", f.released)
+		}
+	})
 }
 
 // Un appareil d'un autre compte Tailscale, ou un compte vide, ne reçoit rien, pas même un défi.

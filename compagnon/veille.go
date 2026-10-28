@@ -56,7 +56,7 @@ const (
 	// Un démarrage toutes les 30 s, six par heure au plus.
 	startEvery    = 30 * time.Second
 	startsPerHour = 6
-	// Une Eyrie lancée depuis moins d'une minute, pas encore ouverte, est « en démarrage ».
+	// Une Eyrie lancée depuis moins d'une minute, pas encore ouverte et toujours là, est « en démarrage ».
 	startingFor = time.Minute
 )
 
@@ -213,15 +213,17 @@ type waker struct {
 	who    whois
 	isOpen func(instance string) bool
 	check  func(exe string) error
-	launch func(exe string, args, env []string) error
+	launch func(exe string, args, env []string) (child, error)
 	now    func() time.Time
 	logf   func(string, ...any)
 
 	conns atomic.Int32
 	mu    sync.Mutex
 	// Par adresse sur le tailnet (un appareil).
-	wrong    map[string]*strikes
-	starts   []time.Time
+	wrong  map[string]*strikes
+	starts []time.Time
+	// L'Eyrie lancée, suivie jusqu'à ce qu'elle soit ouverte, sortie, ou lancée depuis plus de startingFor.
+	started  child
 	launched time.Time
 }
 
@@ -335,15 +337,28 @@ func (w *waker) state(cfg wakeConfig) string {
 }
 
 func (w *waker) stateLocked(cfg wakeConfig) string {
-	switch {
-	case !cfg.Active:
+	if !cfg.Active {
 		return eyrieCut
-	case w.isOpen(cfg.Instance):
+	}
+	if w.isOpen(cfg.Instance) {
+		w.forget()
 		return eyrieOpen
-	case !w.launched.IsZero() && w.now().Sub(w.launched) < startingFor:
+	}
+	// Ouverte puis refermée, ou sortie aussitôt lancée (plantage), elle n'est plus en démarrage : le téléphone peut
+	// la redémarrer (dans les limites de startWait).
+	if w.started != nil && w.now().Sub(w.launched) < startingFor && w.started.running() {
 		return eyrieStarting
 	}
+	w.forget()
 	return eyrieClosed
+}
+
+// forget : le veilleur ne suit plus l'Eyrie qu'il a lancée.
+func (w *waker) forget() {
+	if w.started != nil {
+		w.started.release()
+		w.started = nil
+	}
 }
 
 // decide vérifie une demande et démarre Eyrie s'il y a lieu ; rend "" quand Eyrie démarre (ou démarrait déjà), sinon
@@ -407,11 +422,12 @@ func (w *waker) decide(peer, login string, devices []pairedDevice, cfg wakeConfi
 	if cfg.Minimized {
 		args = []string{"--reduite"}
 	}
-	if err := w.launch(w.exe, args, []string{"EYRIE_DEMARRE_PAR=" + envText(dev.Name)}); err != nil {
+	started, err := w.launch(w.exe, args, []string{"EYRIE_DEMARRE_PAR=" + envText(dev.Name)})
+	if err != nil {
 		return refuse(err.Error())
 	}
 	w.starts = append(w.starts, now)
-	w.launched = now
+	w.started, w.launched = started, now
 	text := "Eyrie démarrée depuis le téléphone"
 	if cfg.Minimized {
 		text += " (réduite)"

@@ -38,7 +38,7 @@ func TestEyrieIsLaunchedWithAFreshEnvironment(t *testing.T) {
 	exe := self(t)
 	out := filepath.Join(t.TempDir(), "lance.json")
 	t.Setenv("EYRIE_ESSAI_HERITE", "oui")
-	err := launchEyrie(exe, []string{"--reduite"}, []string{
+	started, err := launchEyrie(exe, []string{"--reduite"}, []string{
 		"EYRIE_ESSAI_ROLE=lance",
 		"EYRIE_ESSAI_SORTIE=" + out,
 		"EYRIE_DEMARRE_PAR=Pixel 8",
@@ -46,11 +46,14 @@ func TestEyrieIsLaunchedWithAFreshEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer started.release()
 	var got launched
 	eventually(t, "Eyrie d'essai pas lancée", func() bool {
 		b, err := os.ReadFile(out)
 		return err == nil && json.Unmarshal(b, &got) == nil
 	})
+	// Le veilleur voit qu'elle est sortie.
+	eventually(t, "Eyrie d'essai sortie, mais toujours vue en marche", func() bool { return !started.running() })
 	if !slices.Equal(got.Args, []string{"--reduite"}) || got.By != "Pixel 8" {
 		t.Fatalf("reçu : %+v", got)
 	}
