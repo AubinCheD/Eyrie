@@ -8,7 +8,8 @@
 // (`relais.go`). Repris du compagnon de Fawkes (même magasin d'état chiffré, `etat.go`).
 //
 // Avec --veille, c'est le veilleur : lancé à l'ouverture de session, il garde le nœud quand Eyrie est fermée, et
-// Eyrie s'y rattache par un tube nommé au lieu de lancer un compagnon (`tube.go`).
+// Eyrie s'y rattache par un tube nommé au lieu de lancer un compagnon (`tube.go`). Il démarre Eyrie à la demande
+// d'un téléphone appairé (port 4748 du tailnet, `veille.go`).
 //
 // Un seul compagnon par nœud (`verrou.go`). Codes de sortie : 0 arrêt demandé, 1 échec, 2 arguments
 // manquants, 3 nœud déjà tenu par un autre compagnon.
@@ -114,12 +115,17 @@ func run(args []string) int {
 	version := fl.String("version", "", "version d'Eyrie")
 	port := fl.Int("port", 4747, "port du tailnet où le téléphone se connecte")
 	standby := fl.Bool("veille", false, "veilleur : garde le nœud quand Eyrie est fermée, piloté par un tube nommé")
+	mobile := fl.String("mobile", "", "avec --veille : dossier du pont mobile d'Eyrie (appareils.json, veille.dpapi)")
 	if err := fl.Parse(args); err != nil {
 		return exitUsage
 	}
 	_ = version
 	if *dir == "" {
 		fail("dossier d'état manquant (--dir)")
+		return exitUsage
+	}
+	if *standby && *mobile == "" {
+		fail("dossier du pont mobile manquant (--mobile)")
 		return exitUsage
 	}
 	if err := os.MkdirAll(*dir, 0o700); err != nil {
@@ -157,6 +163,13 @@ func run(args []string) int {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	relay := &relay{}
+	exe, err := os.Executable()
+	if err != nil {
+		fail("exécutable du compagnon : " + err.Error())
+		return exitFailed
+	}
+	// Le dossier du compagnon : celui d'eyrie.exe.
+	here := filepath.Dir(exe)
 	if *standby {
 		// L'entrée standard est ignorée : Eyrie se rattache par le tube, avant même que le nœud soit en route.
 		ln, err := listenControl(*dir)
@@ -164,12 +177,6 @@ func run(args []string) int {
 			fail("tube de contrôle : " + err.Error())
 			return exitFailed
 		}
-		self, err := os.Executable()
-		if err != nil {
-			fail("exécutable du veilleur : " + err.Error())
-			return exitFailed
-		}
-		here := filepath.Dir(self)
 		allowed := []string{filepath.Join(here, "eyrie.exe"), filepath.Join(here, "eyrie-tailnet.exe")}
 		// Les lignes d'état ne vont plus qu'à l'Eyrie rattachée.
 		status.detach(os.Stdout)
@@ -220,7 +227,7 @@ func run(args []string) int {
 		fail("écoute sur le tailnet : " + err.Error())
 		return exitFailed
 	}
-	go relay.serve(ctx, ln, func(ctx context.Context, addr string) (identity, error) {
+	who := func(ctx context.Context, addr string) (identity, error) {
 		who, err := lc.WhoIs(ctx, addr)
 		if err != nil {
 			return identity{}, err
@@ -233,7 +240,16 @@ func run(args []string) int {
 			id.Node = who.Node.ComputedName
 		}
 		return id, nil
-	}, logf)
+	}
+	go relay.serve(ctx, ln, who, logf)
+	if *standby {
+		wl, err := srv.Listen("tcp", fmt.Sprintf(":%d", wakePort))
+		if err != nil {
+			fail("écoute sur le tailnet : " + err.Error())
+			return exitFailed
+		}
+		go newWaker(*mobile, filepath.Join(here, "eyrie.exe"), who, logf).serve(ctx, wl)
+	}
 
 	<-ctx.Done()
 	return exitOK

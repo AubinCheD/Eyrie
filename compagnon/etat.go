@@ -124,17 +124,27 @@ func taken(out windows.DataBlob) []byte {
 }
 
 func protect(b []byte) ([]byte, error) {
+	return seal(b, entropy, "Eyrie : état du nœud Tailscale")
+}
+
+func unprotect(b []byte) ([]byte, error) {
+	return unseal(b, entropy)
+}
+
+// seal chiffre `b` pour le compte de l'utilisateur sur ce poste (DPAPI), avec l'entropie `ent`.
+func seal(b, ent []byte, description string) ([]byte, error) {
 	var out windows.DataBlob
-	desc, _ := windows.UTF16PtrFromString("Eyrie : état du nœud Tailscale")
-	if err := windows.CryptProtectData(blob(b), desc, blob(entropy), 0, nil, windows.CRYPTPROTECT_UI_FORBIDDEN, &out); err != nil {
+	desc, _ := windows.UTF16PtrFromString(description)
+	if err := windows.CryptProtectData(blob(b), desc, blob(ent), 0, nil, windows.CRYPTPROTECT_UI_FORBIDDEN, &out); err != nil {
 		return nil, err
 	}
 	return taken(out), nil
 }
 
-func unprotect(b []byte) ([]byte, error) {
+// unseal déchiffre ce que seal (ou Eyrie, par DPAPI) a chiffré avec l'entropie `ent`.
+func unseal(b, ent []byte) ([]byte, error) {
 	var out windows.DataBlob
-	if err := windows.CryptUnprotectData(blob(b), nil, blob(entropy), 0, nil, windows.CRYPTPROTECT_UI_FORBIDDEN, &out); err != nil {
+	if err := windows.CryptUnprotectData(blob(b), nil, blob(ent), 0, nil, windows.CRYPTPROTECT_UI_FORBIDDEN, &out); err != nil {
 		return nil, err
 	}
 	return taken(out), nil
