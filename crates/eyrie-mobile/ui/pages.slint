@@ -14,11 +14,46 @@ export component ScreenPage inherits Rectangle {
     in property <[UiRow]> rows;
     in property <bool> loading;
     in property <string> missing;
+    // La position de la liste (négative : défilée) ; celle à rendre (`want-seq` change à chaque demande).
+    in-out property <length> scroll-y <=> list.content-y;
+    in property <length> want-y;
+    in property <int> want-seq;
     callback open-path(string);
     callback act(UiAct);
     callback menu(UiRow);
     callback haptic();
-    ListView {
+
+    property <length> applied-y;
+    property <int> settle;
+
+    // La hauteur de la liste n'est connue qu'après la mise en page des lignes : la position est rendue de nouveau
+    // quelques fois, tant que l'utilisateur n'a pas fait défiler la liste lui-même.
+    function apply-scroll() {
+        root.applied-y = max(min(0px, list.visible-height - list.content-height), min(0px, root.want-y));
+        list.content-y = root.applied-y;
+    }
+    changed want-seq => {
+        root.settle = 6;
+        root.apply-scroll();
+    }
+    init => {
+        root.settle = 6;
+        root.apply-scroll();
+    }
+    Timer {
+        interval: 50ms;
+        running: root.settle > 0;
+        triggered => {
+            root.settle -= 1;
+            if list.content-y == root.applied-y {
+                root.apply-scroll();
+            } else {
+                root.settle = 0;
+            }
+        }
+    }
+
+    list := ListView {
         for r in root.rows: VerticalLayout {
             if r.kind == 0: SectionHeader {
                 title: r.title;

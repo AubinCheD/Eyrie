@@ -51,6 +51,10 @@ export component AppWindow inherits Window {
     in property <[UiRow]> rows;
     in property <bool> loading;
     in property <string> missing;
+    // La position de la liste de l'écran (lue par le code avant de changer d'écran) ; celle à rendre au retour.
+    in-out property <length> screen-scroll;
+    in property <length> scroll-want;
+    in property <int> scroll-seq;
 
     // --- Terminal ---
     in property <[TermRow]> term-rows;
@@ -343,6 +347,9 @@ export component AppWindow inherits Window {
                         rows: root.rows;
                         loading: root.loading;
                         missing: root.missing;
+                        scroll-y <=> root.screen-scroll;
+                        want-y: root.scroll-want;
+                        want-seq: root.scroll-seq;
                         open-path(p) => { root.open-path(p); }
                         act(a) => { root.start-act(a); }
                         menu(r) => { root.show-sheet(r.title, r.acts); }

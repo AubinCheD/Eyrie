@@ -89,6 +89,9 @@ pub struct Controller {
     /// L'écran dont les lignes sont affichées, et leurs clés et empreintes (voir [`view::patch`]).
     shown_for: Option<(String, String)>,
     shown: Vec<(String, u64)>,
+    /// La position de la liste de chaque écran quitté, rendue au retour ; un écran ouvert de nouveau part du haut.
+    scroll: HashMap<(String, String), f32>,
+    scroll_seq: i32,
     req: u32,
     target: Option<Target>,
     /// Ce qui a déjà été signalé (bulle ou notification du système) : rien deux fois, et rien à la première connexion
@@ -199,6 +202,8 @@ impl Controller {
             models,
             shown_for: None,
             shown: Vec::new(),
+            scroll: HashMap::new(),
+            scroll_seq: 0,
             req: 0,
             target: None,
             signalled: Signalled::default(),
@@ -772,19 +777,41 @@ impl Controller {
             if self.models.rows.row_count() > 0 {
                 self.models.rows.set_vec(Vec::new());
             }
+            if self.shown_for.take().is_some() {
+                self.scroll_to(0.0);
+            }
             self.shown.clear();
-            self.shown_for = None;
             return;
         };
         let items = view::items(s);
         if self.shown_for.as_ref() == Some(key) {
             view::patch(&self.models.rows, &mut self.shown, &items, view::ui_row);
         } else {
-            // Un autre écran : la liste repart de zéro.
+            // Un autre écran : la liste repart de zéro, à la position où on l'avait laissée.
             self.models.rows.set_vec(items.iter().map(view::ui_row).collect::<Vec<_>>());
             self.shown = items.iter().map(|i| (i.key.clone(), i.sig)).collect();
+            let y = self.scroll.get(key).copied().unwrap_or(0.0);
             self.shown_for = Some(key.clone());
+            self.scroll_to(y);
         }
+    }
+
+    /// Retient la position de la liste de l'écran affiché, avant d'en changer.
+    fn remember_scroll(&mut self) {
+        let Some(ui) = self.ui() else { return };
+        if let Some(key) = self.shown_for.clone()
+            && self.is_shown(&key)
+        {
+            self.scroll.insert(key, ui.get_screen_scroll());
+        }
+    }
+
+    /// Met la liste de l'écran à cette position (0 : en haut).
+    fn scroll_to(&mut self, y: f32) {
+        let Some(ui) = self.ui() else { return };
+        self.scroll_seq = self.scroll_seq.wrapping_add(1);
+        ui.set_scroll_want(y);
+        ui.set_scroll_seq(self.scroll_seq);
     }
 
     fn seg(s: &termbuf::Seg) -> TermSeg {
@@ -862,8 +889,15 @@ impl Controller {
     // --- Les gestes ---
 
     pub(crate) fn nav_select(&mut self, key: &str) {
+        self.remember_scroll();
         if key == self.tab && self.is_module_tab() {
-            // Toucher l'onglet du module courant ramène à son accueil.
+            // Toucher l'onglet du module courant remonte en haut de la liste, puis ramène à son accueil.
+            let at_top = self.ui().is_none_or(|u| u.get_screen_scroll() > -1.0);
+            if self.shown_for.is_some() && !at_top {
+                self.scroll.remove(&(self.tab.clone(), self.top_path()));
+                self.scroll_to(0.0);
+                return;
+            }
             self.stacks.insert(key.to_string(), vec![String::new()]);
         }
         self.tab = key.to_string();
@@ -875,22 +909,27 @@ impl Controller {
 
     /// Ouvre un écran d'un module (vide : son accueil, la pile de cet onglet repart de là).
     pub(crate) fn open_module_path(&mut self, module: &str, path: &str) {
+        self.remember_scroll();
         self.tab = module.to_string();
         let stack = self.stacks.entry(module.to_string()).or_insert_with(|| vec![String::new()]);
         if path.is_empty() {
             *stack = vec![String::new()];
         } else if stack.last().map(String::as_str) != Some(path) {
             stack.push(path.to_string());
+            self.scroll.remove(&(module.to_string(), path.to_string()));
         }
         self.refresh_all();
     }
 
+    /// Ouvre un sous-écran du module courant : il part du haut.
     pub(crate) fn open_path(&mut self, path: &str) {
         if !self.is_module_tab() {
             return;
         }
+        self.remember_scroll();
         let stack = self.stacks.entry(self.tab.clone()).or_insert_with(|| vec![String::new()]);
         stack.push(path.to_string());
+        self.scroll.remove(&(self.tab.clone(), path.to_string()));
         self.refresh_screen();
     }
 
@@ -913,6 +952,7 @@ impl Controller {
             _ => {}
         }
         if self.is_module_tab() {
+            self.remember_scroll();
             let stack = self.stacks.entry(self.tab.clone()).or_insert_with(|| vec![String::new()]);
             if stack.len() > 1 {
                 stack.pop();
@@ -1106,6 +1146,7 @@ impl Controller {
         self.screens.clear();
         self.missing.clear();
         self.stacks.clear();
+        self.scroll.clear();
         self.tab = "ensemble".into();
         self.followed = None;
         self.term = TermBuf::default();
