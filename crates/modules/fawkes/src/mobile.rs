@@ -1,10 +1,13 @@
-//! Fawkes sur le téléphone : les groupes et leurs terminaux (état, sessions Claude qui attendent), un terminal en
-//! direct, et ce qu'on y fait (saisie, touches, réponses rapides à Claude, nouveau terminal, redémarrer, veille).
+//! Fawkes sur le téléphone : un bandeau par groupe (sa couleur, son icône, ses sessions Claude, ce qui y attend) et
+//! ses terminaux, un terminal en direct, et ce qu'on y fait (saisie, touches, réponses rapides à Claude, nouveau
+//! terminal, redémarrer, veille).
 //!
 //! Tout passe par l'API publique de Fawkes : `App::st` (groupes, terminaux), `App::live` (la grille de chaque
 //! terminal, `TermRuntime`), `ui::panes::status_color` (le libellé d'état), `ui::panes::replay_keyboard` (la saisie,
-//! encodée comme au clavier du PC, mode win32-input de ConPTY compris).
+//! encodée comme au clavier du PC, mode win32-input de ConPTY compris). Les écrans se construisent à partir de l'état
+//! de Fawkes (`AppState`) et de ce qui est relevé des terminaux en marche ([`Seen`]).
 
+use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use alacritty_terminal::grid::Dimensions;
@@ -16,10 +19,14 @@ use eframe::egui;
 use suite_sdk::Cx;
 use suite_sdk::mobile::msg::OPEN_PREFIX;
 use suite_sdk::mobile::term::{self, Color, Key, Line, Run, TermInput, TermView};
-use suite_sdk::mobile::ui::{Act, Row, Screen, Tone};
+use suite_sdk::mobile::ui::{Act, Band, Row, Screen, Tone};
 
 use fawkes::app::{App, NewClaude, NewTerm};
-use fawkes::model::{Rgb, TermId};
+use fawkes::model::{AppState, Group, Rgb, TermId, TermSpec};
+use fawkes::ui::panes::ClaudeStatus;
+
+/// Au-delà de ce nombre de terminaux, l'accueil a un champ de recherche.
+const SEARCH_FROM: usize = 8;
 
 fn rgb(c: Rgb) -> u32 {
     ((c.0 as u32) << 16) | ((c.1 as u32) << 8) | c.2 as u32
@@ -43,45 +50,210 @@ fn dir_key(dir: &str) -> String {
     format!("{:x}", h.finish() & 0xffff_ffff)
 }
 
-/// Le libellé d'état d'un terminal (sa première ligne) et son ton.
-fn state(app: &App, id: TermId) -> (String, Option<Tone>) {
-    let (_, label) = fawkes::ui::panes::status_color(app, id);
-    let label = label.lines().next().unwrap_or_default().to_string();
-    let tone = if app.ui.waiting.contains(&id) {
-        Some(Tone::Warn)
-    } else if app.failed.contains_key(&id) {
-        Some(Tone::Danger)
-    } else if app.live.get(&id).is_some_and(|l| fawkes::ui::panes::claude_status(l).is_some()) {
-        Some(Tone::Ok)
-    } else {
-        None
-    };
-    (label, tone)
+/// L'état d'un terminal, tel que le téléphone le distingue.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum State {
+    /// Claude attend une réponse.
+    Waiting,
+    /// Le lancement a échoué.
+    Failed,
+    /// Le programme du terminal s'est terminé.
+    Ended,
+    /// Claude travaille.
+    Working,
+    /// Claude est prêt.
+    Ready,
+    /// Un shell, ou Claude qui démarre.
+    Running,
+    /// Démarrage prévu (Fawkes espace les lancements).
+    Starting,
+    /// En veille, ou pas encore démarré (groupe jamais affiché sur le PC).
+    #[default]
+    Asleep,
 }
 
-fn term_acts(app: &App, id: TermId) -> Vec<Act> {
-    let asleep = !app.live.contains_key(&id);
-    let title = app.st.term(id).map(|t| t.display_title()).unwrap_or_default();
-    let claude = app.live.get(&id).is_some_and(|l| l.proc.claude_pid.is_some());
-    let remote = app.live.get(&id).and_then(|l| l.proc.claude.as_ref()).is_some_and(|c| c.remote_control());
+/// Ce que Fawkes sait d'un terminal et que son état enregistré n'a pas : relevé dans `App` à chaque écran.
+#[derive(Clone, Debug, Default)]
+struct Seen {
+    state: State,
+    /// Le libellé d'état de Fawkes, sa première ligne (« Claude travaille », « En veille »…).
+    label: String,
+    /// Le terminal tourne (sinon : en veille, en échec, ou son démarrage attend).
+    live: bool,
+    /// Une session Claude y tourne…
+    claude: bool,
+    /// … avec Remote Control.
+    remote: bool,
+    /// La cloche a sonné.
+    bell: bool,
+    /// Le programme au premier plan.
+    foreground: Option<String>,
+}
+
+/// Un terminal dont rien n'a été relevé : comme en veille.
+static UNSEEN: Seen = Seen {
+    state: State::Asleep,
+    label: String::new(),
+    live: false,
+    claude: false,
+    remote: false,
+    bell: false,
+    foreground: None,
+};
+
+fn seen_of(app: &App, id: TermId) -> Seen {
+    let (_, label) = fawkes::ui::panes::status_color(app, id);
+    let label = label.lines().next().unwrap_or_default().to_string();
+    let Some(l) = app.live.get(&id) else {
+        let state = if app.failed.contains_key(&id) {
+            State::Failed
+        } else if app.pending_start(id) {
+            State::Starting
+        } else {
+            State::Asleep
+        };
+        return Seen { state, label, ..Default::default() };
+    };
+    let state = if app.ui.waiting.contains(&id) {
+        State::Waiting
+    } else if app.failed.contains_key(&id) {
+        State::Failed
+    } else if l.rt.is_exited() {
+        State::Ended
+    } else {
+        match fawkes::ui::panes::claude_status(l) {
+            Some(ClaudeStatus::Busy) => State::Working,
+            Some(ClaudeStatus::Idle) => State::Ready,
+            _ => State::Running,
+        }
+    };
+    Seen {
+        state,
+        label,
+        live: true,
+        claude: l.proc.claude_pid.is_some(),
+        remote: l.proc.claude.as_ref().is_some_and(|c| c.remote_control()),
+        bell: l.input.bell,
+        foreground: l.proc.foreground.as_ref().map(|f| f.name.clone()),
+    }
+}
+
+/// Ce qui est relevé de chaque terminal.
+fn seen(app: &App) -> HashMap<TermId, Seen> {
+    app.st.terminals.iter().map(|t| (t.id, seen_of(app, t.id))).collect()
+}
+
+fn term_acts(t: &TermSpec, s: &Seen) -> Vec<Act> {
+    let id = t.id;
     let mut acts = Vec::new();
-    if claude && !remote {
+    if s.claude && !s.remote {
         acts.push(Act::new(format!("remote:{id}"), "Activer Remote Control").glyph("📡"));
     }
     acts.push(Act::new(format!("redemarrer:{id}"), "Redémarrer").glyph("🔄"));
-    acts.push(if asleep {
-        Act::new(format!("reveiller:{id}"), "Réveiller").glyph("☀️")
-    } else {
+    acts.push(if s.live {
         Act::new(format!("veille:{id}"), "Mettre en veille").glyph("🌙")
+    } else {
+        Act::new(format!("reveiller:{id}"), "Réveiller").glyph("☀️")
     });
     acts.push(Act::new(format!("montrer:{id}"), "Montrer sur le PC").glyph("🖥️"));
-    acts.push(
-        Act::new(format!("fermer:{id}"), "Fermer")
-            .glyph("✖️")
-            .danger()
-            .confirm(format!("Fermer « {title} » ? Ce qui y tourne s'arrête ; il reste rouvrable sur le PC.")),
-    );
+    acts.push(Act::new(format!("fermer:{id}"), "Fermer").glyph("✖️").danger().confirm(format!(
+        "Fermer « {} » ? Ce qui y tourne s'arrête ; il reste rouvrable sur le PC.",
+        t.display_title()
+    )));
     acts
+}
+
+/// La ligne d'un terminal : son état se lit au glyphe, au ton et au texte de droite (◐ Claude travaille, ✳ Claude,
+/// 🌙 en veille) ; un bouton visible quand un geste s'impose (réveiller, relancer).
+fn term_row(t: &TermSpec, g: &Group, s: &Seen) -> Row {
+    let claude = t.claude.is_some() || s.claude;
+    let (glyph, detail) = match s.state {
+        State::Working => ("◐", "travaille".to_string()),
+        State::Asleep => ("🌙", "en veille".to_string()),
+        _ => (if claude { "✳" } else { "›_" }, s.foreground.clone().unwrap_or_default()),
+    };
+    let id = t.id;
+    let mut row = Row::new(t.display_title())
+        .key(id.to_string())
+        .subtitle(format!("{} · {}", s.label, short_path(&t.cwd)))
+        .color(rgb(t.color.unwrap_or(g.color)))
+        .glyph(glyph)
+        .detail(detail)
+        .open(format!("t/{id}"));
+    row = match s.state {
+        State::Waiting => row.tone(Tone::Warn).badge("attend"),
+        State::Failed => {
+            row.tone(Tone::Danger).badge("échec").trailing(Act::new(format!("redemarrer:{id}"), "Relancer").glyph("🔄"))
+        }
+        State::Ended => row.trailing(Act::new(format!("redemarrer:{id}"), "Redémarrer").glyph("🔄")),
+        State::Asleep => row.trailing(Act::new(format!("reveiller:{id}"), "Réveiller").glyph("☀️")),
+        State::Working => row.tone(Tone::Info),
+        State::Ready => row.tone(Tone::Ok),
+        State::Running | State::Starting => row,
+    };
+    row.acts = term_acts(t, s);
+    row
+}
+
+/// Les comptes d'un groupe, comme sa ligne dans la barre latérale du PC.
+#[derive(Debug, Default, PartialEq)]
+struct Tally {
+    terms: usize,
+    /// Sessions Claude qui tournent (« ✻2 »)…
+    claude: usize,
+    /// … dont celles sans Remote Control.
+    without_remote: usize,
+    waiting: usize,
+    failed: usize,
+    live: usize,
+    asleep: usize,
+    bell: bool,
+}
+
+fn tally(terms: &[&TermSpec], seen: &HashMap<TermId, Seen>) -> Tally {
+    let mut n = Tally { terms: terms.len(), ..Default::default() };
+    for t in terms {
+        let s = seen.get(&t.id).unwrap_or(&UNSEEN);
+        n.claude += s.claude as usize;
+        n.without_remote += (s.claude && !s.remote) as usize;
+        n.waiting += (s.state == State::Waiting) as usize;
+        n.failed += (s.state == State::Failed) as usize;
+        n.live += s.live as usize;
+        n.asleep += (s.state == State::Asleep) as usize;
+        n.bell |= s.bell;
+    }
+    n
+}
+
+/// Ouvert au départ ? Toujours s'il attend, est en échec ou sonne, si c'est le groupe affiché sur le PC ou s'il n'y a
+/// que deux groupes ; sinon fermé s'il est vide ou tout en veille. Le téléphone retient ensuite le choix de
+/// l'utilisateur.
+fn opened(n: &Tally, selected: bool, groups: usize) -> bool {
+    if n.waiting > 0 || n.failed > 0 || n.bell || selected || groups <= 2 {
+        return true;
+    }
+    n.asleep < n.terms
+}
+
+/// Le bandeau d'un groupe : clé tirée de son identifiant (elle survit à un renommage), « ✻2 · 5 » (sessions Claude,
+/// terminaux) comme la barre du PC, et ce qui l'y fait remarquer : « 2 attendent », « 1 en échec », 🔔.
+fn group_band(g: &Group, n: &Tally, selected: bool, groups: usize) -> Band {
+    let aside = if n.claude > 0 { format!("✻{} · {}", n.claude, n.terms) } else { n.terms.to_string() };
+    let band = Band::new(format!("g{}", g.id), &g.name)
+        .glyph(&g.icon)
+        .color(rgb(g.color))
+        .aside(aside)
+        .open(opened(n, selected, groups));
+    if n.waiting > 0 {
+        let text = if n.waiting == 1 { "1 attend".to_string() } else { format!("{} attendent", n.waiting) };
+        band.badge(text).tone(Tone::Warn)
+    } else if n.failed > 0 {
+        band.badge(format!("{} en échec", n.failed)).tone(Tone::Danger)
+    } else if n.bell {
+        band.badge("🔔")
+    } else {
+        band
+    }
 }
 
 /// Les sessions Claude qui attendent, avec leur terminal : la vue d'ensemble du téléphone y mène directement.
@@ -111,22 +283,27 @@ fn known_dirs(app: &App) -> Vec<String> {
 
 pub fn screen(app: &mut App, path: &str, _cx: &mut Cx) -> Option<Screen> {
     if path.is_empty() {
-        return Some(home(app));
+        let seen = seen(app);
+        return Some(home(&app.st, &seen));
     }
     if path == "nouveau" {
         return Some(new_terminal(app));
     }
     let id: TermId = path.strip_prefix("t/")?.parse().ok()?;
     let t = app.st.term(id)?;
-    let (label, _) = state(app, id);
-    let mut s = Screen::new(t.display_title()).subtitle(label).terminal(id.to_string());
-    s.acts = term_acts(app, id);
-    Some(s)
+    let s = seen_of(app, id);
+    let mut screen = Screen::new(t.display_title()).subtitle(&s.label).terminal(id.to_string());
+    screen.acts = term_acts(t, &s);
+    Some(screen)
 }
 
-fn home(app: &App) -> Screen {
+/// L'accueil : un bandeau par groupe, dans l'ordre du PC, groupes vides compris.
+fn home(st: &AppState, seen: &HashMap<TermId, Seen>) -> Screen {
     let mut s = Screen::new("Fawkes");
-    let waiting = app.ui.waiting.len();
+    if st.terminals.len() > SEARCH_FROM {
+        s = s.search("Chercher un terminal");
+    }
+    let waiting = st.terminals.iter().filter(|t| seen.get(&t.id).is_some_and(|s| s.state == State::Waiting)).count();
     if waiting > 0 {
         let text = if waiting == 1 {
             "Une session Claude attend une réponse.".to_string()
@@ -136,33 +313,13 @@ fn home(app: &App) -> Screen {
         s.note(text, Tone::Warn);
     }
     s.row(Row::new("Nouveau terminal").glyph("➕").subtitle("Shell ou Claude, dans un dossier récent").open("nouveau"));
-    for g in &app.st.groups {
-        let terms: Vec<_> = g.terminals.iter().filter_map(|id| app.st.term(*id)).collect();
-        if terms.is_empty() {
-            continue;
-        }
-        s.section(&g.name, terms.len().to_string());
+    for g in &st.groups {
+        let terms: Vec<&TermSpec> = g.terminals.iter().filter_map(|id| st.term(*id)).collect();
+        let n = tally(&terms, seen);
+        s.band(group_band(g, &n, g.id == st.selected_group, st.groups.len()));
         for t in terms {
-            let (label, tone) = state(app, t.id);
-            let fg = app.live.get(&t.id).and_then(|l| l.proc.foreground.as_ref()).map(|f| f.name.clone());
-            let mut row = Row::new(t.display_title())
-                .subtitle(format!("{label} · {}", short_path(&t.cwd)))
-                .color(rgb(t.color.unwrap_or(g.color)))
-                .glyph(if t.claude.is_some() { "✳" } else { "›_" })
-                .detail(fg.unwrap_or_default())
-                .open(format!("t/{}", t.id));
-            if let Some(tone) = tone {
-                row = row.tone(tone);
-            }
-            if app.ui.waiting.contains(&t.id) {
-                row = row.badge("attend");
-            }
-            row.acts = term_acts(app, t.id);
-            s.row(row);
+            s.row(term_row(t, g, seen.get(&t.id).unwrap_or(&UNSEEN)));
         }
-    }
-    if app.st.terminals.is_empty() {
-        s.empty("Aucun terminal : ouvrez-en un.");
     }
     s
 }
@@ -436,7 +593,173 @@ pub fn term_input(app: &mut App, id: &str, input: &TermInput, cx: &mut Cx) -> Re
 
 #[cfg(test)]
 mod tests {
+    use fawkes::model::GroupId;
+    use suite_sdk::mobile::ui::{Block, Fold};
+
     use super::*;
+
+    fn group(id: GroupId, name: &str, terms: &[TermId]) -> Group {
+        Group {
+            id,
+            name: name.into(),
+            icon: "🦉".into(),
+            color: Rgb(0x12, 0x34, 0x56),
+            terminals: terms.to_vec(),
+            ..Default::default()
+        }
+    }
+
+    fn term(id: TermId, group: GroupId) -> TermSpec {
+        TermSpec { id, group, title: Some(format!("t{id}")), cwd: r"C:\DEV\Eyrie".into(), ..Default::default() }
+    }
+
+    fn running(state: State) -> Seen {
+        let live = !matches!(state, State::Asleep | State::Failed | State::Starting);
+        Seen { state, live, label: format!("{state:?}"), ..Default::default() }
+    }
+
+    fn claude(state: State) -> Seen {
+        Seen { claude: true, ..running(state) }
+    }
+
+    /// Trois groupes dans l'ordre du PC : Général (vide), Eyrie (affiché sur le PC : Claude qui travaille, un shell),
+    /// Ozmo (en veille).
+    fn three_groups() -> (AppState, HashMap<TermId, Seen>) {
+        let st = AppState {
+            groups: vec![group(0, "Général", &[]), group(5, "Eyrie", &[1, 2]), group(7, "Ozmo", &[3])],
+            terminals: vec![term(1, 5), term(2, 5), term(3, 7)],
+            selected_group: 5,
+            ..Default::default()
+        };
+        let seen =
+            HashMap::from([(1, claude(State::Working)), (2, running(State::Running)), (3, running(State::Asleep))]);
+        (st, seen)
+    }
+
+    /// Les bandeaux d'un écran : (clé, titre, à droite, pliage, pastille, ton).
+    fn bands(s: &Screen) -> Vec<(String, String, String, Fold, String, Option<Tone>)> {
+        s.blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::Section { key, title, aside, fold, badge, tone, .. } => {
+                    Some((key.clone(), title.clone(), aside.clone(), *fold, badge.clone(), *tone))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Les lignes sous le bandeau `key`, jusqu'au suivant.
+    fn rows_under<'a>(s: &'a Screen, key: &str) -> Vec<&'a Row> {
+        let start = s.blocks.iter().position(|b| matches!(b, Block::Section { key: k, .. } if k == key));
+        s.blocks[start.expect(key) + 1..]
+            .iter()
+            .take_while(|b| !matches!(b, Block::Section { .. }))
+            .filter_map(|b| match b {
+                Block::Row(r) => Some(r),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Un bandeau par groupe, dans l'ordre du PC, groupes vides compris : la clé est l'identifiant du groupe (elle
+    /// survit à un renommage), « ✻1 · 2 » comme la barre du PC ; chaque ligne a pour clé son terminal.
+    #[test]
+    fn every_group_is_a_band_in_the_pc_order_empty_ones_included() {
+        let (st, seen) = three_groups();
+        let s = home(&st, &seen);
+        let b: Vec<_> = bands(&s).into_iter().filter(|b| b.0.starts_with('g')).collect();
+        assert_eq!(
+            b.iter().map(|b| (b.0.as_str(), b.1.as_str(), b.2.as_str())).collect::<Vec<_>>(),
+            [("g0", "Général", "0"), ("g5", "Eyrie", "✻1 · 2"), ("g7", "Ozmo", "1")]
+        );
+        assert_eq!(b.iter().map(|b| b.3).collect::<Vec<_>>(), [Fold::Closed, Fold::Open, Fold::Closed]);
+        let eyrie = s.blocks.iter().find_map(|b| match b {
+            Block::Section { key, color, glyph, .. } if key == "g5" => Some((*color, glyph.clone())),
+            _ => None,
+        });
+        assert_eq!(eyrie, Some((Some(0x123456), "🦉".to_string())), "couleur et icône du groupe");
+        let keys: Vec<&str> = rows_under(&s, "g5").iter().map(|r| r.key.as_str()).collect();
+        assert_eq!(keys, ["1", "2"]);
+        assert!(rows_under(&s, "g0").is_empty());
+    }
+
+    /// Ouvert s'il attend, est en échec ou sonne, s'il est affiché sur le PC ou s'il n'y a que deux groupes ; sinon
+    /// fermé s'il est vide ou tout en veille.
+    #[test]
+    fn the_default_fold_opens_what_needs_looking_at() {
+        let empty = Tally::default();
+        assert!(!opened(&empty, false, 3), "vide");
+        assert!(opened(&empty, false, 2), "deux groupes au plus : tout ouvert");
+        assert!(opened(&empty, true, 3), "le groupe affiché sur le PC");
+        let asleep = Tally { terms: 2, asleep: 2, ..Default::default() };
+        assert!(!opened(&asleep, false, 3), "tout en veille");
+        assert!(opened(&Tally { bell: true, ..asleep }, false, 3), "la cloche a sonné");
+        let alive = Tally { terms: 2, asleep: 1, live: 1, ..Default::default() };
+        assert!(opened(&alive, false, 3));
+        assert!(opened(&Tally { waiting: 1, ..Default::default() }, false, 9));
+        assert!(opened(&Tally { failed: 1, ..Default::default() }, false, 9));
+    }
+
+    /// La pastille dit ce qui attend, sinon ce qui a échoué, sinon la cloche ; elle reste visible bandeau plié.
+    #[test]
+    fn a_band_shows_who_waits_then_who_failed_then_the_bell() {
+        let g = group(5, "Eyrie", &[]);
+        let badge = |n: Tally| {
+            let b = group_band(&g, &n, false, 3);
+            (b.badge, b.tone)
+        };
+        let two = Tally { terms: 3, waiting: 2, failed: 1, bell: true, ..Default::default() };
+        assert_eq!(badge(two), ("2 attendent".into(), Some(Tone::Warn)));
+        assert_eq!(badge(Tally { terms: 1, waiting: 1, ..Default::default() }), ("1 attend".into(), Some(Tone::Warn)));
+        let failed = Tally { terms: 2, failed: 1, bell: true, ..Default::default() };
+        assert_eq!(badge(failed), ("1 en échec".into(), Some(Tone::Danger)));
+        assert_eq!(badge(Tally { terms: 1, live: 1, bell: true, ..Default::default() }), ("🔔".into(), None));
+        assert_eq!(badge(Tally { terms: 1, live: 1, ..Default::default() }), (String::new(), None));
+        let renamed = group(5, "Eyrie (renommé)", &[]);
+        assert_eq!(group_band(&renamed, &Tally::default(), false, 3).key, "g5");
+    }
+
+    /// Claude qui travaille, Claude prêt, en veille, en échec, qui attend : chaque état a son glyphe ou son ton, et un
+    /// bouton visible quand un geste s'impose.
+    #[test]
+    fn terminal_states_are_told_apart() {
+        let g = group(5, "Eyrie", &[]);
+        let t = term(3, 5);
+        let row = |s: Seen| term_row(&t, &g, &s);
+        let trailing = |r: &Row| r.trailing.as_ref().map(|a| a.id.clone());
+        let working = row(claude(State::Working));
+        assert_eq!(
+            (working.glyph.as_str(), working.detail.as_str(), working.tone),
+            ("◐", "travaille", Some(Tone::Info))
+        );
+        let ready = row(claude(State::Ready));
+        assert_eq!((ready.glyph.as_str(), ready.tone), ("✳", Some(Tone::Ok)));
+        let asleep = row(running(State::Asleep));
+        assert_eq!((asleep.glyph.as_str(), asleep.detail.as_str()), ("🌙", "en veille"));
+        assert_eq!(trailing(&asleep).as_deref(), Some("reveiller:3"));
+        let failed = row(running(State::Failed));
+        assert_eq!((failed.tone, trailing(&failed).as_deref()), (Some(Tone::Danger), Some("redemarrer:3")));
+        let waiting = row(claude(State::Waiting));
+        assert_eq!((waiting.tone, waiting.badge.as_str()), (Some(Tone::Warn), "attend"));
+        let shell = row(running(State::Running));
+        assert_eq!((shell.glyph.as_str(), shell.tone, trailing(&shell)), ("›_", None, None));
+        assert_eq!((shell.key.as_str(), shell.open.as_deref()), ("3", Some("t/3")));
+        // Le geste visible est aussi dans le menu : la liste blanche du pont l'accepte de l'un ou de l'autre.
+        let menu: Vec<&str> = asleep.acts.iter().map(|a| a.id.as_str()).collect();
+        assert!(menu.contains(&"reveiller:3") && !menu.contains(&"veille:3"));
+    }
+
+    #[test]
+    fn a_search_field_appears_beyond_eight_terminals() {
+        let ids: Vec<TermId> = (1..=9).collect();
+        let mut st = AppState { groups: vec![group(0, "Général", &ids[..8])], ..Default::default() };
+        st.terminals = ids[..8].iter().map(|id| term(*id, 0)).collect();
+        assert!(home(&st, &HashMap::new()).search.is_empty());
+        st.groups[0].terminals.push(9);
+        st.terminals.push(term(9, 0));
+        assert!(!home(&st, &HashMap::new()).search.is_empty());
+    }
 
     #[test]
     fn paths_are_shortened_and_keys_are_stable() {
