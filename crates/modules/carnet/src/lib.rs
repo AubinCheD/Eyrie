@@ -13,7 +13,7 @@ use std::time::SystemTime;
 use eframe::egui::{self, Color32, RichText};
 use serde::{Deserialize, Serialize};
 use suite_sdk::host::{Event, Request, SharedContext};
-use suite_sdk::mobile::ui::{Act, Row, Screen};
+use suite_sdk::mobile::ui::{Act, Band, Row, Screen};
 use suite_sdk::shortcut::Shortcut;
 use suite_sdk::{
     Badge, BuildCx, CommandInfo, Cx, Host, Module, ModuleFactory, ModuleInfo, ModuleStatus, Origin, Tone, Unavailable,
@@ -351,20 +351,21 @@ fn line_count(text: &str) -> usize {
     text.lines().filter(|l| !l.trim().is_empty()).count()
 }
 
-/// Les notes de `dir` sur le téléphone ; `home` : l'accueil du module, avec les autres dépôts qui ont des notes.
+/// Les notes de `dir` sur le téléphone ; `home` : l'accueil du module, avec les autres dépôts qui ont des notes (un
+/// bandeau pliable). « Ajouter une ligne » est en barre du haut : à portée même sous beaucoup de notes.
 fn notes_screen(dir: &str, notes: &BTreeMap<String, String>, home: bool) -> Screen {
     let label = repo_label(dir);
+    let add = Act::new("ajouter", "Ajouter une ligne").glyph("➕").primary().input("Nouvelle ligne", "À faire, idée…");
     let mut s = if home {
         Screen::new("Carnet").subtitle(label)
     } else {
         Screen::new(label).subtitle(if dir.is_empty() { "Notes prises hors de tout dépôt" } else { dir })
-    };
+    }
+    .act(add);
     match notes.get(dir).filter(|t| !t.trim().is_empty()) {
         Some(text) => s.text(text.trim_end(), false),
         None => s.empty("Pas encore de notes pour ce dépôt."),
     };
-    let add = Act::new("ajouter", "Ajouter une ligne").glyph("➕").primary().input("Nouvelle ligne", "À faire, idée…");
-    s.buttons(vec![add]);
     if home {
         let others: Vec<(&String, usize)> = notes
             .iter()
@@ -373,11 +374,12 @@ fn notes_screen(dir: &str, notes: &BTreeMap<String, String>, home: bool) -> Scre
             .filter(|(_, n)| *n > 0)
             .collect();
         if !others.is_empty() {
-            s.section("Autres dépôts", others.len().to_string());
+            s.band(Band::new("autres", "Autres dépôts").aside(others.len().to_string()).glyph("📒"));
             for (d, n) in others {
                 let lines = if n == 1 { "1 ligne".to_string() } else { format!("{n} lignes") };
                 s.row(
                     Row::new(repo_label(d))
+                        .key(format!("depot/{}", repo_key(d)))
                         .subtitle(d.as_str())
                         .detail(lines)
                         .glyph("✏️")
@@ -391,7 +393,7 @@ fn notes_screen(dir: &str, notes: &BTreeMap<String, String>, home: bool) -> Scre
 
 #[cfg(test)]
 mod tests {
-    use suite_sdk::mobile::ui::Block;
+    use suite_sdk::mobile::ui::{Block, Fold};
 
     use super::*;
 
@@ -446,6 +448,12 @@ mod tests {
         assert_eq!((s.title.as_str(), s.subtitle.as_str()), ("Carnet", "ozmo"));
         assert!(s.blocks.contains(&Block::Text { text: "relire la PR 12\nlancer les tests".into(), mono: false }));
         assert_eq!(s.action_ids().into_iter().collect::<Vec<_>>(), ["ajouter"]);
+        assert!(s.acts.iter().any(|a| a.id == "ajouter"), "en barre du haut");
+        assert!(!s.blocks.iter().any(|b| matches!(b, Block::Buttons { .. })));
+        assert!(
+            s.blocks.iter().any(|b| matches!(b, Block::Section { key, fold: Fold::Open, .. } if key == "autres")),
+            "autres dépôts : un bandeau pliable"
+        );
         // Les dépôts sans notes n'apparaissent pas.
         assert_eq!(s.opens().into_iter().collect::<Vec<_>>(), [format!("depot/{}", repo_key("C:/dev/diapaz"))]);
 
