@@ -9,8 +9,12 @@
 //! Une action n'est exécutée que si l'appareil a le droit d'agir et si le dernier écran envoyé la proposait (même
 //! module, même chemin, même identifiant). Les actions qui commencent par `@` sont celles de l'hôte (« Montrer sur le
 //! PC »), comme celles des écrans génériques (`cmd:<id>` : une commande de la palette du module).
+//!
+//! Une action qui demande un dossier du PC (`input.folder`) garde sa saisie avec la liste blanche : le téléphone ne
+//! parcourt les dossiers ([`ToPc::Browse`], lu dans un fil par [`browse`]) que pour elle, avec le droit « Dossiers du
+//! PC », et le chemin choisi est revérifié avant d'appeler le module, qui reçoit le chemin résolu.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::{Shutdown, TcpStream};
 use std::sync::mpsc;
@@ -20,9 +24,10 @@ use eframe::egui;
 use serde::Serialize;
 use suite_mobile::msg::{Badge, CommandCard, ModuleCard, Note, Rights, ToPc, ToPhone, Waiting};
 use suite_mobile::term::{TermFrame, TermView};
-use suite_mobile::ui::{self as mui, Act, Row, Screen};
+use suite_mobile::ui::{self as mui, Act, FolderInput, Row, Screen};
 use suite_sdk::{Cx, Module, Notification, Tone};
 
+use super::browse;
 use super::server::{Identity, Inbound};
 use crate::app::Core;
 use crate::core::{self, CallKind, SlotState};
@@ -43,6 +48,10 @@ struct Followed {
     hash: u64,
     /// La liste blanche : identifiant → libellé, du dernier écran envoyé.
     allowed: BTreeMap<String, String>,
+    /// Celles de ces actions qui demandent un dossier du PC, et ce qu'elles en attendent.
+    folders: BTreeMap<String, FolderInput>,
+    /// Les sélecteurs de dossiers ouverts sur cet écran : une ligne au journal pour chacun, pas une par lecture.
+    browsed: BTreeSet<String>,
     /// Écran fait par l'hôte (module sans écran mobile, ou arrêté) : ses actions sont celles de l'hôte.
     generic: bool,
     due: Instant,
@@ -71,6 +80,8 @@ pub struct Session {
     logos: bool,
     screen: Option<Followed>,
     term: Option<FollowedTerm>,
+    /// Les lectures de dossiers de ce téléphone.
+    browse: browse::Browser,
 }
 
 impl Session {
@@ -162,6 +173,7 @@ pub fn poll(core: &mut Core, frame: &mut eframe::Frame, ctx: &egui::Context) -> 
     if mobile.sessions.is_empty() {
         return commands;
     }
+    pump_folders(core, ctx);
     push_light(core);
     push_screens(core, frame, ctx);
     push_terms(core, frame, ctx);
@@ -221,6 +233,7 @@ fn receive(
                 logos: false,
                 screen: None,
                 term: None,
+                browse: browse::Browser::default(),
             });
             // Tout part tout de suite.
             core.mobile.sync.at = None;
@@ -279,13 +292,37 @@ fn message(
             s.send(ToPhone::Pong);
         }
         ToPc::Hello { .. } | ToPc::Pair { .. } => {}
-        // Le sélecteur de dossiers n'est proposé par aucun écran tant que le pont ne sait pas lister.
-        ToPc::Browse { req, .. } => {
-            let listing = suite_mobile::msg::Listing {
-                error: "Ce PC ne sait pas encore lister ses dossiers.".into(),
-                ..Default::default()
+        // Lister un dossier du PC : seulement pour une action de l'écran suivi qui en demande un, avec les droits
+        // « Agir » et « Dossiers du PC ».
+        ToPc::Browse { req, module, path, action, dir, filter, offset, hidden } => {
+            let offered = s.screen.as_ref().filter(|f| f.module == module && f.path == path).and_then(|f| {
+                Some((f.folders.get(&action).cloned()?, f.allowed.get(&action).cloned().unwrap_or_default()))
+            });
+            let why = if !rights.act {
+                "Ce téléphone n'a plus le droit d'agir (réglage du PC)."
+            } else if !rights.files {
+                "Ce téléphone n'a pas le droit de parcourir les dossiers du PC (réglage du PC)."
+            } else {
+                "Cet écran a changé entre-temps : réessayez."
             };
-            s.send(ToPhone::Folder { req, listing });
+            let Some((spec, label)) = offered.filter(|_| rights.act && rights.files) else {
+                s.send(ToPhone::Folder { req, listing: browse::refused(dir, why) });
+                return;
+            };
+            let opened = s.screen.as_mut().is_some_and(|f| f.browsed.insert(action));
+            let module = module_name(core, &module);
+            if opened {
+                core.mobile.store.journal(&name, "dossiers", format!("{module} › {label} : sélecteur de dossiers"));
+            }
+            let ask = browse::Ask { req, dir, filter, offset, hidden, spec, module };
+            let Some(s) = session_mut(core, id) else { return };
+            if let Some(old) = s.browse.ask(ask) {
+                s.send(ToPhone::Folder {
+                    req: old.req,
+                    listing: browse::refused(old.dir, "Demande remplacée par une plus récente."),
+                });
+            }
+            pump_folders(core, ctx);
         }
         ToPc::NotesRead => {
             core.notes.mark_all_read();
@@ -300,6 +337,8 @@ fn message(
                     path,
                     hash: 0,
                     allowed: BTreeMap::new(),
+                    folders: BTreeMap::new(),
+                    browsed: BTreeSet::new(),
                     generic: false,
                     due: now,
                 });
@@ -316,11 +355,33 @@ fn message(
                 return;
             }
             let offered = s.screen.as_ref().and_then(|f| {
-                (f.module == module && f.path == path).then(|| (f.allowed.get(&action).cloned(), f.generic))
+                let folder = f.folders.get(&action).cloned();
+                (f.module == module && f.path == path).then(|| (f.allowed.get(&action).cloned(), f.generic, folder))
             });
-            let Some((Some(label), generic)) = offered else {
+            let Some((Some(label), generic, folder)) = offered else {
                 reply(core, id, req, Err("Cet écran a changé entre-temps : réessayez.".into()));
                 return;
+            };
+            let mut text = format!("{} › {label}", module_name(core, &module));
+            // Un dossier du PC (choisi dans le sélecteur, ou saisi sur une application plus ancienne) : revérifié ici,
+            // avant le module, qui reçoit le chemin résolu ; écrit en clair au journal avec l'action.
+            let input = match folder {
+                None => input,
+                Some(spec) => {
+                    let env = core.mobile.folder_env();
+                    match browse::chosen(&env, input.as_deref(), &spec) {
+                        Ok(dir) => {
+                            let dir = dir.to_string_lossy().into_owned();
+                            text = format!("{text} : {dir}");
+                            Some(dir)
+                        }
+                        Err(e) => {
+                            core.mobile.store.journal(&name, "refus", format!("{text} : {e}"));
+                            reply(core, id, req, Err(e));
+                            return;
+                        }
+                    }
+                }
             };
             let result = if action.starts_with('@') || generic {
                 host_action(core, &module, &action, commands)
@@ -328,7 +389,6 @@ fn message(
                 with_module(core, &module, frame, ctx, |m, cx| m.mobile_action(&path, &action, input.as_deref(), cx))
                     .unwrap_or_else(|| Err(format!("{} ne tourne pas sur le PC", module_name(core, &module))))
             };
-            let text = format!("{} › {label}", module_name(core, &module));
             match &result {
                 Ok(_) => {
                     core.mobile.store.journal(&name, "action", &text);
@@ -588,6 +648,32 @@ fn generic_screen(core: &Core, module: &str) -> Option<Screen> {
     Some(s)
 }
 
+/// Les actions d'un écran qui demandent un dossier du PC, et ce qu'elles en attendent (la première saisie trouvée,
+/// pour un identifiant proposé plusieurs fois).
+fn folders_of(screen: &Screen) -> BTreeMap<String, FolderInput> {
+    let mut out = BTreeMap::new();
+    for a in screen.all_acts().into_iter().filter(|a| a.reaches_pc()) {
+        if let Some(spec) = a.input.as_ref().and_then(|i| i.folder.as_ref()) {
+            out.entry(a.id.clone()).or_insert_with(|| spec.clone());
+        }
+    }
+    out
+}
+
+/// Lance, dans leur fil, les lectures de dossiers dont c'est le tour ; la réponse part de là au téléphone.
+fn pump_folders(core: &mut Core, ctx: &egui::Context) {
+    if !core.mobile.sessions.iter().any(|s| s.browse.waiting()) {
+        return;
+    }
+    let env = core.mobile.folder_env();
+    for s in &mut core.mobile.sessions {
+        let wake = ctx.clone();
+        if let Some(wait) = s.browse.pump(&env, &s.sender, move || wake.request_repaint()) {
+            ctx.request_repaint_after(wait);
+        }
+    }
+}
+
 fn push_screens(core: &mut Core, frame: &mut eframe::Frame, ctx: &egui::Context) {
     let due: Vec<(u64, String, String)> = core
         .mobile
@@ -637,6 +723,7 @@ fn push_screens(core: &mut Core, frame: &mut eframe::Frame, ctx: &egui::Context)
                         .filter(|a| a.reaches_pc())
                         .map(|a| (a.id.clone(), a.label.clone()))
                         .collect();
+                    f.folders = folders_of(&screen);
                     s.send(ToPhone::Screen { module, path, screen });
                 }
             }
@@ -644,6 +731,7 @@ fn push_screens(core: &mut Core, frame: &mut eframe::Frame, ctx: &egui::Context)
                 if f.hash != 1 {
                     f.hash = 1;
                     f.allowed.clear();
+                    f.folders.clear();
                     s.send(ToPhone::NoScreen { module, path, reason: "Cet écran n'existe plus sur le PC.".into() });
                 }
             }

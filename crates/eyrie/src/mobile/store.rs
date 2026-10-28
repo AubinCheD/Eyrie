@@ -45,7 +45,8 @@ pub struct JournalLine {
     /// Appareil (nom), ou vide.
     #[serde(default)]
     pub device: String,
-    /// `connexion`, `deconnexion`, `refus`, `appairage`, `action`, `terminal`, `acces`.
+    /// `connexion`, `deconnexion`, `refus`, `appairage`, `action`, `terminal`, `acces`, `dossiers` (un sélecteur de
+    /// dossiers ouvert), `veille` (écrite par le veilleur du compagnon, qui démarre Eyrie).
     pub kind: String,
     pub text: String,
 }

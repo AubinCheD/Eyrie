@@ -1,20 +1,22 @@
 //! Le pont de bout en bout : une vraie suite (egui_kittest) avec un module factice, et un faux téléphone dans un
-//! fil, qui s'appaire, suit un écran, agit, suit un terminal et y écrit.
+//! fil, qui s'appaire, suit un écran, agit, suit un terminal et y écrit, parcourt les dossiers du PC et en choisit un.
 
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use eframe::egui;
 use egui_kittest::Harness;
 use suite_mobile::channel::Keypair;
 use suite_mobile::client;
-use suite_mobile::msg::{ToPc, ToPhone};
+use suite_mobile::msg::{ENTRY_DENIED, ENTRY_REPO, Listing, ToPc, ToPhone};
 use suite_mobile::pairing::Ticket;
 use suite_mobile::term::{Line, TermFrame, TermInput, TermView};
-use suite_mobile::ui::{Act, Row, Screen};
+use suite_mobile::ui::{Act, FOLDER_REPO, FolderInput, Row, Screen};
 use suite_sdk::{Badge, CommandInfo, Cx, Module, ModuleInfo, ModuleStatus, Origin, Tone};
 
+use super::browse;
 use crate::app::Suite;
 use crate::core::Slot;
 use crate::persist::{ModuleSettings, SuiteState};
@@ -22,6 +24,8 @@ use crate::registry;
 
 static DONE: AtomicU32 = AtomicU32::new(0);
 static TYPED: Mutex<Vec<TermInput>> = Mutex::new(Vec::new());
+/// Les dossiers reçus par l'action « choisir ».
+static CHOSEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 struct Factice {
     info: ModuleInfo,
@@ -72,11 +76,18 @@ impl Module for Factice {
         match path {
             "" => {
                 let mut s = Screen::new("Factice");
-                s.section("Choses", "1").row(
-                    Row::new(format!("Faite {} fois", DONE.load(Ordering::Relaxed)))
-                        .tap(Act::new("faire", "Faire"))
-                        .open("detail"),
-                );
+                s.section("Choses", "1")
+                    .row(
+                        Row::new(format!("Faite {} fois", DONE.load(Ordering::Relaxed)))
+                            .tap(Act::new("faire", "Faire"))
+                            .open("detail"),
+                    )
+                    .row(
+                        Row::new("Un dépôt").tap(
+                            Act::new("choisir", "Choisir un dépôt")
+                                .folder("Dépôt", FolderInput { want: FOLDER_REPO, ..Default::default() }),
+                        ),
+                    );
                 Some(s)
             }
             "detail" => Some(Screen::new("Détail")),
@@ -88,13 +99,17 @@ impl Module for Factice {
         &mut self,
         _path: &str,
         action: &str,
-        _input: Option<&str>,
+        input: Option<&str>,
         _cx: &mut Cx,
     ) -> Result<Option<String>, String> {
         match action {
             "faire" => {
                 DONE.fetch_add(1, Ordering::Relaxed);
                 Ok(Some("fait".into()))
+            }
+            "choisir" => {
+                CHOSEN.lock().unwrap().push(input.unwrap_or_default().to_string());
+                Ok(None)
             }
             _ => Err("inconnue".into()),
         }
@@ -305,4 +320,134 @@ fn turning_access_off_closes_everything() {
     assert!(m.listening_on().is_none());
     assert!(m.ticket.is_none(), "plus de ticket");
     assert!(m.new_ticket(None).is_err(), "pas de ticket sans accès");
+}
+
+/// Un téléphone appairé à la suite, qui fait `phone` dans son fil une fois connecté ; `paired` agit sur le PC juste
+/// après l'appairage, avant que la connexion du téléphone n'y soit reçue.
+fn with_phone<T: Send + 'static>(
+    h: &mut Harness<'static, Suite>,
+    paired: impl FnOnce(&mut Suite),
+    phone: impl FnOnce(&mut client::Connection) -> T + Send + 'static,
+) -> T {
+    h.state_mut().core.mobile.new_ticket(None).unwrap();
+    let uri = h.state().core.mobile.ticket.as_ref().unwrap().uri.clone();
+    let ticket = Ticket::from_uri(&uri).unwrap();
+    let t = std::thread::spawn(move || {
+        let me = Keypair::generate();
+        let mut c = client::open(&ticket.addresses(), &me, Duration::from_secs(5)).unwrap();
+        client::pair(&mut c, &ticket.secret, Some(&ticket.key), "Pixel", "Google Pixel 8").unwrap();
+        client::wait_paired(&mut c).unwrap();
+        client::hello(&mut c, &ticket.key, "Pixel", "Google Pixel 8").unwrap();
+        phone(&mut c)
+    });
+    spin(h, |h| !h.state().core.mobile.requests.is_empty());
+    h.state_mut().core.mobile.decide(0, true);
+    paired(h.state_mut());
+    spin(h, |_| t.is_finished());
+    t.join().expect("le téléphone a tout vu")
+}
+
+/// Suit l'accueil du module factice et attend son écran.
+fn follow_home(c: &mut client::Connection) -> Screen {
+    c.tx.send(&ToPc::Follow { screen: Some(("factice".into(), "".into())), terminal: None }).unwrap();
+    until(c, |m| match m {
+        ToPhone::Screen { module, screen, .. } if module == "factice" => Some(screen),
+        _ => None,
+    })
+}
+
+/// Liste `dir` (`None` : la racine) pour l'action `action` de l'accueil du module factice.
+fn list_folder(c: &mut client::Connection, req: u32, action: &str, dir: Option<&Path>) -> Listing {
+    c.tx.send(&ToPc::Browse {
+        req,
+        module: "factice".into(),
+        path: "".into(),
+        action: action.into(),
+        dir: dir.map(|d| d.to_string_lossy().into_owned()),
+        filter: String::new(),
+        offset: 0,
+        hidden: false,
+    })
+    .unwrap();
+    until(c, |m| match m {
+        ToPhone::Folder { req: r, listing } if r == req => Some(listing),
+        _ => None,
+    })
+}
+
+fn act(c: &mut client::Connection, req: u32, action: &str, input: &str) -> (bool, String) {
+    let module = "factice".into();
+    c.tx.send(&ToPc::Action { req, module, path: "".into(), action: action.into(), input: Some(input.into()) })
+        .unwrap();
+    until(c, |m| match m {
+        ToPhone::Result { req: r, ok, message } if r == req => Some((ok, message)),
+        _ => None,
+    })
+}
+
+#[test]
+fn a_phone_browses_the_pc_only_for_a_folder_action_and_its_choice_is_checked() {
+    let tree = tempfile::tempdir().unwrap();
+    let root: PathBuf = tree.path().to_path_buf();
+    for d in ["depot/.git", "simple", "zone"] {
+        std::fs::create_dir_all(root.join(d)).unwrap();
+    }
+    let mut h = suite();
+    // Le dossier temporaire est sous AppData, interdit pour de vrai : ici, seul `zone` l'est.
+    h.state_mut().core.mobile.folders = Some(Arc::new(browse::Env::for_tests(vec![root.join("zone")])));
+    let depot = with_phone(
+        &mut h,
+        |_| {},
+        move |c| {
+            assert!(follow_home(c).action_ids().contains("choisir"));
+            // Rien pour une action qui ne demande pas de dossier.
+            let l = list_folder(c, 1, "faire", Some(&root));
+            assert!(l.error.contains("changé") && l.entries.is_empty(), "{l:?}");
+            // L'arbre, ses drapeaux, et pourquoi il ne se choisit pas : ce n'est pas un dépôt.
+            let l = list_folder(c, 2, "choisir", Some(&root));
+            assert_eq!(l.error, "");
+            let flags = |name: &str| l.entries.iter().find(|e| e.name == name).map(|e| e.flags);
+            assert_eq!((flags("depot"), flags("zone")), (Some(ENTRY_REPO), Some(ENTRY_DENIED)));
+            assert_eq!(l.choose, None);
+            let l = list_folder(c, 3, "choisir", Some(&root.join("depot")));
+            assert_eq!(l.choose.as_deref(), Some("Choisir ce dépôt"));
+            let depot = l.dir;
+            assert!(list_folder(c, 4, "choisir", Some(&root.join("zone"))).error.contains("protégé"));
+            // Le choix est revérifié avant le module : ni un dossier qui n'est pas un dépôt, ni un chemin réseau.
+            let (ok, message) = act(c, 5, "choisir", &root.join("simple").to_string_lossy());
+            assert!(!ok && message.contains("pas un dépôt git"), "{message}");
+            let (ok, message) = act(c, 6, "choisir", r"\\serveur\partage\depot");
+            assert!(!ok && message.contains("réseau"), "{message}");
+            let (ok, message) = act(c, 7, "choisir", &root.join("depot").to_string_lossy());
+            assert!(ok, "{message}");
+            depot
+        },
+    );
+    assert_eq!(*CHOSEN.lock().unwrap(), vec![depot.clone()], "le module reçoit le chemin résolu, et lui seul");
+    let journal = h.state().core.mobile.store.read_journal(50);
+    let of = |kind: &str| journal.iter().filter(|l| l.kind == kind).map(|l| l.text.as_str()).collect::<Vec<_>>();
+    assert_eq!(of("dossiers"), ["Factice › Choisir un dépôt : sélecteur de dossiers"], "pas une ligne par lecture");
+    assert!(of("action").contains(&format!("Factice › Choisir un dépôt : {depot}").as_str()), "{journal:?}");
+    assert_eq!(of("refus").len(), 2, "{journal:?}");
+}
+
+#[test]
+fn without_the_folders_right_the_phone_cannot_browse() {
+    let mut h = suite();
+    let l = with_phone(
+        &mut h,
+        |s| {
+            let id = s.core.mobile.store.devices[0].id.clone();
+            let rights = suite_mobile::msg::Rights { files: false, ..Default::default() };
+            s.core.mobile.set_rights(&id, rights);
+        },
+        |c| {
+            follow_home(c);
+            list_folder(c, 1, "choisir", None)
+        },
+    );
+    assert!(l.error.contains("parcourir les dossiers") && l.groups.is_empty(), "{l:?}");
+    let journal = h.state().core.mobile.store.read_journal(50);
+    assert!(journal.iter().any(|l| l.kind == "acces" && l.text.ends_with("dossiers non")), "{journal:?}");
+    assert!(!journal.iter().any(|l| l.kind == "dossiers"));
 }

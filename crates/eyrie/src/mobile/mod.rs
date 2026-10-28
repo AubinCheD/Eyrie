@@ -6,8 +6,10 @@
 //!   action proposée dans le dernier écran envoyé), appelle les modules dans le bac à sable et pousse aux téléphones ce
 //!   qui a changé ;
 //! - [`store`] garde la clé du PC, les appareils et le journal ;
+//! - [`browse`] liste les dossiers du PC pour le sélecteur du téléphone, dans un fil, et contrôle le chemin choisi ;
 //! - [`page`] : la page Téléphones des réglages et la confirmation d'un appairage.
 
+pub mod browse;
 pub mod page;
 pub mod server;
 pub mod store;
@@ -15,7 +17,7 @@ pub mod sync;
 #[cfg(test)]
 mod tests;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -42,6 +44,8 @@ impl Shown {
 }
 
 pub struct Bridge {
+    /// Le dossier d'Eyrie (ses données : interdites au sélecteur de dossiers).
+    dir: PathBuf,
     pub store: store::Store,
     server: Option<server::Server>,
     pub sessions: Vec<sync::Session>,
@@ -57,6 +61,8 @@ pub struct Bridge {
     ctx: egui::Context,
     pub(crate) sync: sync::State,
     pub page: page::PageState,
+    /// Ce que le sélecteur de dossiers sait du PC, fait au premier usage.
+    folders: Option<Arc<browse::Env>>,
 }
 
 /// Nom de ce PC (`COMPUTERNAME`).
@@ -68,6 +74,7 @@ impl Bridge {
     pub fn new(dir: &Path, ctx: egui::Context) -> Bridge {
         let local_port = std::env::var("EYRIE_MOBILE_LOCAL").ok().and_then(|p| p.trim().parse().ok());
         Bridge {
+            dir: dir.to_path_buf(),
             store: store::Store::open(&store::mobile_dir(dir)),
             server: None,
             sessions: Vec::new(),
@@ -79,7 +86,14 @@ impl Bridge {
             ctx,
             sync: sync::State::default(),
             page: page::PageState::default(),
+            folders: None,
         }
+    }
+
+    /// Ce que le sélecteur de dossiers et le contrôle des chemins savent du PC (zones interdites, lecteurs).
+    pub(crate) fn folder_env(&mut self) -> Arc<browse::Env> {
+        let (dir, mobile) = (&self.dir, store::mobile_dir(&self.dir));
+        self.folders.get_or_insert_with(|| Arc::new(browse::Env::system(&[dir, &mobile]))).clone()
     }
 
     /// Écoute directe, sans compagnon (`EYRIE_MOBILE_LOCAL`).
@@ -261,7 +275,12 @@ impl Bridge {
         self.store.journal(
             &name,
             "acces",
-            format!("droits : agir {}, terminaux {}", yes_no(rights.act), yes_no(rights.terminals)),
+            format!(
+                "droits : agir {}, terminaux {}, dossiers {}",
+                yes_no(rights.act),
+                yes_no(rights.terminals),
+                yes_no(rights.files)
+            ),
         );
     }
 
