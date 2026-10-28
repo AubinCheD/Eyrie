@@ -318,11 +318,12 @@ fn message(
                 return;
             };
             let opened = s.screen.as_mut().is_some_and(|f| f.browsed.insert(action));
+            let recents = core.mobile.store.recent_folders(&module);
             let module = module_name(core, &module);
             if opened {
                 core.mobile.store.journal(&name, "dossiers", format!("{module} › {label} : sélecteur de dossiers"));
             }
-            let ask = browse::Ask { req, dir, filter, offset, hidden, spec, module };
+            let ask = browse::Ask { req, dir, filter, offset, hidden, spec, module, recents };
             let Some(s) = session_mut(core, id) else { return };
             if let Some(old) = s.browse.ask(ask) {
                 s.send(ToPhone::Folder {
@@ -372,7 +373,9 @@ fn message(
             };
             let mut text = format!("{} › {label}", module_name(core, &module));
             // Un dossier du PC (choisi dans le sélecteur, ou saisi sur une application plus ancienne) : revérifié ici,
-            // avant le module, qui reçoit le chemin résolu ; écrit en clair au journal avec l'action.
+            // avant le module, qui reçoit le chemin résolu ; écrit en clair au journal avec l'action, et gardé parmi les
+            // récents du sélecteur si l'action réussit.
+            let mut chosen = None;
             let input = match folder {
                 None => input,
                 Some(spec) => {
@@ -381,6 +384,7 @@ fn message(
                         Ok(dir) => {
                             let dir = dir.to_string_lossy().into_owned();
                             text = format!("{text} : {dir}");
+                            chosen = Some(dir.clone());
                             Some(dir)
                         }
                         Err(e) => {
@@ -401,6 +405,9 @@ fn message(
                 Ok(_) => {
                     core.mobile.store.journal(&name, "action", &text);
                     mirror(core, &name, &text);
+                    if let Some(dir) = &chosen {
+                        core.mobile.store.remember_folder(&module, dir);
+                    }
                 }
                 Err(e) => core.mobile.store.journal(&name, "action", format!("{text} : échec ({e})")),
             }

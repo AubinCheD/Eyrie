@@ -2,6 +2,7 @@
 //! seulement) et le journal. Le tout dans `%LOCALAPPDATA%\EyrieSuite\Eyrie\mobile` : rien de cela ne doit suivre un
 //! profil itinérant ; un Eyrie sur un autre dossier (essais) garde le sien.
 
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -83,11 +84,17 @@ pub struct Store {
     /// plus) ; les appairages et connexions sont suspendus, la page le dit.
     broken_key: Option<String>,
     pub devices: Vec<Device>,
+    /// Les dossiers choisis depuis le téléphone, par module, le plus récent d'abord : la racine du sélecteur les montre
+    /// en tête (`dossiers.json`).
+    recents: BTreeMap<String, Vec<String>>,
     /// Ce qui n'a pas pu être lu ou écrit (affiché dans la page Téléphones).
     pub problem: Option<String>,
 }
 
 const JOURNAL_MAX: u64 = 1024 * 1024;
+const RECENTS: &str = "dossiers.json";
+/// Dossiers récents gardés par module.
+const RECENTS_MAX: usize = 8;
 
 impl Store {
     pub fn open(dir: &Path) -> Store {
@@ -103,7 +110,8 @@ impl Store {
             }),
             Err(_) => Vec::new(),
         };
-        Store { dir: dir.to_path_buf(), key, broken_key, devices, problem }
+        let recents = std::fs::read(dir.join(RECENTS)).ok().and_then(|b| serde_json::from_slice(&b).ok());
+        Store { dir: dir.to_path_buf(), key, broken_key, devices, recents: recents.unwrap_or_default(), problem }
     }
 
     /// La clé du PC, créée et scellée au premier appel ; `None` si elle est illisible ou n'a pas pu être écrite.
@@ -189,6 +197,25 @@ impl Store {
             && let Ok(json) = serde_json::to_string(&line)
         {
             let _ = writeln!(f, "{json}");
+        }
+    }
+
+    /// Les dossiers choisis récemment depuis le téléphone pour le module `module`, le plus récent d'abord.
+    pub fn recent_folders(&self, module: &str) -> Vec<String> {
+        self.recents.get(module).cloned().unwrap_or_default()
+    }
+
+    /// Retient un dossier choisi (résolu) pour une action du module `module`.
+    pub fn remember_folder(&mut self, module: &str, dir: &str) {
+        let list = self.recents.entry(module.to_string()).or_default();
+        list.retain(|d| !d.eq_ignore_ascii_case(dir));
+        list.insert(0, dir.to_string());
+        list.truncate(RECENTS_MAX);
+        let _ = std::fs::create_dir_all(&self.dir);
+        let tmp = self.dir.join(format!("{RECENTS}.tmp"));
+        let json = serde_json::to_vec_pretty(&self.recents).unwrap_or_default();
+        if let Err(e) = std::fs::write(&tmp, json).and_then(|_| std::fs::rename(&tmp, self.dir.join(RECENTS))) {
+            self.problem = Some(format!("{RECENTS} non enregistré : {e}"));
         }
     }
 
@@ -296,6 +323,25 @@ pub(crate) mod dpapi {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Les dossiers choisis depuis le téléphone sont gardés par module, le plus récent d'abord, sans doublon (casse
+    /// ignorée), huit au plus, et relus à l'ouverture suivante.
+    #[test]
+    fn recent_folders_are_kept_per_module() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path());
+        for i in 0..10 {
+            store.remember_folder("dragontree", &format!(r"C:\DEV\d{i}"));
+        }
+        store.remember_folder("dragontree", r"c:\dev\D5");
+        store.remember_folder("fawkes", r"C:\Outils");
+        let again = Store::open(dir.path());
+        let kept = again.recent_folders("dragontree");
+        assert_eq!(kept.len(), RECENTS_MAX);
+        assert_eq!(kept[..3], [r"c:\dev\D5", r"C:\DEV\d9", r"C:\DEV\d8"]);
+        assert_eq!(again.recent_folders("fawkes"), [r"C:\Outils"]);
+        assert!(again.recent_folders("owlery").is_empty());
+    }
 
     #[test]
     fn the_pc_key_is_kept_sealed_and_read_back() {

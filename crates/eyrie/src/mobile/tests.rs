@@ -420,6 +420,10 @@ fn a_phone_browses_the_pc_only_for_a_folder_action_and_its_choice_is_checked() {
             assert!(!ok && message.contains("réseau"), "{message}");
             let (ok, message) = act(c, 7, "choisir", &root.join("depot").to_string_lossy());
             assert!(ok, "{message}");
+            // Le dossier choisi est en tête de la racine du sélecteur (« Récents ») ; les refusés n'y sont pas.
+            let l = list_folder(c, 8, "choisir", None);
+            let recents = l.groups.first().filter(|g| g.title == "Récents").expect("récents en tête");
+            assert_eq!(recents.places.iter().map(|p| p.path.as_str()).collect::<Vec<_>>(), [depot.as_str()]);
             depot
         },
     );

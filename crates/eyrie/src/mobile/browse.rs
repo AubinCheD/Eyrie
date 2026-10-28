@@ -8,7 +8,7 @@
 //!   interdites ([`Env`]) ;
 //! - [`chosen`] y ajoute la règle de la saisie (`want`), avant que le pont n'appelle le module ;
 //! - [`listing`] lit un niveau (des dossiers seulement, triés, filtrés, par pages de [`PAGE`], avec leurs drapeaux) ou
-//!   la racine (raccourcis du module, accès rapide, lecteurs fixes) ;
+//!   la racine (dossiers choisis récemment, raccourcis du module, accès rapide, lecteurs fixes) ;
 //! - [`Browser`] : une lecture à la fois par téléphone, dans un fil (jamais dans celui de l'interface) ; la demande la
 //!   plus récente attend son tour, les rafales sont limitées.
 
@@ -440,6 +440,8 @@ pub struct Ask {
     pub spec: FolderInput,
     /// Le nom du module (« déjà dans DragonTree »).
     pub module: String,
+    /// Les dossiers choisis récemment pour ce module, le plus récent d'abord (gardés par le pont).
+    pub recents: Vec<String>,
 }
 
 /// Une réponse qui n'est qu'une erreur.
@@ -518,10 +520,20 @@ fn place(name: &str, dir: &Path, known: &Known, module: &str) -> FolderEntry {
     FolderEntry { name: name.to_string(), path, flags, detail }
 }
 
-/// La racine : les raccourcis du module, l'accès rapide (avec les dossiers où le module a les siens), les disques fixes.
+/// La racine : les dossiers choisis récemment, les raccourcis du module, l'accès rapide (avec les dossiers où le module
+/// a les siens), les disques fixes. Un dossier n'y est qu'une fois, dans le premier groupe qui le montre.
 fn root(env: &Env, ask: &Ask, known: &Known) -> Listing {
     let mut seen = BTreeSet::new();
     let mut groups = Vec::new();
+    let mut recents = Vec::new();
+    for p in &ask.recents {
+        if let Ok(dir) = check(env, p)
+            && seen.insert(key(&dir))
+        {
+            recents.push(place(&title_of(&dir), &dir, known, &ask.module));
+        }
+    }
+    groups.push(PlaceGroup { title: "Récents".into(), places: recents });
     let mut places = Vec::new();
     for p in &ask.spec.places {
         if let Ok(dir) = check(env, &p.path)
@@ -967,6 +979,7 @@ mod tests {
             hidden: false,
             spec,
             module: "DragonTree".into(),
+            recents: Vec::new(),
         }
     }
 
@@ -1231,10 +1244,10 @@ mod tests {
             known: vec![at(r"dev\Ozmo"), at(r"dev\Survey")],
             ..Default::default()
         };
-        let l = listing(&env, &Ask { dir: None, ..ask(root, spec) });
+        let l = listing(&env, &Ask { dir: None, ..ask(root, spec.clone()) });
         assert_eq!((l.title.as_str(), l.dir.as_str(), l.choose.as_deref()), (ROOT, "", None));
         let titles: Vec<&str> = l.groups.iter().map(|g| g.title.as_str()).collect();
-        assert_eq!(titles, ["DragonTree", "Accès rapide", "Lecteurs"]);
+        assert_eq!(titles, ["DragonTree", "Accès rapide", "Lecteurs"], "pas de groupe vide");
         let names = |i: usize| l.groups[i].places.iter().map(|p| p.name.clone()).collect::<Vec<_>>();
         assert_eq!(names(0), ["Dossier de clonage"], "un raccourci interdit n'est pas montré");
         assert_eq!(l.groups[0].places[0].flags, ENTRY_KNOWN);
@@ -1243,6 +1256,17 @@ mod tests {
         assert_eq!(l.groups[1].places[1].path, long(&root.join("dev")).to_string_lossy());
         assert_eq!(names(2), ["Windows (C:)"], "Z: est un lecteur réseau");
         assert_eq!((l.groups[2].places[0].path.as_str(), l.groups[2].places[0].flags), (r"C:\", ENTRY_DRIVE));
+
+        // Les dossiers choisis récemment en tête ; un récent devenu interdit ou absent n'est pas montré, et un
+        // dossier n'apparaît qu'une fois.
+        let recents = vec![at(r"dev\Survey"), at(r"dev\.ssh"), at("disparu"), at("bureau")];
+        let l = listing(&env, &Ask { dir: None, recents, ..ask(root, spec) });
+        let titles: Vec<&str> = l.groups.iter().map(|g| g.title.as_str()).collect();
+        assert_eq!(titles, ["Récents", "DragonTree", "Accès rapide", "Lecteurs"]);
+        let names = |i: usize| l.groups[i].places.iter().map(|p| p.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(0), ["Survey", "bureau"]);
+        assert_eq!(l.groups[0].places[0].flags, ENTRY_KNOWN);
+        assert_eq!(names(2), ["dev"], "le Bureau est déjà dans les récents");
     }
 
     #[test]
