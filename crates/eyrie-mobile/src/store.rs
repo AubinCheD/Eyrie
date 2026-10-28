@@ -54,7 +54,8 @@ pub const FOLDS_MAX: usize = 300;
 #[serde(default)]
 pub struct Folded {
     pub open: bool,
-    /// Le ton du bandeau à ce moment (0 aucun… 4 danger) : un bandeau plié qui devient plus grave se rouvre.
+    /// Le ton du bandeau à ce moment (0 aucun… 4 danger) : un bandeau plié qui devient plus grave se rouvre ; plié, il
+    /// baisse quand le bandeau se calme.
     pub tone: i32,
     /// Ordre des choix : le plus ancien part au-delà de [`FOLDS_MAX`].
     pub seq: u64,

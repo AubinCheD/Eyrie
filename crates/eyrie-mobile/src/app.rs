@@ -831,7 +831,8 @@ impl Controller {
     }
 
     /// Ce que le téléphone ajoute à cet écran : ses actions en cours, le pliage de ses bandeaux. Un bandeau plié qui
-    /// devient plus grave se rouvre (« l'alerte gagne ») : ce nouvel état est retenu.
+    /// devient plus grave se rouvre (« l'alerte gagne »), un bandeau plié qui se calme retient son nouveau ton (la
+    /// prochaine alerte le rouvrira) : ces changements sont retenus.
     fn local(&mut self, key: &(String, String)) -> view::Local {
         let pending = self.pending.values().filter(|p| p.module == key.0 && p.path == key.1);
         let pending = pending.map(|p| p.act.clone()).collect();
@@ -840,21 +841,21 @@ impl Controller {
             local.search = self.search.get(key).cloned().unwrap_or_default();
         }
         let pc = self.store.prefs.current.clone().unwrap_or_default();
-        let mut reopened = Vec::new();
+        let mut changed = Vec::new();
         for (band, default_open, tone) in bands(self.screens.get(key)) {
             let chosen = self.store.folded(&pc, &key.0, &key.1, &band).map(|f| (f.open, f.tone));
-            let (open, again) = view::band_open(chosen, default_open, tone);
+            let (open, keep) = view::band_open(chosen, default_open, tone);
             if chosen.is_some() {
                 local.open.insert(band.clone(), open);
             }
-            if again {
-                reopened.push((band, tone));
+            if let Some(keep) = keep {
+                changed.push((band, keep));
             }
         }
-        for (band, tone) in &reopened {
-            self.store.set_folded(&pc, &key.0, &key.1, band, true, *tone);
+        for (band, (open, tone)) in &changed {
+            self.store.set_folded(&pc, &key.0, &key.1, band, *open, *tone);
         }
-        if !reopened.is_empty() {
+        if !changed.is_empty() {
             self.store.save();
         }
         local

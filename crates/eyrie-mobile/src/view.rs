@@ -188,12 +188,14 @@ fn hash_block(h: &mut DefaultHasher, b: &Block, local: &Local) {
 
 /// Un bandeau est-il ouvert ? Le choix de l'utilisateur (ouvert, et le ton du bandeau quand il l'a fait), sinon l'état
 /// de départ du PC. « L'alerte gagne » : un bandeau plié qui passe à Attention ou Danger, plus grave qu'au pliage, se
-/// rouvre ; une fois : le second booléen dit qu'il faut retenir ce nouvel état.
-pub fn band_open(chosen: Option<(bool, i32)>, default_open: bool, tone_now: i32) -> (bool, bool) {
+/// rouvre, une fois. Plié pendant une alerte, il reste plié tant qu'elle dure ; s'il se calme, le ton retenu baisse
+/// avec lui, et la prochaine alerte le rouvre. Rend l'état, et le choix à retenir désormais quand il change.
+pub fn band_open(chosen: Option<(bool, i32)>, default_open: bool, tone_now: i32) -> (bool, Option<(bool, i32)>) {
     match chosen {
-        None => (default_open, false),
-        Some((false, tone_then)) if tone_now >= 3 && tone_now > tone_then => (true, true),
-        Some((open, _)) => (open, false),
+        None => (default_open, None),
+        Some((false, then)) if tone_now >= 3 && tone_now > then => (true, Some((true, tone_now))),
+        Some((false, then)) if tone_now < then => (false, Some((false, tone_now))),
+        Some((open, _)) => (open, None),
     }
 }
 
@@ -839,13 +841,38 @@ mod tests {
     /// ne se rouvre que s'il passe à Danger.
     #[test]
     fn a_folded_band_reopens_once_when_it_becomes_alarming() {
-        assert_eq!(band_open(None, true, 4), (true, false), "l'état de départ du PC");
-        assert_eq!(band_open(None, false, 4), (false, false));
-        assert_eq!(band_open(Some((false, 1)), true, 1), (false, false));
-        assert_eq!(band_open(Some((false, 1)), true, 3), (true, true));
-        assert_eq!(band_open(Some((false, 3)), true, 3), (false, false), "replié par l'utilisateur en connaissance");
-        assert_eq!(band_open(Some((false, 3)), true, 4), (true, true));
-        assert_eq!(band_open(Some((true, 0)), false, 0), (true, false));
+        assert_eq!(band_open(None, true, 4), (true, None), "l'état de départ du PC");
+        assert_eq!(band_open(None, false, 4), (false, None));
+        assert_eq!(band_open(Some((false, 1)), true, 1), (false, None));
+        assert_eq!(band_open(Some((false, 1)), true, 3), (true, Some((true, 3))));
+        assert_eq!(band_open(Some((false, 3)), true, 3), (false, None), "replié par l'utilisateur en connaissance");
+        assert_eq!(band_open(Some((false, 3)), true, 4), (true, Some((true, 4))));
+        assert_eq!(band_open(Some((true, 0)), false, 0), (true, None));
+    }
+
+    /// Ce que le téléphone retient d'un bandeau, écran après écran reçu du PC : `chosen` suit le choix retenu.
+    fn shown_open(chosen: &mut Option<(bool, i32)>, tone_now: i32) -> bool {
+        let (open, keep) = band_open(*chosen, true, tone_now);
+        if keep.is_some() {
+            *chosen = keep;
+        }
+        open
+    }
+
+    /// Plié pendant qu'une session attend (Fawkes), un groupe reste plié tant qu'elle attend ; il se calme, puis une
+    /// autre session attend : il se rouvre. Replié pendant cette alerte, il se rouvrira à la suivante.
+    #[test]
+    fn a_band_folded_during_an_alert_reopens_at_the_next_one() {
+        let mut chosen = Some((false, 3));
+        assert!(!shown_open(&mut chosen, 3), "replié en connaissance de cause");
+        assert!(!shown_open(&mut chosen, 0), "calme : reste plié");
+        assert_eq!(chosen, Some((false, 0)), "le ton retenu baisse avec lui");
+        assert!(shown_open(&mut chosen, 3), "une nouvelle attente : rouvert");
+        assert_eq!(chosen, Some((true, 3)));
+        chosen = Some((false, 3));
+        assert!(!shown_open(&mut chosen, 3));
+        assert!(!shown_open(&mut chosen, 1));
+        assert!(shown_open(&mut chosen, 4), "plus grave encore");
     }
 
     /// La recherche, sans casse ni accents, garde les lignes qui y répondent (titre, sous-titre, texte à droite,
