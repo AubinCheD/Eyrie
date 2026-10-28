@@ -7,6 +7,7 @@
 //! `dossiers-attente`, `dossiers-silence`, `dossiers-refus` (le PC refuse de lister), `dossiers-texte` (puis le
 //! chemin saisi à la main) ; le PC sans Eyrie (voir
 //! `veilleur.rs`) : `fermee` (« Démarrer Eyrie »), `fermee-par-pc` (elle vient de se fermer), `fermee-sans-cle`,
+//! `fermee-sans-veilleur` (le PC a quitté le tailnet avec elle),
 //! `demarrage`, `acces-coupe`, `refus-demarrage`, `preuve-refusee`, `injoignable`, `telephone-hors-ligne` ; le
 //! terminal : `terminal-ctrl` (Ctrl collé), `terminal-copie` (le texte à copier), `terminal-coller` (un collage de
 //! plusieurs lignes à confirmer), `terminal-saisie` (sur plusieurs lignes), `terminal-zoom`, `terminal-suivi` (le bas
@@ -875,11 +876,22 @@ pub fn play(ui: &AppWindow, scene: &str) {
             with(|c| c.demo_offline());
         }
         // Eyrie fermée sur le PC, son veilleur la garde joignable : les données d'avant restent.
-        "fermee" | "fermee-par-pc" | "fermee-sans-cle" | "demarrage" | "acces-coupe" | "refus-demarrage"
+        "fermee"
+        | "fermee-par-pc"
+        | "fermee-sans-cle"
+        | "fermee-sans-veilleur"
+        | "demarrage"
+        | "acces-coupe"
+        | "refus-demarrage"
         | "preuve-refusee" => {
             let fermee = Away { reach: Reach::Standby(Eyrie::Fermee), ..Away::default() };
             let (away, start, wake, age) = match scene {
                 "fermee-par-pc" => (Away { closed: true, ..Away::default() }, Start::Idle, true, 5),
+                // Fermée sans veilleur : le PC a quitté le tailnet avec elle.
+                "fermee-sans-veilleur" => {
+                    let away = Reach::PcAway { seen: now() as i64 - 60 };
+                    (Away { reach: away, closed: true, starting: false }, Start::Idle, false, 60)
+                }
                 "fermee-sans-cle" => (fermee, Start::Idle, false, 600),
                 "demarrage" => (
                     Away { reach: Reach::Standby(Eyrie::Demarrage), closed: false, starting: true },

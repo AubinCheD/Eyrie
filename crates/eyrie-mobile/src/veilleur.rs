@@ -413,8 +413,9 @@ pub fn shown(away: &Away, start: &Start, wake: bool, now: u64) -> Shown {
             s(1, "PC injoignable : ce téléphone est hors ligne", "Ce téléphone est hors ligne", text.into())
         }
         Reach::PcAway { .. } if away.closed => {
-            let text = "Le PC n'est plus sur Tailscale : pour démarrer Eyrie d'ici, cochez « Garder le PC joignable \
-                        quand Eyrie est fermée » dans Eyrie, sur le PC.";
+            // La case du PC, telle qu'il la nomme (Réglages d'Eyrie › Téléphones).
+            let text = "Le PC n'est plus sur Tailscale : pour démarrer Eyrie d'ici, cochez « Démarrer Eyrie depuis le \
+                        téléphone » dans Eyrie, sur le PC (Réglages › Téléphones).";
             s(2, closed_line, closed_title, text.into())
         }
         Reach::PcAway { seen } => {
@@ -679,7 +680,7 @@ mod tests {
         let s = shown(&closed(Reach::Standby(Eyrie::Fermee)), &Start::Idle, true, now);
         assert_eq!((s.kind, s.line.as_str(), s.can_start), (2, "Eyrie a été fermée sur le PC", true));
         let s = shown(&closed(Reach::PcAway { seen: 0 }), &Start::Idle, true, now);
-        assert!(s.kind == 2 && !s.can_start && s.text.contains("Garder le PC joignable"), "{s:?}");
+        assert!(s.kind == 2 && !s.can_start && s.text.contains("« Démarrer Eyrie depuis le téléphone »"), "{s:?}");
     }
 
     /// Un refus du veilleur est montré tel quel ; « preuve refusée » ôte le bouton (pas de nouvel essai avec la même
