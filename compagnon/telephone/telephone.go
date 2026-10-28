@@ -78,6 +78,13 @@ func EyrieTailnetStart(cdir, chost *C.char) *C.char {
 	report(map[string]string{"state": "starting"})
 	// Les journaux restent sur le téléphone : rien n'est envoyé à Tailscale (voir le compagnon du PC).
 	os.Setenv("TS_NO_LOGS_NO_SUPPORT", "true")
+	// Leur état aussi, dans le dossier du nœud : une application Android n'a ni HOME, ni dossier de travail, ni
+	// dossier temporaire où écrire, et tsnet s'arrête alors au démarrage (panic dans logpolicy.LogsDir).
+	logs := filepath.Join(dir, "journaux")
+	if err := os.MkdirAll(logs, 0o700); err != nil {
+		return cerr(err)
+	}
+	os.Setenv("TS_LOGS_DIR", logs)
 	logtail.Disable()
 	netmon.RegisterInterfaceGetter(interfaces)
 	logf := journal(filepath.Join(dir, "journal.txt"))
