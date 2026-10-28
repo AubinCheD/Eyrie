@@ -57,6 +57,37 @@ impl Tailnet {
     }
 }
 
+/// Ce que le nœud du téléphone sait du PC (`EyrieTailnetPeer`), quand la liaison ne passe pas.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Peer {
+    /// Un appareil du tailnet a l'adresse du PC.
+    pub known: bool,
+    /// Il est en ligne sur Tailscale.
+    pub online: bool,
+    /// Sa dernière connexion à Tailscale (secondes Unix ; maintenant s'il est en ligne, 0 si on l'ignore).
+    pub seen: i64,
+}
+
+impl Peer {
+    /// La réponse de la bibliothèque : `{"connu":bool,"enligne":bool,"vu":<secondes>}`.
+    pub fn parse(json: &str) -> Option<Peer> {
+        #[derive(serde::Deserialize)]
+        struct Raw {
+            connu: bool,
+            enligne: bool,
+            #[serde(default)]
+            vu: i64,
+        }
+        let r: Raw = serde_json::from_str(json).ok()?;
+        Some(Peer { known: r.connu, online: r.enligne, seen: r.vu })
+    }
+
+    /// Le PC est-il en ligne sur le tailnet ?
+    pub fn reachable(&self) -> bool {
+        self.known && self.online
+    }
+}
+
 /// Le nom du téléphone dans le tailnet : `eyrie-` puis son nom, en lettres, chiffres et tirets.
 pub fn hostname(device: &str) -> String {
     let mut slug = String::new();
@@ -92,13 +123,14 @@ mod node {
 
     use suite_mobile::client::Stream;
 
-    use super::Tailnet;
+    use super::{Peer, Tailnet};
 
     #[link(name = "eyrie_tailnet")]
     unsafe extern "C" {
         fn EyrieTailnetStart(dir: *const c_char, host: *const c_char) -> *mut c_char;
         fn EyrieTailnetState() -> *mut c_char;
         fn EyrieTailnetDial(addr: *const c_char, fd: c_int, timeout_ms: c_int) -> *mut c_char;
+        fn EyrieTailnetPeer(addr: *const c_char) -> *mut c_char;
         fn EyrieTailnetLogout() -> *mut c_char;
         fn EyrieTailnetFree(p: *mut c_char);
     }
@@ -155,6 +187,12 @@ mod node {
         }
     }
 
+    pub fn peer(addr: &str) -> Option<Peer> {
+        let a = CString::new(addr).ok()?;
+        // SAFETY : chaîne valable pendant l'appel ; la chaîne rendue est libérée par `take`.
+        take(unsafe { EyrieTailnetPeer(a.as_ptr()) }).and_then(|j| Peer::parse(&j))
+    }
+
     pub fn logout() -> Result<(), String> {
         // SAFETY : sans argument ; la chaîne rendue est libérée par `take`.
         match take(unsafe { EyrieTailnetLogout() }) {
@@ -171,7 +209,7 @@ mod node {
 
     use suite_mobile::client::{self, Stream};
 
-    use super::Tailnet;
+    use super::{Peer, Tailnet};
 
     pub fn start(_: &Path, _: &str) -> Result<(), String> {
         Ok(())
@@ -183,6 +221,10 @@ mod node {
 
     pub fn dial(addr: &str, timeout: Duration) -> Result<Stream, String> {
         client::dial_tcp(addr, timeout)
+    }
+
+    pub fn peer(_: &str) -> Option<Peer> {
+        None
     }
 
     pub fn logout() -> Result<(), String> {
@@ -209,6 +251,13 @@ pub fn dial(addr: &str, timeout: Duration) -> Result<Stream, String> {
     node::dial(addr, timeout)
 }
 
+/// Ce que le nœud sait du PC d'adresse `addr` (celle que la liaison compose) ; `None` : le nœud n'est pas en ligne
+/// (ce qu'il sait du PC serait périmé), son état est illisible, ou il n'y a pas de nœud (bureau). Lent (3 s au plus) :
+/// jamais dans le fil de l'interface.
+pub fn peer(addr: &str) -> Option<Peer> {
+    node::peer(addr)
+}
+
 /// Déconnecte le téléphone du compte Tailscale ; un nouveau lien de connexion suit.
 pub fn logout() -> Result<(), String> {
     node::logout()
@@ -233,6 +282,16 @@ mod tests {
         // Pas encore de lien : rien à ouvrir, on attend.
         assert_eq!(Tailnet::NeedsLogin(String::new()).display().0, 1);
         assert!(!Tailnet::NeedsLogin("u".into()).ready() && Tailnet::Absent.ready());
+    }
+
+    #[test]
+    fn what_the_node_knows_of_the_pc_is_read_from_the_library() {
+        let p = Peer::parse(r#"{"connu":true,"enligne":false,"vu":1761600000}"#);
+        assert_eq!(p, Some(Peer { known: true, online: false, seen: 1_761_600_000 }));
+        assert!(!p.unwrap().reachable());
+        assert!(Peer::parse(r#"{"connu":true,"enligne":true,"vu":0}"#).unwrap().reachable());
+        assert!(!Peer::parse(r#"{"connu":false,"enligne":false}"#).unwrap().reachable(), "inconnu du tailnet");
+        assert_eq!(Peer::parse("illisible"), None);
     }
 
     #[test]
