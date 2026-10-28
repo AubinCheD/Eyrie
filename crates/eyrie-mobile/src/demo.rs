@@ -7,7 +7,8 @@
 //! `dossiers-attente`, `dossiers-silence`, `dossiers-texte` (un PC qui ne liste pas) ; le PC sans Eyrie (voir
 //! `veilleur.rs`) : `fermee` (« Démarrer Eyrie »), `fermee-par-pc` (elle vient de se fermer), `fermee-sans-cle`,
 //! `demarrage`, `acces-coupe`, `refus-demarrage`, `preuve-refusee`, `injoignable`, `telephone-hors-ligne` ; le terminal
-//! : `terminal-zoom`. Suffixe `+clair` ou `+sombre` : le thème (sinon celui du système).
+//! : `terminal-zoom`, `terminal-suivi` (le bas reste en vue quand la liste rapetisse), `terminal-remonte` (la sortie
+//! qui arrive ne ramène pas en bas). Suffixe `+clair` ou `+sombre` : le thème (sinon celui du système).
 
 use slint::ComponentHandle;
 use suite_mobile::msg::{
@@ -612,9 +613,38 @@ fn terminal() -> TermView {
 
 /// Le terminal ouvert, et un zoom (gardé seulement le temps de la démonstration).
 fn terminal_scene(ui: &AppWindow, scene: &str) {
-    if scene == "terminal-zoom" {
-        ui.set_term_zoom(1.8);
+    match scene {
+        "terminal-zoom" => ui.set_term_zoom(1.8),
+        // Une longue sortie, suivie en bas ; puis la liste rapetisse comme quand le clavier du téléphone s'ouvre (ici, la
+        // fenêtre perd 300 px de haut ; rien n'arrive du PC) : le bas reste en vue.
+        "terminal-suivi" => {
+            with(|c| c.on_message(ToPhone::Term(TermFrame::full("fawkes", "3", &compiling(120)))));
+            let weak = ui.as_weak();
+            slint::Timer::single_shot(std::time::Duration::from_millis(900), move || {
+                if let Some(ui) = weak.upgrade() {
+                    let size = ui.window().size().to_logical(ui.window().scale_factor());
+                    ui.window().set_size(slint::LogicalSize::new(size.width, size.height - 300.0));
+                }
+            });
+        }
+        // La même sortie, remontée par l'utilisateur (molette, glissé) : ce qui arrive ensuite ne la ramène pas en bas.
+        "terminal-remonte" => {
+            with(|c| c.on_message(ToPhone::Term(TermFrame::full("fawkes", "3", &compiling(120)))));
+            slint::Timer::single_shot(std::time::Duration::from_millis(1500), || {
+                let more = TermFrame::diff("fawkes", "3", &compiling(120), &compiling(130));
+                with(|c| c.on_message(ToPhone::Term(more)));
+            });
+        }
+        _ => {}
     }
+}
+
+/// Une compilation : `n` lignes, puis l'invite.
+fn compiling(n: usize) -> TermView {
+    let mut lines: Vec<Line> = (1..=n).map(|i| Line::plain(format!("   Compiling crate-{i:03} v0.1.{i}"))).collect();
+    lines.push(Line::plain("    Finished `dev` profile in 41.2s"));
+    lines.push(Line::plain("PS C:\\Users\\aubin\\DEV\\TestAubin\\Eyrie> "));
+    TermView { cols: 52, rows: 20, cursor: Some((n as u32 + 1, 42)), lines, ..Default::default() }
 }
 
 /// Un refus du veilleur, tel qu'il le dit (`compagnon/veille.go`).

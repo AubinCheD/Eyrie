@@ -62,8 +62,11 @@ export component TermView inherits Rectangle {
     in property <[string]> replies;
     in property <bool> can-type: true;
     in-out property <string> draft;
-    // Le bas de la liste est visible : la sortie qui arrive y reste collée.
-    out property <bool> at-bottom: list.content-y <= list.visible-height - list.content-height + 2 * root.ch;
+    // Le bas de la liste est visible.
+    out property <bool> at-bottom: list.content-y <= list.visible-height - root.content-h + 2 * root.ch;
+    // La liste suit le bas tant que l'utilisateur ne l'a pas remontée : la sortie qui arrive y reste collée, et le bas
+    // reste en vue quand la hauteur change (clavier du téléphone qui s'ouvre, réponses rapides, zoom).
+    out property <bool> follow: true;
     callback send-line(string);
     callback key(string);
     callback reply(int);
@@ -75,23 +78,41 @@ export component TermView inherits Rectangle {
     property <length> fs: max(5px, min(30px, root.fit-font * root.zoom));
     out property <length> cw: root.fs * 0.602;
     out property <length> ch: ceil(root.fs * 1.22 / 1px) * 1px;
+    property <length> content-h: root.rows.length * root.ch;
+    property <length> list-h: list.visible-height;
 
     public function scroll-to-end() {
-        list.content-y = min(0px, list.visible-height - list.content-height);
+        root.follow = true;
+        list.content-y = min(0px, list.visible-height - root.content-h);
     }
 
-    // Un autre zoom : la liste garde le bas si elle y était, sinon la ligne et la colonne du haut.
+    // Un autre zoom : la liste garde le bas qu'elle suivait, sinon la ligne et la colonne du haut.
     function set-zoom(z: float) {
-        let bottom = root.at-bottom;
         let top = -list.content-y / root.ch;
         let left = -list.content-x / root.cw;
         root.zoom = max(0.6, min(3.0, z));
-        if bottom {
+        if root.follow {
             root.scroll-to-end();
         } else {
-            list.content-y = max(min(0px, list.visible-height - root.rows.length * root.ch), -top * root.ch);
+            list.content-y = max(min(0px, list.visible-height - root.content-h), -top * root.ch);
         }
         list.content-x = max(min(0px, list.visible-width - list.content-width), -left * root.cw);
+    }
+
+    changed content-h => {
+        if root.follow {
+            root.scroll-to-end();
+        }
+    }
+    changed list-h => {
+        if root.follow {
+            root.scroll-to-end();
+        }
+    }
+    changed at-bottom => {
+        if root.at-bottom {
+            root.follow = true;
+        }
     }
 
     background: Theme.term-bg;
@@ -118,6 +139,11 @@ export component TermView inherits Rectangle {
                     width: parent.width;
                     height: parent.height;
                     content-width: root.cols * root.cw + 12px > self.visible-width + 1px ? root.cols * root.cw + 12px : self.visible-width;
+                    scrolled => {
+                        if !root.at-bottom {
+                            root.follow = false;
+                        }
+                    }
                     for row[i] in root.rows: Rectangle {
                         height: root.ch;
                         for seg in row.segs: Rectangle {

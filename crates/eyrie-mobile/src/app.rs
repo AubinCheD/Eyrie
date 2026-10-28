@@ -1497,7 +1497,7 @@ impl Controller {
         let Some(ui) = self.ui() else { return };
         let dark = ui.global::<Theme>().get_dark();
         let p = if dark { &termbuf::DARK } else { &termbuf::LIGHT };
-        let at_bottom = ui.get_term_at_bottom() || change.full;
+        let at_bottom = ui.get_term_follow() || change.full;
         let target = self.term.visible_len();
         let model = &self.term_model;
         if change.full || self.term_dark != Some(dark) {
