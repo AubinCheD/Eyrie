@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"io"
 	"io/fs"
 	"net"
 	"os"
@@ -87,10 +88,37 @@ type wakeConfig struct {
 	Minimized bool `json:"reduite"`
 }
 
+// openShared ouvre `path` en lecture sans gêner qui le remplace au même moment. Eyrie enregistre appareils.json et
+// veille.dpapi dans un fichier temporaire qu'elle renomme par-dessus : os.Open, qui ne partage pas la suppression,
+// ferait échouer ce renommage (un appareil retiré non enregistré, un accès coupé resté ouvert).
+func openShared(path string) (*os.File, error) {
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return nil, err
+	}
+	h, err := windows.CreateFile(p, windows.GENERIC_READ,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil, windows.OPEN_EXISTING,
+		windows.FILE_ATTRIBUTE_NORMAL, 0)
+	if err != nil {
+		return nil, &os.PathError{Op: "open", Path: path, Err: err}
+	}
+	return os.NewFile(uintptr(h), path), nil
+}
+
+// readShared lit tout `path` (voir openShared).
+func readShared(path string) ([]byte, error) {
+	f, err := openShared(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(f)
+}
+
 // readWakeConfig relit mobile\veille.dpapi ; rend aussi la clé du veilleur.
 func readWakeConfig(mobile string) (wakeConfig, []byte, error) {
 	var cfg wakeConfig
-	sealed, err := os.ReadFile(filepath.Join(mobile, "veille.dpapi"))
+	sealed, err := readShared(filepath.Join(mobile, "veille.dpapi"))
 	if err != nil {
 		return cfg, nil, fmt.Errorf("réglage du veilleur : %w", err)
 	}
@@ -123,7 +151,7 @@ type pairedDevice struct {
 }
 
 func readDevices(mobile string) ([]pairedDevice, error) {
-	raw, err := os.ReadFile(filepath.Join(mobile, "appareils.json"))
+	raw, err := readShared(filepath.Join(mobile, "appareils.json"))
 	if err != nil {
 		return nil, err
 	}

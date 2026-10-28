@@ -594,6 +594,47 @@ func TestTheJournalRollsOverLikeEyries(t *testing.T) {
 	}
 }
 
+// Les fichiers d'Eyrie sont lus sans gêner leur remplacement : tant que le veilleur les tient ouverts, un autre
+// processus peut encore les ouvrir pour les supprimer, ce que fait le renommage d'Eyrie (std::fs::rename) ; pas avec
+// os.Open.
+func TestEyriesFilesAreReadWithoutBlockingItsSaves(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "appareils.json")
+	if err := os.WriteFile(path, []byte("[]"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deletable := func() error {
+		p, _ := windows.UTF16PtrFromString(path)
+		h, err := windows.CreateFile(p, windows.DELETE, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|
+			windows.FILE_SHARE_DELETE, nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
+		if err == nil {
+			windows.CloseHandle(h)
+		}
+		return err
+	}
+	held, err := openShared(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := deletable(); err != nil {
+		t.Fatalf("tenu par le veilleur : %v", err)
+	}
+	held.Close()
+	plain, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer plain.Close()
+	if err := deletable(); !errors.Is(err, windows.ERROR_SHARING_VIOLATION) {
+		t.Fatalf("os.Open ne gêne plus le renommage : %v", err)
+	}
+	if raw, err := readShared(path); err != nil || string(raw) != "[]" {
+		t.Fatalf("relu : %q %v", raw, err)
+	}
+	if _, err := readShared(path + ".absent"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("absent : %v", err)
+	}
+}
+
 func TestADeviceNameIsCleanedForTheEnvironment(t *testing.T) {
 	if got := envText("Pixel\x00 8\n" + strings.Repeat("é", 80)); got != "Pixel 8"+strings.Repeat("é", 57) {
 		t.Fatalf("%q", got)
