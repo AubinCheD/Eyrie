@@ -184,7 +184,8 @@ Fawkes, Owlery, Menagerie, Patronus et DragonTree) : `close_terminal`, `remote_c
 ## 8. Plus tard
 
 - Chiffrer l'état du nœud Tailscale du téléphone par le Keystore d'Android, comme celui du PC par DPAPI.
-- Notifications Android quand l'application est en arrière-plan (service au premier plan).
+- ~~Service au premier plan (rester connecté en arrière-plan)~~ : pas nécessaire selon l'utilisateur (28/10), tant
+  que le téléphone rattrape tout à la reconnexion (§7).
 - iOS.
 - Les actions marquées « changement du module nécessaire » ci-dessus, module par module et avec accord.
 
