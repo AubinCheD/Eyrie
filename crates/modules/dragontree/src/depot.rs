@@ -35,6 +35,7 @@ use dragontree_git::{
 use suite_sdk::mobile::ui::{Act, Band, DIFF_ADDED, DIFF_CONTEXT, DIFF_HEADER, DIFF_REMOVED, Row, Screen, Tab, Tone};
 
 use crate::branches::{Pending, branch_key, publish_remote};
+use crate::clonage;
 use crate::historique::LogView;
 
 /// Une liste par pages (étiquettes, historique, branches) : sa première page, et ce que « plus » ajoute.
@@ -923,6 +924,9 @@ fn oid(hex: &str) -> Result<Oid, String> {
 pub fn parse(v: &RepoView, action: &str, input: Option<&str>) -> Result<(RemoteOp, String), String> {
     let text = || input.map(str::trim).filter(|t| !t.is_empty()).map(str::to_string);
     let needed = || text().ok_or_else(|| "Saisie vide.".to_string());
+    // Un nom saisi part tel quel en argument de git : un nom de référence qu'il accepte, jamais une option.
+    let branch = || needed().and_then(|n| clonage::branch_ok(&n).map(|()| n));
+    let tag = || needed().and_then(|n| clonage::tag_ok(&n).map(|()| n));
     let (verb, arg) = action.split_once(':').unwrap_or((action, ""));
     let arg = arg.to_string();
     let st = v.status();
@@ -1003,7 +1007,7 @@ pub fn parse(v: &RepoView, action: &str, input: Option<&str>) -> Result<(RemoteO
         "basculer" => (RemoteOp::Checkout(arg.clone()), format!("Basculer sur {arg}")),
         "detacher" => (RemoteOp::Checkout(oid(&arg)?.to_hex()), "Sortir le commit".into()),
         "suivre" => {
-            let local = needed()?;
+            let local = branch()?;
             let op = RemoteOp::Track { remote_branch: arg.clone(), local: local.clone() };
             (op, format!("Suivre {arg} dans {local}"))
         }
@@ -1018,15 +1022,15 @@ pub fn parse(v: &RepoView, action: &str, input: Option<&str>) -> Result<(RemoteO
             (op, format!("Supprimer {arg} sur le serveur"))
         }
         "nouvelle-branche" => {
-            let name = needed()?;
+            let name = branch()?;
             (RemoteOp::CreateBranch { name: name.clone(), start: "HEAD".into() }, format!("Nouvelle branche {name}"))
         }
         "branche-ici" => {
-            let name = needed()?;
+            let name = branch()?;
             (RemoteOp::CreateBranch { name: name.clone(), start: arg }, format!("Nouvelle branche {name}"))
         }
         "renommer" => {
-            let new = needed()?;
+            let new = branch()?;
             (RemoteOp::RenameBranch { old: arg.clone(), new: new.clone() }, format!("Renommer {arg} en {new}"))
         }
         "supprimer-branche" => (RemoteOp::DeleteBranch { name: arg.clone(), force: false }, format!("Supprimer {arg}")),
@@ -1057,11 +1061,11 @@ pub fn parse(v: &RepoView, action: &str, input: Option<&str>) -> Result<(RemoteO
         "abandonner" => (RemoteOp::Abort, "Abandonner".into()),
         "passer" => (RemoteOp::Skip, "Passer le commit".into()),
         "nouvelle-etiquette" => {
-            let name = needed()?;
+            let name = tag()?;
             (RemoteOp::CreateTag { name: name.clone(), rev: "HEAD".into() }, format!("Étiquette {name}"))
         }
         "etiquette-ici" => {
-            let name = needed()?;
+            let name = tag()?;
             (RemoteOp::CreateTag { name: name.clone(), rev: arg }, format!("Étiquette {name}"))
         }
         "supprimer-etiquette" => (RemoteOp::DeleteTag(arg.clone()), format!("Supprimer l'étiquette {arg}")),
@@ -1222,6 +1226,38 @@ mod tests {
             s.entries.retain(|e| e.index == FileState::Unmodified);
         }
         assert!(parse(&clean, "valider", Some("x")).is_err(), "rien d'indexé");
+    }
+
+    /// Un nom de branche ou d'étiquette saisi sur le téléphone part en argument de git : un nom que git accepte, jamais
+    /// une option (`-f`, `--force`, `--file=…`), pour créer, renommer, suivre ou étiqueter.
+    #[test]
+    fn a_typed_branch_or_tag_name_never_reaches_git_as_an_option() {
+        let v = view();
+        let c = "c".repeat(40);
+        let typed = [
+            "nouvelle-branche".to_string(),
+            format!("branche-ici:{c}"),
+            "renommer:main".into(),
+            "suivre:origin/autre".into(),
+            "nouvelle-etiquette".into(),
+            format!("etiquette-ici:{c}"),
+        ];
+        for action in &typed {
+            for bad in
+                ["-f", "--force", "--file=C:/secret.txt", "-mautre", "a b", "a..b", "x.lock", "a//b", ".cache", "@"]
+            {
+                assert!(parse(&v, action, Some(bad)).is_err(), "{action} {bad}");
+            }
+            assert!(parse(&v, action, Some("feature/x")).is_ok(), "{action}");
+        }
+        assert_eq!(
+            parse(&v, "renommer:main", Some("principale")).unwrap().0,
+            RemoteOp::RenameBranch { old: "main".into(), new: "principale".into() }
+        );
+        assert_eq!(
+            parse(&v, "nouvelle-etiquette", Some("v1.2.0")).unwrap().0,
+            RemoteOp::CreateTag { name: "v1.2.0".into(), rev: "HEAD".into() }
+        );
     }
 
     #[test]

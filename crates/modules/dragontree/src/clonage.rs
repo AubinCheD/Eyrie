@@ -104,17 +104,30 @@ pub fn folder_name_ok(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Une branche à extraire : un nom que git accepte (ni espace, ni `~^:?*[\`, ni `..`), qui ne peut pas passer pour une
-/// option.
+/// Un nom de branche ou d'étiquette que git accepte (`git check-ref-format`) et qui ne peut pas passer pour une option :
+/// ni `-` au début, ni espace ou caractère de contrôle, ni `~^:?*[\`, ni `..` ou `@{`, ni `@` seul, ni `/` au début, à
+/// la fin ou doublé, ni élément qui commence par un point ou finit par `.lock`, ni point final.
+fn ref_name_ok(name: &str) -> bool {
+    let bad_char = |c: char| c.is_whitespace() || c.is_control() || "~^:?*[\\".contains(c);
+    let bad_part = |p: &str| p.is_empty() || p.starts_with('.') || p.ends_with(".lock");
+    name.len() <= 255
+        && !name.starts_with('-')
+        && !name.ends_with('.')
+        && name != "@"
+        && !name.contains("..")
+        && !name.contains("@{")
+        && !name.chars().any(bad_char)
+        && !name.split('/').any(bad_part)
+}
+
+/// Une branche à extraire, à créer, à renommer ou à suivre, saisie sur le téléphone ([`ref_name_ok`]).
 pub fn branch_ok(name: &str) -> Result<(), String> {
-    let bad = name.starts_with(['-', '/'])
-        || name.ends_with(['/', '.'])
-        || name.ends_with(".lock")
-        || name.contains("..")
-        || name.contains("@{")
-        || name.len() > 255
-        || name.chars().any(|c| c.is_whitespace() || c.is_control() || "~^:?*[\\".contains(c));
-    if bad { Err(format!("Nom de branche refusé : « {name} ».")) } else { Ok(()) }
+    if ref_name_ok(name) { Ok(()) } else { Err(format!("Nom de branche refusé : « {name} ».")) }
+}
+
+/// Une étiquette à créer, saisie sur le téléphone ([`ref_name_ok`]).
+pub fn tag_ok(name: &str) -> Result<(), String> {
+    if ref_name_ok(name) { Ok(()) } else { Err(format!("Nom d'étiquette refusé : « {name} ».")) }
 }
 
 /// Un brouillon de clonage, rempli depuis le téléphone.
@@ -512,9 +525,13 @@ mod tests {
         for good in ["main", "feature/x", "v1.2"] {
             assert!(branch_ok(good).is_ok(), "{good}");
         }
-        for bad in ["-x", "a b", "a..b", "a~1", "a:b", "x.lock", "x/", "/x", "a@{1}"] {
+        for bad in
+            ["-x", "a b", "a..b", "a~1", "a:b", "x.lock", "x/", "/x", "a@{1}", "a//b", ".x", "x/.y", "x.lock/y", "@"]
+        {
             assert!(branch_ok(bad).is_err(), "{bad}");
+            assert!(tag_ok(bad).unwrap_err().contains("étiquette"), "{bad}");
         }
+        assert!(branch_ok("").is_err() && tag_ok("v1.2.0").is_ok() && tag_ok("@v1").is_ok());
     }
 
     /// L'URL donne le nom du dossier tant qu'il n'a pas été saisi, et le compte que DragonTree présélectionne tant qu'un

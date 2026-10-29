@@ -2627,9 +2627,16 @@ mod tests {
                 std::fs::write(out.join(format!("{name}.json")), serde_json::to_vec(&s).unwrap()).unwrap();
             }
         }
-        phone.action(h.state_mut(), &format!("{base}/branches"), "nouvelle-branche", Some("pas valide..nom")).unwrap();
+        // Un nom que git refuserait (ou prendrait pour une option) l'est avant d'aller à DragonTree ; un nom valide que
+        // git refuse (la branche existe déjà), par DragonTree, qui le dit.
+        let e = phone.action(h.state_mut(), &format!("{base}/branches"), "nouvelle-branche", Some("pas valide..nom"));
+        assert!(e.unwrap_err().contains("Nom de branche refusé"));
+        phone.action(h.state_mut(), &format!("{base}/branches"), "nouvelle-branche", Some("main")).unwrap();
         let s = wait_screen(&mut h, &mut phone, &format!("{base}/branches"), "a échoué");
-        assert!(s.blocks.iter().any(|b| matches!(b, Block::Note { tone: Tone::Danger, .. })), "nom refusé : {s:?}");
+        assert!(
+            s.blocks.iter().any(|b| matches!(b, Block::Note { tone: Tone::Danger, .. })),
+            "branche existante : {s:?}"
+        );
 
         // « Afficher dans DragonTree » : l'onglet du dépôt devient celui du PC.
         let (_, show) = phone.action(h.state_mut(), &base, "pc", None).unwrap();
