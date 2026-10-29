@@ -10,7 +10,8 @@
 //! module, même chemin, même identifiant) ; celle qui ouvre un terminal (`Act::terminal`) demande aussi le droit
 //! « Terminaux », comme une commande de la palette qui le fait (`CommandInfo::terminal`, envoyée seule ou touchée sur
 //! un écran générique). Les actions qui commencent par `@` sont celles de l'hôte (« Montrer sur le PC », « Relancer »
-//! un module arrêté), comme celles des écrans génériques (`cmd:<id>` : une commande de la palette du module).
+//! un module arrêté), comme celles des écrans génériques (`cmd:<id>` : une commande de la palette du module). Un refus
+//! est noté au journal, au plus dix fois par minute et par téléphone ([`Refusals`]).
 //!
 //! Une action qui demande un dossier du PC (`input.folder`) garde sa saisie avec la liste blanche : le téléphone ne
 //! parcourt les dossiers ([`ToPc::Browse`], lu dans un fil par [`browse`]) que pour elle, avec le droit « Dossiers du
@@ -42,8 +43,13 @@ const TERM_EVERY: Duration = Duration::from_millis(50);
 pub const TERM_HISTORY: usize = 500;
 /// Une saisie de terminal est notée au journal au plus une fois par minute et par terminal.
 const TERM_JOURNAL_EVERY: Duration = Duration::from_secs(60);
+/// Les refus d'un téléphone sont notés au journal au plus tant de fois par minute ([`Refusals`]).
+const REFUSALS_NOTED: u32 = 10;
+const REFUSALS_EVERY: Duration = Duration::from_secs(60);
 /// L'action de l'écran générique qui relance un module arrêté ou indisponible.
 const RESTART: &str = "@relancer";
+/// Ce que dit le PC à un téléphone qui n'a pas le droit « Agir ».
+const NO_ACT: &str = "Ce téléphone n'a plus le droit d'agir (réglage du PC).";
 
 /// L'écran que suit un téléphone.
 struct Followed {
@@ -71,6 +77,36 @@ struct FollowedTerm {
     journaled: Option<Instant>,
 }
 
+/// Les refus d'un téléphone (action non proposée, droit retiré, commande inconnue) notés au journal : au plus
+/// [`REFUSALS_NOTED`] par minute, pour qu'un téléphone qui sonde laisse une trace sans remplir le journal (qui ne garde
+/// qu'un ancien fichier).
+#[derive(Default)]
+struct Refusals {
+    since: Option<Instant>,
+    noted: u32,
+    /// Refus tus depuis la dernière ligne.
+    silent: u32,
+}
+
+impl Refusals {
+    /// Le texte à noter pour ce refus, ou `None` s'il est tu ; la première ligne après des refus tus en dit le nombre.
+    fn note(&mut self, text: String) -> Option<String> {
+        if self.since.is_none_or(|at| at.elapsed() >= REFUSALS_EVERY) {
+            self.since = Some(Instant::now());
+            self.noted = 0;
+        }
+        if self.noted >= REFUSALS_NOTED {
+            self.silent += 1;
+            return None;
+        }
+        self.noted += 1;
+        Some(match std::mem::take(&mut self.silent) {
+            0 => text,
+            n => format!("{text} (et {n} refus non notés avant)"),
+        })
+    }
+}
+
 /// Un téléphone connecté.
 pub struct Session {
     pub id: u64,
@@ -88,6 +124,7 @@ pub struct Session {
     term: Option<FollowedTerm>,
     /// Les lectures de dossiers de ce téléphone.
     browse: browse::Browser,
+    refusals: Refusals,
 }
 
 impl Session {
@@ -251,6 +288,7 @@ fn receive(
                 screen: None,
                 term: None,
                 browse: browse::Browser::default(),
+                refusals: Refusals::default(),
             });
             // Tout part tout de suite.
             core.mobile.sync.at = None;
@@ -280,6 +318,24 @@ fn reply(core: &mut Core, id: u64, req: u32, r: Result<Option<String>, String>) 
     };
     if let Some(s) = session_mut(core, id) {
         s.send(ToPhone::Result { req, ok, message });
+    }
+}
+
+/// Refuse la demande `req` d'un téléphone (`e` : ce qu'il en dit) et le note au journal (`note`), au plus
+/// [`REFUSALS_NOTED`] fois par minute pour ce téléphone.
+fn refuse(core: &mut Core, id: u64, req: u32, note: String, e: &str) {
+    let noted = session_mut(core, id).and_then(|s| Some((s.name.clone(), s.refusals.note(note)?)));
+    if let Some((name, text)) = noted {
+        core.mobile.store.journal(&name, "refus", text);
+    }
+    reply(core, id, req, Err(e.to_string()));
+}
+
+/// Un identifiant venu du téléphone, tel qu'il est noté au journal : coupé au-delà de 80 caractères.
+fn shown(raw: &str) -> String {
+    match raw.char_indices().nth(80) {
+        Some((at, _)) => format!("{}…", &raw[..at]),
+        None => raw.to_string(),
     }
 }
 
@@ -370,27 +426,30 @@ fn message(
                     terminal.map(|(module, id)| FollowedTerm { module, id, view: None, due: now, journaled: None });
             }
         }
+        // Chaque refus est noté au journal ([`refuse`]) : un téléphone qui sonde des actions laisse une trace.
         ToPc::Action { req, module, path, action, input } => {
-            if !rights.act {
-                reply(core, id, req, Err("Ce téléphone n'a plus le droit d'agir (réglage du PC).".into()));
-                return;
-            }
             let offered = s.screen.as_ref().and_then(|f| {
                 let folder = f.folders.get(&action).cloned();
                 let terminal = f.terminals.contains(&action);
                 (f.module == module && f.path == path)
                     .then(|| (f.allowed.get(&action).cloned(), f.generic, folder, terminal))
             });
+            // L'action telle que l'écran la nommait ; sinon son identifiant, tel que le téléphone l'a envoyé.
+            let asked = offered.as_ref().and_then(|o| o.0.clone()).unwrap_or_else(|| shown(&action));
+            let mut text = format!("{} › {asked}", shown(&module_name(core, &module)));
+            if !rights.act {
+                refuse(core, id, req, format!("{text} : {NO_ACT}"), NO_ACT);
+                return;
+            }
             let Some((Some(label), generic, folder, terminal)) = offered else {
-                reply(core, id, req, Err("Cet écran a changé entre-temps : réessayez.".into()));
+                let note = format!("{text} : action que l'écran suivi ne proposait pas");
+                refuse(core, id, req, note, "Cet écran a changé entre-temps : réessayez.");
                 return;
             };
-            let mut text = format!("{} › {label}", module_name(core, &module));
             // Ouvrir un terminal (un shell, une session Claude) fait partie du droit « Terminaux », comme y écrire.
             if terminal && !rights.terminals {
                 let e = "Ce téléphone n'a pas le droit d'ouvrir de terminal (réglage du PC).";
-                core.mobile.store.journal(&name, "refus", format!("{text} : {e}"));
-                reply(core, id, req, Err(e.into()));
+                refuse(core, id, req, format!("{text} : {e}"), e);
                 return;
             }
             // Un dossier du PC (choisi dans le sélecteur, ou saisi sur une application plus ancienne) : revérifié ici,
@@ -409,8 +468,7 @@ fn message(
                             Some(dir)
                         }
                         Err(e) => {
-                            core.mobile.store.journal(&name, "refus", format!("{text} : {e}"));
-                            reply(core, id, req, Err(e));
+                            refuse(core, id, req, format!("{text} : {e}"), &e);
                             return;
                         }
                     }
@@ -491,8 +549,9 @@ fn message(
             }
         }
         ToPc::Command { req, module, id: command } => {
+            let asked = format!("{} › commande {}", shown(&module_name(core, &module)), shown(&command));
             if !rights.act {
-                reply(core, id, req, Err("Ce téléphone n'a plus le droit d'agir (réglage du PC).".into()));
+                refuse(core, id, req, format!("{asked} : {NO_ACT}"), NO_ACT);
                 return;
             }
             let found = core
@@ -501,15 +560,14 @@ fn message(
                 .and_then(|m| m.commands().into_iter().find(|c| c.id == command))
                 .map(|c| (c.title, c.terminal));
             let Some((title, terminal)) = found else {
-                reply(core, id, req, Err("Commande inconnue sur le PC.".into()));
+                refuse(core, id, req, format!("{asked} : inconnue sur le PC"), "Commande inconnue sur le PC.");
                 return;
             };
             let text = format!("{} › {title} (sur le PC)", module_name(core, &module));
             // « Nouveau terminal » en ouvre un : comme une action d'écran qui le fait, avec le droit « Terminaux ».
             if terminal && !rights.terminals {
                 let e = "Ce téléphone n'a pas le droit d'ouvrir de terminal (réglage du PC).";
-                core.mobile.store.journal(&name, "refus", format!("{text} : {e}"));
-                reply(core, id, req, Err(e.into()));
+                refuse(core, id, req, format!("{text} : {e}"), e);
                 return;
             }
             core.mobile.store.journal(&name, "action", &text);
@@ -755,7 +813,7 @@ fn terminals_of(screen: &Screen) -> BTreeSet<String> {
 /// peut.
 fn cannot_browse(rights: Rights) -> Option<&'static str> {
     if !rights.act {
-        Some("Ce téléphone n'a plus le droit d'agir (réglage du PC).")
+        Some(NO_ACT)
     } else if !rights.files {
         Some("Ce téléphone n'a pas le droit de parcourir les dossiers du PC (réglage du PC).")
     } else {
@@ -884,5 +942,29 @@ fn push_terms(core: &mut Core, frame: &mut eframe::Frame, ctx: &egui::Context) {
             s.sender.send(ToPhone::Term(f)).ok();
             t.view = Some(view);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Dix refus notés par minute, les suivants tus ; la première ligne de la minute suivante dit combien l'ont été.
+    #[test]
+    fn refusals_are_noted_ten_a_minute() {
+        let mut r = Refusals::default();
+        let noted: Vec<Option<String>> = (0..12).map(|i| r.note(format!("refus {i}"))).collect();
+        assert!(noted[..10].iter().all(Option::is_some) && noted[10..].iter().all(Option::is_none), "{noted:?}");
+        r.since = Instant::now().checked_sub(REFUSALS_EVERY);
+        assert_eq!(r.note("refus 12".into()).as_deref(), Some("refus 12 (et 2 refus non notés avant)"));
+        assert_eq!(r.note("refus 13".into()).as_deref(), Some("refus 13"));
+    }
+
+    /// Un identifiant envoyé par le téléphone est coupé au journal, sans casser un caractère.
+    #[test]
+    fn a_long_identifier_is_cut_in_the_journal() {
+        assert_eq!(shown("sonde-1"), "sonde-1");
+        let cut = shown(&"é".repeat(100));
+        assert_eq!((cut.chars().count(), cut.ends_with('…')), (81, true));
     }
 }

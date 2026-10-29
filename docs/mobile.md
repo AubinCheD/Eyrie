@@ -99,7 +99,8 @@ Les sept prérequis de l'audit, et comment ils sont tenus :
    compte Tailscale et un code à six chiffres que le téléphone affiche aussi (tiré du hachage de la poignée de main).
 6. **Journal persistant** : `mobile\journal.jsonl` (connexions, refus, appairages, actions, notifications du PC
    marquées lues depuis le téléphone ; jamais le texte saisi dans un terminal, seulement sa longueur), lisible dans la
-   page Téléphones.
+   page Téléphones. Les refus (action non proposée, droit retiré, commande inconnue, dossier protégé) y sont au plus
+   dix par minute et par téléphone : un téléphone qui sonde laisse une trace sans remplir le journal.
 7. **Interrupteur** : « Accès depuis le téléphone » (page Téléphones, barre d'état, palette) coupe l'écoute, ferme
    toutes les connexions et retire le relais au compagnon ; « Couper tout accès à distance » arrête aussi le nœud.
 

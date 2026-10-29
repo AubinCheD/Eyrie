@@ -392,6 +392,61 @@ fn act(c: &mut client::Connection, req: u32, action: &str, input: &str) -> (bool
     })
 }
 
+/// Une commande de la palette du module factice, envoyée seule.
+fn command(c: &mut client::Connection, req: u32, id: &str) -> (bool, String) {
+    c.tx.send(&ToPc::Command { req, module: "factice".into(), id: id.into() }).unwrap();
+    until(c, |m| match m {
+        ToPhone::Result { req: r, ok, message } if r == req => Some((ok, message)),
+        _ => None,
+    })
+}
+
+/// Les lignes « refus » du journal, les plus récentes d'abord.
+fn refusals(h: &Harness<'static, Suite>) -> Vec<String> {
+    let journal = h.state().core.mobile.store.read_journal(200);
+    journal.into_iter().filter(|l| l.kind == "refus").map(|l| l.text).collect()
+}
+
+/// Une action que l'écran ne proposait pas (un téléphone qui sonde), une commande inconnue, une action ou une commande
+/// d'un téléphone sans « Agir » : refusées, et notées au journal, au plus dix par minute et par téléphone pour ne pas
+/// le remplir.
+#[test]
+fn refused_actions_and_commands_are_journaled() {
+    let mut h = suite();
+    with_phone(
+        &mut h,
+        |_| {},
+        |c| {
+            follow_home(c);
+            assert!(!command(c, 1, "inconnue").0);
+            for i in 0..15 {
+                assert!(!act(c, 10 + i, &format!("sonde-{i}"), "").0);
+            }
+        },
+    );
+    let probed = refusals(&h);
+    assert_eq!(probed.len(), 10, "{probed:?}");
+    assert!(probed.iter().any(|t| t.starts_with("Factice › commande inconnue : ")), "{probed:?}");
+    assert!(probed.iter().any(|t| t.starts_with("Factice › sonde-0 : ")), "{probed:?}");
+    assert!(!probed.iter().any(|t| t.contains("sonde-9")), "au-delà de dix, tues : {probed:?}");
+    with_phone(
+        &mut h,
+        |s| {
+            let id = s.core.mobile.store.devices[1].id.clone();
+            s.core.mobile.set_rights(&id, suite_mobile::msg::Rights { act: false, ..Default::default() });
+        },
+        |c| {
+            follow_home(c);
+            assert!(!act(c, 1, "faire", "").0 && !command(c, 2, "bonjour").0);
+        },
+    );
+    let read_only = refusals(&h);
+    assert_eq!(read_only.len(), 12, "un autre téléphone, son propre compte : {read_only:?}");
+    let no_right = "Ce téléphone n'a plus le droit d'agir (réglage du PC).";
+    assert!(read_only.contains(&format!("Factice › Faire : {no_right}")), "{read_only:?}");
+    assert!(read_only.contains(&format!("Factice › commande bonjour : {no_right}")), "{read_only:?}");
+}
+
 #[test]
 fn a_phone_browses_the_pc_only_for_a_folder_action_and_its_choice_is_checked() {
     let tree = tempfile::tempdir().unwrap();
