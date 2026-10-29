@@ -1540,6 +1540,9 @@ impl Controller {
             let (m, id) = term_follow.clone().unwrap();
             self.term.reset(&m, &id);
             self.term_model.set_vec(Vec::new());
+            // Il s'ouvre sur son bas, qu'il suit, dès sa première image : pas là où l'on relisait l'autre (le PC
+            // répond parfois avant que la liste vidée soit mise en page).
+            ui.invoke_term_scroll_to_end();
             ui.set_term_draft(SharedString::new());
             self.leave_term();
         } else if !terminal_mode && ui.get_terminal_mode() {
@@ -1690,10 +1693,6 @@ impl Controller {
         ui.set_term_waiting(self.term.waiting);
         let replies: Vec<SharedString> = self.term.replies.iter().map(|r| r.label.as_str().into()).collect();
         ui.set_term_replies(ModelRc::new(VecModel::from(replies)));
-        if change.full {
-            // Un autre terminal : il s'ouvre sur son bas, qu'il suit.
-            ui.invoke_term_scroll_to_end();
-        }
         if ui.get_term_follow() {
             // La liste suit le bas : elle y reste, une fois les nouvelles lignes mises en page (la hauteur de la liste
             // n'est connue qu'au dessin suivant). Remontée entre-temps par l'utilisateur, elle ne bouge plus.
@@ -3054,8 +3053,12 @@ fn wire(ui: &AppWindow) {
     ui.on_term_zoomed(|zoom| {
         with(|c| c.term_zoomed(zoom));
     });
-    ui.on_term_follows(|follow, user, up, gap, row, fits| {
-        termscroll::follows(follow, termscroll::Move { user, up, gap, row, fits })
+    // Le geste du doigt en cours sur la liste du terminal, d'un mouvement à l'autre.
+    let follower = RefCell::new(termscroll::Follower::default());
+    let start = Instant::now();
+    ui.on_term_follows(move |follow, user, up, side, gap, row, fits| {
+        let m = termscroll::Move { user, up, side, gap, row, fits };
+        follower.borrow_mut().follows(follow, m, start.elapsed())
     });
     ui.on_term_reply(|i| {
         with(|c| c.term_reply(i.max(0) as usize));
@@ -3251,6 +3254,28 @@ mod tests {
         })
         .unwrap();
         assert_eq!(asked, (0, 1), "« Nouveau terminal » ne part pas, « Nouveau groupe » si");
+    }
+
+    /// Relu dans un terminal (le suivi arrêté), puis un autre ouvert : il s'ouvre sur son bas, qu'il suit, avant même
+    /// sa première image. Le PC répond parfois avant que la liste vidée soit mise en page : le nouveau terminal ne doit
+    /// pas en dépendre, ni s'ouvrir là où l'on relisait l'autre.
+    #[test]
+    fn another_terminal_opens_following_its_bottom() {
+        use slint::platform::WindowEvent;
+        use suite_mobile::term::{Line, TermFrame, TermView};
+        let ui = dictating_terminal("terminal-autre");
+        ui.set_page(4);
+        ui.window().set_size(slint::LogicalSize::new(390.0, 844.0));
+        let lines = (1..=200).map(|i| Line::plain(format!("ligne {i}"))).collect();
+        let long = TermView { cols: 52, rows: 20, lines, ..Default::default() };
+        with(|c| c.on_message(ToPhone::Term(TermFrame::full("fawkes", "3", &long))));
+        assert!(ui.get_term_follow());
+        let position = slint::LogicalPosition::new(200.0, 300.0);
+        ui.window().dispatch_event(WindowEvent::PointerMoved { position });
+        ui.window().dispatch_event(WindowEvent::PointerScrolled { position, delta_x: 0.0, delta_y: 120.0 });
+        assert!(!ui.get_term_follow(), "remonté à la molette : il ne suit plus");
+        with(|c| c.open_module_path("fawkes", "t/4"));
+        assert!(ui.get_term_follow(), "l'autre terminal suit son bas");
     }
 
     /// Les bulles passent l'une après l'autre, sans doublon ; quand trop attendent, les plus anciennes cèdent leur
