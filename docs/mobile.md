@@ -343,22 +343,27 @@ La passe d'ergonomie, avec l'accord du 28/10, en ajoute d'autres, un commit par 
 - **Dictée** (« parler directement dans une session Claude », 29/10) : un micro à côté d'Envoyer dans la saisie d'un
   terminal (une session Claude de Fawkes, ou tout terminal où le téléphone écrit), et sous le champ d'une saisie sur
   plusieurs lignes (la consigne de Patronus…) ; jamais dans une saisie d'une ligne (nom, chemin), à la place du
-  sélecteur de dossiers, ni dans une saisie masquée. Un toucher écoute (vibration, micro rouge, un halo suit le son) :
+  sélecteur de dossiers, ni dans une saisie masquée. Un toucher demande le micro : « Un instant… », micro pâli, le temps
+  qu'Android l'ouvre (ce qui serait dit avant serait perdu) ; ouvert, il vibre et rougit, un halo suit le son :
   « J'écoute… » et le texte provisoire, en italique, au-dessus du champ ; un second toucher finit, Android finit aussi
   sur un silence. Le texte final s'ajoute au bout de la saisie, à relire avant Envoyer (ou le bouton de l'action).
   L'écoute s'abandonne, texte provisoire compris, quand le terminal, la saisie ou l'écran changent, que la saisie se
-  masque, que la liaison tombe ou que l'application passe en arrière-plan. La reconnaissance se fait **sur le
-  téléphone** (`SpeechRecognizer`) : le son ne va jamais au PC, seul le texte y part, par la saisie du terminal (le
-  droit *terminaux* vérifié par le PC, comme pour le clavier), rien de nouveau côté PC. Celle du téléphone lui-même
-  d'abord (Android 12 et suivants, quand il l'a : le son n'en sort pas), sinon son service par défaut (Google, le plus
-  souvent), qui peut envoyer le son sur Internet comme le micro du clavier ; Réglages › Dictée dit laquelle, et la
-  langue est celle du téléphone. Sans service, pas de micro. « Envoyer la dictée aussitôt » (non par défaut) envoie
-  le texte dicté au terminal avec Entrée, sans relecture ; jamais une saisie. Le micro (`RECORD_AUDIO`) se demande au
-  premier toucher : NativeActivity ne transmet pas la réponse, le téléphone la relit (refusé : « Autorisez le micro
-  pour Eyrie dans les réglages d'Android. »). Les erreurs d'Android sont dites en bulles courtes (« Rien entendu. »,
-  besoin d'Internet, langue absente…). Une classe Java (`Dictee.java`, compilée par `tools\android.ps1` en
-  `classes.dex`) porte les appels à `SpeechRecognizer`, dans le fil principal d'Android, et rend ce qu'il entend à
-  Rust (`android.rs`) ; la logique est dans `dictee.rs`.
+  masque, que la session se termine ou que le PC retire *terminaux* (le micro disparaît), que la liaison tombe ou que
+  l'application passe en arrière-plan (sauf pendant la question du micro, qui l'y met : accordé, il s'ouvre au retour de
+  l'application). La reconnaissance se fait **sur le téléphone** (`SpeechRecognizer`) : le son ne va jamais au PC, seul
+  le texte y part, par la saisie du terminal (le droit *terminaux* vérifié par le PC, comme pour le clavier), rien de
+  nouveau côté PC. Celle du téléphone lui-même d'abord (Android 12 et suivants, quand il l'a : le son n'en sort pas),
+  sinon son service par défaut (Google, le plus souvent), qui peut envoyer le son sur Internet comme le micro du
+  clavier ; Réglages › Dictée dit laquelle, et la langue est celle du téléphone. Sans service, pas de micro. « Envoyer
+  la dictée aussitôt » (non par défaut) envoie le texte dicté au terminal avec Entrée, sans relecture ; jamais une
+  saisie, ni quand Claude attend un choix (Entrée y choisirait la réponse en surbrillance, « 1. Yes » : le texte reste
+  dans la saisie, une bulle le dit). Le micro (`RECORD_AUDIO`) se demande au premier toucher : NativeActivity ne
+  transmet pas la réponse, le téléphone la relit (refusé : « Autorisez le micro pour Eyrie dans les réglages
+  d'Android. »). Les erreurs d'Android sont dites en bulles courtes (« Rien entendu. », besoin d'Internet, langue
+  absente…). Une classe Java (`Dictee.java`, compilée par `tools\android.ps1` en `classes.dex`) porte les appels à
+  `SpeechRecognizer`, dans le fil principal d'Android (aucune de ses exceptions n'en sort : elle arrêterait
+  l'application), et rend ce qu'il entend à Rust (`android.rs`) ; la logique est dans `dictee.rs`, jusqu'à l'ordre des
+  appels (une annulation est toujours postée après l'ouverture qu'elle annule).
 - **Hors ligne** : bandeau « Reconnexion… », dernières données gardées, reconnexion automatique (délai croissant
   jusqu'à 30 s, immédiate au retour au premier plan et quand le téléphone se reconnecte à Tailscale). Une coupure
   sans fermeture (changement de réseau, PC en veille) se voit au plus tard après 45 s sans rien du PC, qui répond
@@ -415,7 +420,7 @@ fusionnées dans leur `main`). La passe d'ergonomie (28-29/10) est sur la branch
 | Protocole `suite-mobile` | ticket et code, preuves, code de vérification, canal Noise (trame altérée, requête HTTP refusées), messages, différences de terminal, réponses rapides ; défi du veilleur (vecteurs partagés avec le Go) ; dossiers protégés |
 | Pont (`eyrie`) | appairage confirmé ou refusé, abandonné par le téléphone pendant que le PC attend (demande retirée, accord trop tard sans effet, nouveau code jusqu'à la même heure, ou dit expiré près de sa fin), code faux ou expiré, cinq essais puis ticket brûlé, appareil inconnu, autre compte Tailscale, jeton du compagnon faux, clé du PC du QR ; bout en bout avec un module factice (écran, action proposée ou non, terminal et saisie, journal, bulle) ; interrupteur ; chaque droit sur ses chemins (*terminaux*, *dossiers du PC*, secret de démarrage selon *agir*), refus au journal ; dossiers (formes, lecteurs, liens, noms courts, zones, racine et récents) ; notifications qui mènent à leur écran ; veilleur sur un faux système (valeur Run, DPAPI, élévation, Gestionnaire des tâches, rattachement, compagnon lent), le vrai tube sur des noms propres à l'essai ; emplacement d'Eyrie avec les règles du veilleur (droits relevés sur le poste de l'utilisateur, vrais dossiers temporaires ; la vraie installation à la main, `EYRIE_PLACE_REELLE`) |
 | Écrans des modules | un crate d'essais par module (`suite-fawkes`, `suite-patronus`, `suite-owlery`, `suite-menagerie`, `suite-dragontree`, `suite-grimoire`, `suite-gringotts`, `suite-carnet`) : chemins, liste blanche, bandeaux, menus ; DragonTree sur de vrais dépôts temporaires (chaque écran atteignable depuis la liste existe sur le PC, clonage, onglets refermés, branche distante supprimée, pull requests) |
-| Application (`eyrie-mobile`) | mise à jour sur place, pliage, navigation et liens, actions en cours, sélecteur (réponses du pont), veilleur (échange, secret oublié, liaison abandonnée), touches du terminal, texte à copier, dictée (une écoute et ses fins, texte ajouté à sa seule saisie, erreurs, réponse à la question du micro, envoi aussitôt) ; captures de toutes les scènes de démonstration, dans les deux thèmes ; le code Android passe clippy pour `aarch64-linux-android` |
+| Application (`eyrie-mobile`) | mise à jour sur place, pliage, navigation et liens, actions en cours, sélecteur (réponses du pont), veilleur (échange, secret oublié, liaison abandonnée), touches du terminal, texte à copier, dictée (une écoute et ses fins, « Un instant… » avant le micro ouvert, texte ajouté à sa seule saisie, erreurs, réponse à la question du micro, envoi aussitôt mais pas dans un choix de Claude, une annulation postée après l'ouverture qu'elle annule) ; captures de toutes les scènes de démonstration, dans les deux thèmes ; le code Android passe clippy pour `aarch64-linux-android` |
 | Compagnon (`go test`) | relais et en-tête, un compagnon par nœud, tube (nom tiré, client vérifié, un autre compte), port 4748 (preuves, droits, limites, journal), emplacement d'Eyrie, élévation, arrêt |
 | Voisins | DragonTree, Fawkes, Owlery, Menagerie : les essais de chaque fonction ajoutée |
 | Ensemble (27/10) | essai réel sur le poste : Eyrie (dossier d'essai, `EYRIE_MOBILE_LOCAL`) et l'application de bureau, appairage par le lien, clic « Appairer » par l'automatisation d'interface de Windows, vraies données (Fawkes et un vrai PowerShell en direct, Gringotts, Owlery), journal |
