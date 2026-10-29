@@ -13,6 +13,7 @@ dragontree-forges.workspace = true
 dragontree-git.workspace = true
 dragontree-i18n.workspace = true
 suite-accounts.workspace = true
+dirs.workspace = true
 eframe.workspace = true
 serde_json.workspace = true
 

@@ -110,7 +110,10 @@ rapide, `background_tick`/foyer distant, erreurs de lecture gardées sur l'ongle
   saisie avec l'action (liste blanche) et **revérifie le chemin choisi** avant d'appeler le module : forme `X:\`
   (pas d'UNC, `\\?\`, `\\.\`, flux `:`, `..`, noms réservés), résolution (`canonicalize` : 8.3, jonctions),
   lecteur local fixe, hors zones interdites (Windows, Program Files, ProgramData, AppData, `.ssh`, données d'Eyrie,
-  corbeille…), puis la règle de `want` (dépôt git ; destination absente ou vide).
+  corbeille…, et les dossiers de configuration que des outils lisent d'eux-mêmes : ceux du profil dont le nom commence
+  par un point, `.config` ou `.claude`, et les profils de PowerShell des Documents), puis la règle de `want` (dépôt
+  git ; destination absente ou vide). DragonTree revérifie la destination d'un clonage avec les mêmes règles, et refuse
+  un nom de dossier qui commence par un point.
 - Des dossiers seulement, jamais de fichier ; cachés et système masqués (« Afficher les dossiers cachés » dans le
   menu) ; un niveau à la fois, dans un fil, pages de 200, 20 000 entrées ou 3 s au plus, filtre côté PC ; rafales
   limitées. Pas de création de dossier (un clone crée sa destination).

@@ -54,7 +54,7 @@ use dragontree_git::{
     LogOrder, LogScope, Oid, Repo, StatusEntry, StatusSnapshot,
 };
 use suite_sdk::mobile::msg::OPEN_PREFIX;
-use suite_sdk::mobile::paths::protected_name;
+use suite_sdk::mobile::paths::{in_dot_folder, powershell_dirs, protected_name};
 use suite_sdk::mobile::ui::{
     Act, Block, FOLDER_PARENT, FOLDER_REPO, FolderInput, GraphCell, PROGRESS_UNKNOWN, Place, Screen, Tone,
 };
@@ -445,20 +445,42 @@ fn read_state(git: &Result<Git, String>, path: &Path) -> RepoState {
     quick_state(dragontree_app::repo_list::quick_status(git, path), repo_head(path))
 }
 
-/// Les dossiers où le téléphone ne fait pas ouvrir de dépôt (`docs/mobile.md` §5) : Windows, les programmes, les
-/// données des applications (celles d'Eyrie et de la suite comprises), et `profile`, celui de DragonTree.
-fn forbidden_zones(profile: Option<&Path>) -> Vec<PathBuf> {
+/// Où le téléphone ne fait ni ouvrir ni cloner de dépôt (`docs/mobile.md` §5).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Zones {
+    /// Les dossiers interdits, et tout ce qu'ils contiennent ([`forbidden_zones`]).
+    forbidden: Vec<PathBuf>,
+    /// Le profil de l'utilisateur : ses dossiers dont le nom commence par un point (`.config`, `.claude`…) sont des
+    /// configurations que des outils lisent d'eux-mêmes ([`in_dot_folder`]).
+    home: Option<PathBuf>,
+}
+
+impl Zones {
+    /// `p` est dans l'une des zones, prises telles qu'écrites et résolues.
+    fn hold(&self, p: &Path) -> bool {
+        let zoned = self.forbidden.iter().any(|z| inside(p, z) || resolved(z).is_some_and(|z| inside(p, &z)));
+        let configuration = |h: &Path| in_dot_folder(p, h) || resolved(h).is_some_and(|h| in_dot_folder(p, &h));
+        zoned || self.home.as_deref().is_some_and(configuration)
+    }
+}
+
+/// Les zones du PC : Windows, les programmes, les données des applications (celles d'Eyrie et de la suite comprises),
+/// les profils de PowerShell, `profile` (celui de DragonTree), et les dossiers de configuration du profil de
+/// l'utilisateur.
+fn forbidden_zones(profile: Option<&Path>) -> Zones {
     let vars = ["SystemRoot", "windir", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "ProgramData"];
     let vars = vars.into_iter().chain(["APPDATA", "LOCALAPPDATA"]);
     let mut zones: Vec<PathBuf> =
         vars.filter_map(|v| std::env::var_os(v).filter(|d| !d.is_empty())).map(PathBuf::from).collect();
-    if let Some(home) = std::env::var_os("USERPROFILE").filter(|h| !h.is_empty()) {
-        zones.push(Path::new(&home).join("AppData"));
-    }
+    let home = std::env::var_os("USERPROFILE").filter(|h| !h.is_empty()).map(PathBuf::from);
+    zones.extend(home.as_ref().map(|h| h.join("AppData")));
+    // Les Documents du profil, et ceux que Windows connaît (OneDrive les déplace).
+    let documents = home.iter().map(|h| h.join("Documents")).chain(dirs::document_dir());
+    zones.extend(documents.flat_map(|d| powershell_dirs(&d)));
     zones.push(suite_accounts::suite_dir());
     zones.push(suite_accounts::local_suite_dir());
     zones.extend(profile.map(Path::to_path_buf));
-    zones
+    Zones { forbidden: zones, home }
 }
 
 /// Un chemin `X:\…` d'un disque : ni réseau, ni `\\?\` ou `\\.\`, ni flux (`:` après le lecteur), ni `..`, ni nom
@@ -496,8 +518,8 @@ fn inside(p: &Path, zone: &Path) -> bool {
 /// Un dossier de dépôt désigné depuis le téléphone, contrôlé ici même si le pont l'a fait avant (`docs/mobile.md` §5) :
 /// un dossier du PC ([`check_pc_dir`]), et un dépôt git (un `.git`, dossier ou fichier d'un worktree). Rend le chemin
 /// résolu : c'est lui que DragonTree ouvre, pas l'endroit où une jonction changée entre-temps mènerait.
-fn check_repo_dir(dir: &Path, forbidden: &[PathBuf]) -> Result<PathBuf, String> {
-    let full = check_pc_dir(dir, forbidden)?;
+fn check_repo_dir(dir: &Path, zones: &Zones) -> Result<PathBuf, String> {
+    let full = check_pc_dir(dir, zones)?;
     if !full.join(".git").exists() {
         return Err(format!("{} n'est pas un dépôt git.", dir.display()));
     }
@@ -505,13 +527,15 @@ fn check_repo_dir(dir: &Path, forbidden: &[PathBuf]) -> Result<PathBuf, String> 
 }
 
 /// La destination d'un clonage demandé depuis le téléphone : le dossier parent, un dossier du PC ([`check_pc_dir`]), et
-/// le dossier `folder` dedans, hors des dossiers protégés (les mêmes noms que pour le pont : [`protected_name`]), absent
-/// ou vide (un clone crée sa destination). Rend le dossier parent résolu : c'est lui que DragonTree reçoit.
-pub(crate) fn check_clone_target(parent: &Path, folder: &str, forbidden: &[PathBuf]) -> Result<PathBuf, String> {
-    let full = check_pc_dir(parent, forbidden)?;
+/// le dossier `folder` dedans, hors des dossiers protégés (les mêmes noms que pour le pont : [`protected_name`], et les
+/// zones), absent ou vide (un clone crée sa destination). Son nom ne commence pas par un point : ce serait un dossier
+/// de configuration (`.config`, `.vscode`…), qu'un outil lirait. Rend le dossier parent résolu : c'est lui que
+/// DragonTree reçoit.
+pub(crate) fn check_clone_target(parent: &Path, folder: &str, zones: &Zones) -> Result<PathBuf, String> {
+    let full = check_pc_dir(parent, zones)?;
     let target = full.join(folder);
-    let named = protected_name(folder);
-    if named || forbidden.iter().any(|z| inside(&target, z) || resolved(z).is_some_and(|z| inside(&target, &z))) {
+    let named = protected_name(folder) || folder.starts_with('.');
+    if named || zones.hold(&target) {
         return Err(format!("{} : dossier protégé, refusé depuis le téléphone.", target.display()));
     }
     match std::fs::symlink_metadata(&target) {
@@ -519,7 +543,7 @@ pub(crate) fn check_clone_target(parent: &Path, folder: &str, forbidden: &[PathB
         Err(e) => Err(format!("{} : {e}", target.display())),
         Ok(m) if m.is_dir() => {
             // Un dossier existant peut être écrit sous son nom court (`AWS~1` pour `.aws`) : contrôlé résolu.
-            check_pc_dir(&target, forbidden)?;
+            check_pc_dir(&target, zones)?;
             match std::fs::read_dir(&target).map(|mut r| r.next().is_none()) {
                 Ok(true) => Ok(full),
                 Ok(false) => Err(format!("{} existe déjà et n'est pas vide.", target.display())),
@@ -532,9 +556,9 @@ pub(crate) fn check_clone_target(parent: &Path, folder: &str, forbidden: &[PathB
 
 /// Un dossier désigné depuis le téléphone, contrôlé ici même si le pont l'a fait avant (`docs/mobile.md` §5) : un chemin
 /// `X:\…` d'un disque du PC ([`drive_path`]) ; résolu (noms courts, jonctions, liens), un dossier local, hors des
-/// dossiers interdits `forbidden` et des noms protégés du pont ([`protected_name`] : `.ssh`, `.aws`…). Rend le chemin
-/// résolu. (Le pont vérifie de plus que le lecteur est un disque fixe.)
-fn check_pc_dir(dir: &Path, forbidden: &[PathBuf]) -> Result<PathBuf, String> {
+/// `zones` et des noms protégés du pont ([`protected_name`] : `.ssh`, `.aws`…). Rend le chemin résolu. (Le pont vérifie
+/// de plus que le lecteur est un disque fixe.)
+fn check_pc_dir(dir: &Path, zones: &Zones) -> Result<PathBuf, String> {
     let refused = || "Chemin refusé : un dossier d'un disque du PC est attendu (C:\\…).".to_string();
     if !drive_path(&dir.to_string_lossy()) {
         return Err(refused());
@@ -546,8 +570,7 @@ fn check_pc_dir(dir: &Path, forbidden: &[PathBuf]) -> Result<PathBuf, String> {
     }
     for p in [dir, full.as_path()] {
         let named = p.components().any(|c| matches!(c, Component::Normal(n) if protected_name(&n.to_string_lossy())));
-        let zoned = forbidden.iter().any(|z| inside(p, z) || resolved(z).is_some_and(|z| inside(p, &z)));
-        if named || zoned {
+        if named || zones.hold(p) {
             return Err(format!("{} : dossier protégé, refusé depuis le téléphone.", dir.display()));
         }
     }
@@ -601,8 +624,8 @@ pub struct Phone {
     tabs_path: PathBuf,
     restored: Option<Vec<PathBuf>>,
     remembered: Vec<PathBuf>,
-    /// Les dossiers où le téléphone ne fait pas ouvrir de dépôt ([`forbidden_zones`]).
-    forbidden: Vec<PathBuf>,
+    /// Où le téléphone ne fait ni ouvrir ni cloner de dépôt ([`forbidden_zones`]).
+    zones: Zones,
     sweep: Arc<Mutex<Sweep>>,
     git: GitCell,
     reads: SharedReads,
@@ -638,7 +661,7 @@ impl Phone {
             std::fs::read(&tabs_path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         remembered.sort();
         Phone {
-            forbidden: forbidden_zones(settings_path.parent()),
+            zones: forbidden_zones(settings_path.parent()),
             settings_path,
             checked: None,
             settings_stamp: None,
@@ -920,7 +943,7 @@ impl Phone {
         if cloning(app, d.job) {
             return Err("Ce clonage est en cours : attendez sa fin, ou annulez-le.".into());
         }
-        let forbidden = &self.forbidden;
+        let zones = &self.zones;
         let text = input.map(str::trim).unwrap_or_default();
         match action {
             "url" => d.set_url(text, |url| app.account_for_url(url))?,
@@ -930,16 +953,16 @@ impl Phone {
                 if text.is_empty() {
                     return Err("Aucun dossier choisi.".into());
                 }
-                let parent = check_pc_dir(Path::new(text), forbidden)?;
+                let parent = check_pc_dir(Path::new(text), zones)?;
                 if !d.folder.is_empty() {
-                    check_clone_target(&parent, &d.folder, forbidden)?;
+                    check_clone_target(&parent, &d.folder, zones)?;
                 }
                 d.parent = parent;
             }
             "sous-modules" => d.recurse = !d.recurse,
             "lancer" => {
                 // Contrôlée de nouveau : le disque a pu changer depuis la dernière saisie.
-                d.target = (!d.folder.is_empty()).then(|| check_clone_target(&d.parent, &d.folder, forbidden));
+                d.target = (!d.folder.is_empty()).then(|| check_clone_target(&d.parent, &d.folder, zones));
                 let req = d.request()?;
                 let folder = req.folder.clone();
                 let id = app
@@ -953,7 +976,7 @@ impl Phone {
                 d.set_account((!id.is_empty()).then_some(id), &app.clone_defaults().accounts)?;
             }
         }
-        d.target = (!d.folder.is_empty()).then(|| check_clone_target(&d.parent, &d.folder, forbidden));
+        d.target = (!d.folder.is_empty()).then(|| check_clone_target(&d.parent, &d.folder, zones));
         Ok((String::new(), false))
     }
 
@@ -1009,7 +1032,7 @@ impl Phone {
     /// écrans du dépôt montrent déjà) sortirait git de ce fil ; DragonTree ne le propose pas.
     fn add(&mut self, app: &mut DragonTreeApp, input: Option<&str>) -> Result<(String, bool), String> {
         let raw = input.map(str::trim).filter(|t| !t.is_empty()).ok_or("Aucun dossier choisi.")?;
-        let dir = check_repo_dir(Path::new(raw), &self.forbidden)?;
+        let dir = check_repo_dir(Path::new(raw), &self.zones)?;
         let long = long_path_key(&dir);
         if let Some(known) = self.repos(app).into_iter().find(|r| long_path_key(&r.path) == long) {
             return Ok((format!("{OPEN_PREFIX}depot/{}", repo_key(&known.path)), false));
@@ -1691,19 +1714,58 @@ mod tests {
             "system volume information",
         ];
         for name in names.into_iter().chain([".AWS", "System Volume Information"]) {
-            let e = check_clone_target(&dir, name, &[]).unwrap_err();
+            let e = check_clone_target(&dir, name, &Zones::default()).unwrap_err();
             assert!(e.contains("protégé"), "{name} : {e}");
         }
-        let e = check_repo_dir(&dir.join(".kube").join("depot"), &[]).unwrap_err();
+        let e = check_repo_dir(&dir.join(".kube").join("depot"), &Zones::default()).unwrap_err();
         assert!(e.contains("protégé"), "{e}");
-        let e = check_pc_dir(&dir.join(".kube"), &[]).unwrap_err();
+        let e = check_pc_dir(&dir.join(".kube"), &Zones::default()).unwrap_err();
         assert!(e.contains("protégé"), "{e}");
-        assert!(check_clone_target(&dir, "depot", &[]).is_ok());
+        assert!(check_clone_target(&dir, "depot", &Zones::default()).is_ok());
         // `.aws` existe et est vide : son nom court y mènerait.
         if let Some(short) = short_name(&dir.join(".aws")) {
-            let e = check_clone_target(&dir, &short, &[]).unwrap_err();
+            let e = check_clone_target(&dir, &short, &Zones::default()).unwrap_err();
             assert!(e.contains("protégé"), "{short} : {e}");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Un clone ne va pas dans un dossier de configuration de l'utilisateur, que des outils lisent d'eux-mêmes : un
+    /// dossier de son profil dont le nom commence par un point (`.config`, `.claude`…) ou dedans, un profil de
+    /// PowerShell ; même absent ou vide. Son nom ne commence jamais par un point. Ailleurs dans le profil, il va.
+    #[test]
+    fn a_clone_never_lands_in_a_configuration_folder() {
+        let dir = std::env::temp_dir().join(format!("suite-dragontree-configurations-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let profile = dir.join("profil");
+        let documents = profile.join("Documents");
+        for d in [profile.join(".config"), profile.join(".vide"), documents.clone()] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let zones = Zones { forbidden: powershell_dirs(&documents).to_vec(), home: Some(profile.clone()) };
+        let refused = |parent: &Path, folder: &str| {
+            let e = check_clone_target(parent, folder, &zones).unwrap_err();
+            assert!(e.contains("protégé"), "{} {folder} : {e}", parent.display());
+        };
+        for name in [".config", ".vide", ".claude", ".CARGO"] {
+            refused(&profile, name);
+        }
+        refused(&profile.join(".config"), "git");
+        refused(&documents, "PowerShell");
+        refused(&documents, "WindowsPowerShell");
+        refused(&dir, ".outils");
+        assert!(check_pc_dir(&profile.join(".config"), &zones).unwrap_err().contains("protégé"));
+        assert!(check_clone_target(&profile, "depot", &zones).is_ok());
+        assert!(check_clone_target(&documents, "notes", &zones).is_ok());
+        // Le vrai PC : le profil de l'utilisateur, ses profils de PowerShell.
+        let real = forbidden_zones(None);
+        let home = PathBuf::from(std::env::var_os("USERPROFILE").unwrap());
+        assert_eq!(real.home.as_deref(), Some(home.as_path()));
+        let documents = [home.join("Documents")].into_iter().chain(dirs::document_dir());
+        for p in documents.flat_map(|d| powershell_dirs(&d)).chain([home.join(r".claude\commands")]) {
+            assert!(real.hold(&p), "{}", p.display());
+        }
+        assert!(!real.hold(&home.join("DEV")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1723,7 +1785,7 @@ mod tests {
         let mut h = dragontree(&profile);
         h.step();
         // Le dépôt est dans le dossier temporaire, sous les données des applications : seul `repo` est protégé ici.
-        phone.forbidden = vec![repo.clone()];
+        phone.zones.forbidden = vec![repo.clone()];
         let link = dir.join("lien");
         let linked = std::process::Command::new("cmd")
             .args(["/C", "mklink", "/J"])
@@ -1735,7 +1797,7 @@ mod tests {
             let e = phone.action(h.state_mut(), "", "ajouter", Some(&protected.display().to_string())).unwrap_err();
             assert!(e.contains("protégé"), "{}: {e}", protected.display());
         }
-        phone.forbidden.clear();
+        phone.zones.forbidden.clear();
         // DragonTree ouvre le chemin résolu (forme longue d'un dossier temporaire en noms courts).
         let key = repo_key(&resolved(&repo).unwrap());
         assert!(phone.screen(h.state_mut(), &format!("depot/{key}")).is_none(), "pas encore connu");
@@ -2791,7 +2853,7 @@ mod tests {
         let mut h = dragontree(&profile);
         h.state_mut().show_repo(&shown);
         // Le dossier temporaire est sous les données des applications : seul `protected` est protégé ici.
-        phone.forbidden = vec![protected.clone()];
+        phone.zones.forbidden = vec![protected.clone()];
         step_until(&mut h, |h| !h.state().clone_defaults().accounts.is_empty());
 
         let home = phone.screen(h.state_mut(), "").unwrap();
@@ -2864,6 +2926,20 @@ mod tests {
         assert!(refused.contains("protégé"), "{refused}");
         let clones = resolved(&parent).unwrap();
         assert!(!clones.join(".kube").exists() && !clones.join(".aws").exists(), "rien n'y est cloné");
+        // Dans le profil de l'utilisateur, ses dossiers à point (`.config`, `.claude`…) sont des configurations : ni
+        // dossier parent, ni destination d'un clone, même absents (le pont ne voit pas le nom saisi après le dossier).
+        let me = dir.join("moi");
+        std::fs::create_dir_all(me.join(".config")).unwrap();
+        phone.zones.home = Some(me.clone());
+        let at = |p: &Path| p.display().to_string();
+        phone.action(h.state_mut(), &other, "nom", Some("outils")).unwrap();
+        let refused = phone.action(h.state_mut(), &other, "dossier", Some(&at(&me.join(".config")))).unwrap_err();
+        assert!(refused.contains("protégé"), "{refused}");
+        phone.action(h.state_mut(), &other, "dossier", Some(&at(&me))).unwrap();
+        phone.action(h.state_mut(), &other, "nom", Some(".claude")).unwrap();
+        let refused = phone.action(h.state_mut(), &other, "lancer", Some("")).unwrap_err();
+        assert!(refused.contains("protégé"), "{refused}");
+        assert!(!me.join(".claude").exists(), "rien n'y est cloné");
         act(&mut phone, &mut h, "nom", "copie").unwrap();
         act(&mut phone, &mut h, "branche", "main").unwrap();
         // Le dépôt d'essai est sur le disque : son URL est mise à la main (le téléphone n'en saisit pas de telle).
@@ -2919,7 +2995,7 @@ mod tests {
         let mut phone = phone_for(&profile, &dir.join("aucun"));
         let mut h = dragontree(&profile);
         h.step();
-        phone.forbidden.clear();
+        phone.zones.forbidden.clear();
         phone.action(h.state_mut(), "", "cloner", None).unwrap();
         let path = "cloner/1";
         let act = |phone: &mut Phone, h: &mut H, action: &str, input: &str| {

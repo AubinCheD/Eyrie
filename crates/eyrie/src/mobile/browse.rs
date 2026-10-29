@@ -24,7 +24,7 @@ use suite_mobile::msg::{
     ENTRY_CLOUD, ENTRY_DENIED, ENTRY_DRIVE, ENTRY_HIDDEN, ENTRY_KNOWN, ENTRY_LINK, ENTRY_REPO, FolderEntry, Listing,
     PlaceGroup, ToPhone,
 };
-use suite_mobile::paths::protected_name;
+use suite_mobile::paths::{in_dot_folder, powershell_dirs, protected_name};
 use suite_mobile::ui::{FOLDER_ANY, FOLDER_PARENT, FOLDER_REPO, FolderInput, Tone};
 
 /// Dossiers par page.
@@ -82,7 +82,8 @@ pub struct Env {
 
 impl Env {
     /// Le PC : Windows, les programmes, les données des applications (celles de la suite et `data`, celles d'Eyrie,
-    /// comprises), les profils des autres utilisateurs.
+    /// comprises), les profils de PowerShell, les profils des autres utilisateurs (et les dossiers de configuration du
+    /// sien, vus par [`protected`]).
     pub fn system(data: &[&Path]) -> Env {
         let vars = ["SystemRoot", "windir", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "ProgramData"];
         let vars = vars.into_iter().chain(["APPDATA", "LOCALAPPDATA"]);
@@ -90,6 +91,9 @@ impl Env {
             vars.filter_map(|v| std::env::var_os(v).filter(|d| !d.is_empty())).map(PathBuf::from).collect();
         let home = dirs::home_dir();
         forbidden.extend(home.as_ref().map(|h| h.join("AppData")));
+        // Les Documents du profil, et ceux que Windows connaît (OneDrive les déplace).
+        let documents = home.iter().map(|h| h.join("Documents")).chain(dirs::document_dir());
+        forbidden.extend(documents.flat_map(|d| powershell_dirs(&d)));
         forbidden.push(suite_accounts::suite_dir());
         forbidden.push(suite_accounts::local_suite_dir());
         forbidden.extend(data.iter().map(|d| d.to_path_buf()));
@@ -265,7 +269,8 @@ fn fixed(env: &Env, text: &str) -> Result<(), String> {
 }
 
 /// `p` est dans une zone interdite : sous un nom protégé (`.ssh`, `.aws`… : [`protected_name`]), dans une zone de
-/// l'environnement, dans le profil d'un autre utilisateur.
+/// l'environnement, dans le profil d'un autre utilisateur, dans un dossier de configuration du sien (`.config`,
+/// `.claude`… : [`in_dot_folder`]).
 fn protected(env: &Env, p: &Path) -> bool {
     let named = p.components().any(|c| matches!(c, Component::Normal(n) if protected_name(&n.to_string_lossy())));
     let zoned = env.forbidden.iter().any(|z| inside(p, z));
@@ -273,7 +278,8 @@ fn protected(env: &Env, p: &Path) -> bool {
         .profiles
         .as_ref()
         .is_some_and(|(all, mine)| inside(p, all) && key(p) != key(all) && !mine.iter().any(|m| inside(p, m)));
-    named || zoned || other_profile
+    let configuration = env.profiles.as_ref().is_some_and(|(_, mine)| mine.iter().any(|m| in_dot_folder(p, m)));
+    named || zoned || other_profile || configuration
 }
 
 fn protected_text(shown: &str) -> String {
@@ -1117,6 +1123,43 @@ mod tests {
         for form in forms(&home) {
             assert_eq!(check(&env, &form.to_string_lossy()), Ok(resolved_or(&home)), "{}", form.display());
         }
+    }
+
+    /// Les dossiers de configuration de l'utilisateur, que des outils lisent d'eux-mêmes : ceux de son profil dont le
+    /// nom commence par un point (`.config`, `.claude`…) et tout ce qu'ils contiennent, refusés et montrés refusés,
+    /// même comme destination absente ou vide d'un clonage ; sur le vrai PC, aussi les profils de PowerShell. Un
+    /// dossier à point ailleurs passe.
+    #[test]
+    fn the_users_configuration_folders_are_protected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = long(tmp.path());
+        let me = root.join("profils").join("moi");
+        for d in [r".config\git", r"projets\.outils", ".vide"] {
+            mkdir(&me.join(d));
+        }
+        let env = env(&root);
+        let at = |p: &Path| p.to_string_lossy().into_owned();
+        for p in [me.join(".config"), me.join(r".config\git")] {
+            assert!(check(&env, &at(&p)).unwrap_err().contains("protégé"), "{}", p.display());
+        }
+        let parent = |child: &str| FolderInput { want: FOLDER_PARENT, child: child.into(), ..Default::default() };
+        for child in [".claude", ".vide", ".Config"] {
+            assert!(chosen(&env, Some(&at(&me)), &parent(child)).unwrap_err().contains("protégé"), "{child}");
+        }
+        assert!(chosen(&env, Some(&at(&me)), &parent("depot")).is_ok());
+        assert_eq!(check(&env, &at(&me.join(r"projets\.outils"))), Ok(me.join(r"projets\.outils")));
+        let l = listing(&env, &Ask { hidden: true, ..ask(&me, FolderInput::default()) });
+        let flags = |name: &str| l.entries.iter().find(|e| e.name == name).map(|e| e.flags & ENTRY_DENIED);
+        assert_eq!((flags(".config"), flags("projets")), (Some(ENTRY_DENIED), Some(0)), "{l:?}");
+
+        let real = Env::system(&[]);
+        let home = dirs::home_dir().unwrap();
+        let documents = [home.join("Documents")].into_iter().chain(dirs::document_dir());
+        let shells = documents.flat_map(|d| [d.join("PowerShell"), d.join(r"WindowsPowerShell\Modules")]);
+        for p in [home.join(".config"), home.join(r".claude\commands")].into_iter().chain(shells) {
+            assert!(protected(&real, &p), "{}", p.display());
+        }
+        assert!(!protected(&real, &home.join("DEV")) && !protected(&real, &home.join("Documents")));
     }
 
     #[test]

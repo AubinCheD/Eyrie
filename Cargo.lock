@@ -6189,6 +6189,7 @@ dependencies = [
 name = "suite-dragontree"
 version = "0.1.0"
 dependencies = [
+ "dirs",
  "dragontree-app",
  "dragontree-forges",
  "dragontree-git",
