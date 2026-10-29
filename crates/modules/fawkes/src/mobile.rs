@@ -239,7 +239,7 @@ fn term_row(t: &TermSpec, g: &Group, s: &Seen) -> Row {
 #[derive(Debug, Default, PartialEq)]
 struct Tally {
     terms: usize,
-    /// Sessions Claude qui tournent (« ✻2 »)…
+    /// Sessions Claude qui tournent (« ✳️2 »)…
     claude: usize,
     /// … dont celles sans Remote Control qui peuvent le prendre (voir [`remote_possible`]).
     without_remote: usize,
@@ -343,10 +343,11 @@ fn restart_question(g: &Group, n: &Tally) -> String {
     q
 }
 
-/// Le bandeau d'un groupe : clé tirée de son identifiant (elle survit à un renommage), « ✻2 · 5 » (sessions Claude,
-/// terminaux) comme la barre du PC, ce qui l'y fait remarquer (« 2 attendent », « 1 en échec », 🔔) et son menu.
+/// Le bandeau d'un groupe : clé tirée de son identifiant (elle survit à un renommage), « ✳️2 · 5 » (sessions Claude,
+/// terminaux) comme « ✻2 · 5 » sur la barre du PC, avec le ✳ des sessions Claude du téléphone (✻ n'est pas un émoji :
+/// un carré vide), ce qui l'y fait remarquer (« 2 attendent », « 1 en échec », 🔔) et son menu.
 fn group_band(g: &Group, n: &Tally, selected: bool, groups: usize) -> Band {
-    let aside = if n.claude > 0 { format!("✻{} · {}", n.claude, n.terms) } else { n.terms.to_string() };
+    let aside = if n.claude > 0 { format!("✳️{} · {}", n.claude, n.terms) } else { n.terms.to_string() };
     let mut band = Band::new(format!("g{}", g.id), &g.name)
         .glyph(&g.icon)
         .color(rgb(g.color))
@@ -997,7 +998,8 @@ mod tests {
     }
 
     /// Un bandeau par groupe, dans l'ordre du PC, groupes vides compris : la clé est l'identifiant du groupe (elle
-    /// survit à un renommage), « ✻1 · 2 » comme la barre du PC ; chaque ligne a pour clé son terminal.
+    /// survit à un renommage), « ✳️1 · 2 » comme « ✻1 · 2 » sur la barre du PC (✻ n'est pas un émoji : un carré vide
+    /// sur le téléphone) ; chaque ligne a pour clé son terminal.
     #[test]
     fn every_group_is_a_band_in_the_pc_order_empty_ones_included() {
         let (st, seen) = three_groups();
@@ -1005,7 +1007,7 @@ mod tests {
         let b: Vec<_> = bands(&s).into_iter().filter(|b| b.0.starts_with('g')).collect();
         assert_eq!(
             b.iter().map(|b| (b.0.as_str(), b.1.as_str(), b.2.as_str())).collect::<Vec<_>>(),
-            [("g0", "Général", "0"), ("g5", "Eyrie", "✻1 · 2"), ("g7", "Ozmo", "1")]
+            [("g0", "Général", "0"), ("g5", "Eyrie", "✳️1 · 2"), ("g7", "Ozmo", "1")]
         );
         assert_eq!(b.iter().map(|b| b.3).collect::<Vec<_>>(), [Fold::Closed, Fold::Open, Fold::Closed]);
         let eyrie = s.blocks.iter().find_map(|b| match b {

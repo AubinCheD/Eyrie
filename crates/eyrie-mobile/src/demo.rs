@@ -91,7 +91,7 @@ fn fawkes_home() -> Screen {
     s.row(Row::new("Nouveau terminal").glyph("➕").subtitle("Shell ou Claude, dans un dossier récent").open("nouveau"));
     let eyrie = group_menu("g1");
     s.band(
-        Band { title: "Eyrie".into(), aside: "✻1 · 3".into(), ..eyrie }
+        Band { title: "Eyrie".into(), aside: "✳️1 · 3".into(), ..eyrie }
             .color(0x5b8def)
             .badge("1 attend")
             .tone(Tone::Warn),
@@ -117,7 +117,7 @@ fn fawkes_home() -> Screen {
     );
     s.row(Row::new("PowerShell").subtitle("Shell · …\\TestAubin\\Eyrie").glyph("›_").color(0x5b8def).open("t/5"));
     let ozmo = group_menu("g2");
-    s.band(Band { title: "Ozmo".into(), aside: "✻1 · 2".into(), ..ozmo }.color(0x4cb872));
+    s.band(Band { title: "Ozmo".into(), aside: "✳️1 · 2".into(), ..ozmo }.color(0x4cb872));
     s.row(
         Row::new("Claude · revue de code")
             .subtitle("Claude travaille · …\\DEV\\Ozmo")

@@ -107,8 +107,8 @@ fn unread(r: &Run) -> bool {
 pub fn status_glyph(s: Status) -> &'static str {
     match s {
         Status::EnCours => "◐",
-        Status::Reussie => "✓",
-        Status::Echouee | Status::Impossible => "✗",
+        Status::Reussie => "✅",
+        Status::Echouee | Status::Impossible => "❌",
         Status::Arretee
         | Status::DureeDepassee
         | Status::ToursAtteints
@@ -217,7 +217,7 @@ fn task_row(t: &TaskLine, today: NaiveDate) -> Row {
     let mut row = Row::new(&t.name)
         .key(format!("tache/{}", t.id))
         .subtitle(task_state(t, today))
-        .glyph(if t.running { "◐" } else { "✦" })
+        .glyph(if t.running { "◐" } else { "✨" })
         .open(format!("tache/{}", t.id));
     if let Some(tone) = tone {
         row = row.tone(tone);
@@ -350,7 +350,7 @@ pub fn home(s: &Snapshot, now: NaiveDateTime) -> Screen {
     tasks.sort_by_key(|t| task_order(t));
     let blocked = tasks.iter().filter(|t| t.problem.is_some()).count();
     let open = s.tasks.len() <= TASKS_OPEN || blocked > 0;
-    let mut band = Band::new("taches", "Tâches").aside(s.tasks.len().to_string()).glyph("✦").open(open);
+    let mut band = Band::new("taches", "Tâches").aside(s.tasks.len().to_string()).glyph("✨").open(open);
     if blocked > 0 {
         band = band.badge(plural(blocked, "bloquée", "bloquées")).tone(Tone::Danger);
     }
@@ -761,12 +761,18 @@ mod tests {
         // … et confirmé aussi depuis le menu de la ligne.
         let stop = rows[0].acts.iter().find(|a| a.id == "arreter:build");
         assert_eq!(stop.and_then(|a| a.confirm.as_deref()), Some("Arrêter « Build du soir » ?"));
-        // La boîte : l'état en glyphe, non lus marqués.
-        assert_eq!((rows[1].badge.as_str(), rows[1].tone, rows[1].glyph.as_str()), ("non lu", Some(Tone::Danger), "✗"));
+        // La boîte : l'état en émoji (✗ s'affichait en carré vide), non lus marqués.
+        assert_eq!(
+            (rows[1].badge.as_str(), rows[1].tone, rows[1].glyph.as_str()),
+            ("non lu", Some(Tone::Danger), "❌")
+        );
         assert_eq!(rows[1].subtitle, "échouée · aujourd'hui 08:00 · 0,50 $");
-        assert_eq!((rows[2].glyph.as_str(), rows[2].badge.as_str()), ("✓", ""));
-        // Les tâches : celle qui ne peut pas partir d'abord.
-        assert_eq!((rows[3].key.as_str(), rows[3].tone), ("tache/casse", Some(Tone::Danger)));
+        assert_eq!((rows[2].glyph.as_str(), rows[2].badge.as_str()), ("✅", ""));
+        // Les tâches : celle qui ne peut pas partir d'abord ; ✨ (✦ s'affichait en carré vide).
+        assert_eq!(
+            (rows[3].key.as_str(), rows[3].tone, rows[3].glyph.as_str()),
+            ("tache/casse", Some(Tone::Danger), "✨")
+        );
         assert_eq!(rows[4].key, "tache/build");
 
         // Un départ attend la fin : la ligne le dit ; sans début connu, « en cours ».
