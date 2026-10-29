@@ -182,10 +182,11 @@ terminal » de la palette, ni Remote Control ; le veilleur refuse de tourner él
 qu'un autre compte possède ou peut renommer, tire le nom de son tube au hasard (un autre compte ne le prend plus avant
 lui), garde une connexion par adresse et n'écrit plus au journal un identifiant d'appareil mal formé ; une liste de
 dossiers en attente est refusée après le retrait du droit, un dossier protégé n'est plus décrit, un clone ne va plus
-dans un dossier de secrets ou de configuration, un nom de branche ou d'étiquette ne passe plus pour une option de
-git, les commits lus pour le téléphone sont gardés 64 au plus par dépôt ; un collage qui cache Échap est demandé, un
-mot de passe se tape masqué, l'écran verrouillé ne montre plus le détail d'une notification, une confirmation ne vaut
-plus pour un autre écran ; redémarrer un terminal, arrêter un conteneur ou relancer un service se confirme ; les
+dans un dossier de secrets ou de configuration, un nom de branche ou d'étiquette, saisi ou désigné par une action,
+ne passe plus pour une option de git (désigné : une référence que DragonTree a lue ; un commit, par son identifiant
+complet), les commits lus pour le téléphone sont gardés 64 au plus par dépôt ; un collage qui cache Échap est demandé,
+un mot de passe se tape masqué, l'écran verrouillé ne montre plus le détail d'une notification, une confirmation ne
+vaut plus pour un autre écran ; redémarrer un terminal, arrêter un conteneur ou relancer un service se confirme ; les
 refus et « Tout marquer lu » sont notés au journal.
 
 ## 5. Protocole

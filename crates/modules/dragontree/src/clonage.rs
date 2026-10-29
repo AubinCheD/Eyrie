@@ -107,6 +107,11 @@ pub fn folder_name_ok(name: &str) -> Result<(), String> {
 /// Un nom de branche ou d'étiquette que git accepte (`git check-ref-format`) et qui ne peut pas passer pour une option :
 /// ni `-` au début, ni espace ou caractère de contrôle, ni `~^:?*[\`, ni `..` ou `@{`, ni `@` seul, ni `/` au début, à
 /// la fin ou doublé, ni élément qui commence par un point ou finit par `.lock`, ni point final.
+///
+/// Plus strict que git et que `valid_ref_name` de DragonTree, qui le suit depuis le 29/10 : toute espace et tout
+/// caractère de contrôle Unicode (pas seulement ASCII), et plus de 255 octets, sont refusés, comme dans ses dialogues.
+/// À garder ainsi : il ne juge qu'un nom nouveau, tapé sur le téléphone. Une branche ou une étiquette qui existe déjà, et
+/// que désigne une action, n'est jugée que sur ce qui la ferait lire comme une option (`depot::designated`).
 fn ref_name_ok(name: &str) -> bool {
     let bad_char = |c: char| c.is_whitespace() || c.is_control() || "~^:?*[\\".contains(c);
     let bad_part = |p: &str| p.is_empty() || p.starts_with('.') || p.ends_with(".lock");

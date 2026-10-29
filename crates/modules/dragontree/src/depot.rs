@@ -920,6 +920,18 @@ fn oid(hex: &str) -> Result<Oid, String> {
     Oid::from_hex(hex).ok_or_else(|| "identifiant de commit illisible".into())
 }
 
+/// Une branche ou une étiquette que désigne une action, et non une saisie : l'écran l'a proposée, mais le téléphone
+/// choisit ce qu'il envoie. Son nom part tel quel en argument de git : ni vide, ni `-` au début (git le lirait comme une
+/// option), ni caractère de contrôle, même si DragonTree en a lu une de ce nom (`git update-ref` en crée) et le vérifie
+/// aussi de son côté. Le reste de ce que git accepte passe : `ref_name_ok` ne vaut que pour un nom nouveau.
+fn designated(name: &str) -> Result<(), String> {
+    if name.is_empty() || name.starts_with('-') || name.chars().any(char::is_control) {
+        Err(format!("Nom de référence refusé : « {} ».", name.escape_debug()))
+    } else {
+        Ok(())
+    }
+}
+
 /// Une action d'un écran du dépôt en opération de DragonTree, avec son libellé. `input` : la saisie demandée.
 pub fn parse(v: &RepoView, action: &str, input: Option<&str>) -> Result<(RemoteOp, String), String> {
     let text = || input.map(str::trim).filter(|t| !t.is_empty()).map(str::to_string);
@@ -929,6 +941,29 @@ pub fn parse(v: &RepoView, action: &str, input: Option<&str>) -> Result<(RemoteO
     let tag = || needed().and_then(|n| clonage::tag_ok(&n).map(|()| n));
     let (verb, arg) = action.split_once(':').unwrap_or((action, ""));
     let arg = arg.to_string();
+    // Une branche ou une étiquette que désigne l'action ([`designated`]) : une que DragonTree a lue en dernier, celle
+    // que l'écran montrait. Un commit l'est par son identifiant complet ([`oid`]).
+    let refs = v.refs.as_deref();
+    let missing = |what: &str| format!("{arg} : {what} introuvable, ou pas encore relue par DragonTree.");
+    let local = || {
+        designated(&arg)?;
+        refs.and_then(|r| r.local(&arg)).ok_or_else(|| missing("branche"))
+    };
+    let remote = || {
+        designated(&arg)?;
+        let r = refs.and_then(|r| r.remotes.iter().find(|r| r.full == arg && !r.is_symbolic));
+        r.ok_or_else(|| missing("branche distante"))
+    };
+    // Fusionner ou rebaser : sur une locale ou une distante (`origin/x`).
+    let local_or_remote = || {
+        designated(&arg)?;
+        if local().is_ok() || remote().is_ok() { Ok(()) } else { Err(missing("branche")) }
+    };
+    let tagged = || {
+        designated(&arg)?;
+        let t = refs.and_then(|r| r.tags.iter().find(|t| t.name == arg));
+        t.ok_or_else(|| missing("étiquette"))
+    };
     let st = v.status();
     let file = |key: &str| v.entry(key).ok_or_else(|| "Ce fichier n'est plus dans les modifications.".to_string());
     let stash = |hex: &str| {
@@ -1004,20 +1039,20 @@ pub fn parse(v: &RepoView, action: &str, input: Option<&str>) -> Result<(RemoteO
             let (oid, label) = stash(&arg)?;
             (RemoteOp::StashDrop { oid, label }, "Jeter la remise".into())
         }
-        "basculer" => (RemoteOp::Checkout(arg.clone()), format!("Basculer sur {arg}")),
+        "basculer" => {
+            local()?;
+            (RemoteOp::Checkout(arg.clone()), format!("Basculer sur {arg}"))
+        }
         "detacher" => (RemoteOp::Checkout(oid(&arg)?.to_hex()), "Sortir le commit".into()),
         "suivre" => {
+            remote()?;
             let local = branch()?;
             let op = RemoteOp::Track { remote_branch: arg.clone(), local: local.clone() };
             (op, format!("Suivre {arg} dans {local}"))
         }
         "supprimer-distante" => {
             // Le remote et le nom tels que DragonTree les a lus (un nom de remote peut contenir un `/`).
-            let remotes = v.refs.as_deref().map(|r| r.remotes.as_slice()).unwrap_or_default();
-            let r = remotes
-                .iter()
-                .find(|r| r.full == arg && !r.is_symbolic)
-                .ok_or_else(|| format!("{arg} : branche distante introuvable, ou pas encore relue par DragonTree."))?;
+            let r = remote()?;
             let op = RemoteOp::DeleteRemoteBranch { remote: r.remote.clone(), branch: r.name.clone() };
             (op, format!("Supprimer {arg} sur le serveur"))
         }
@@ -1026,20 +1061,24 @@ pub fn parse(v: &RepoView, action: &str, input: Option<&str>) -> Result<(RemoteO
             (RemoteOp::CreateBranch { name: name.clone(), start: "HEAD".into() }, format!("Nouvelle branche {name}"))
         }
         "branche-ici" => {
+            let start = oid(&arg)?.to_hex();
             let name = branch()?;
-            (RemoteOp::CreateBranch { name: name.clone(), start: arg }, format!("Nouvelle branche {name}"))
+            (RemoteOp::CreateBranch { name: name.clone(), start }, format!("Nouvelle branche {name}"))
         }
         "renommer" => {
+            local()?;
             let new = branch()?;
             (RemoteOp::RenameBranch { old: arg.clone(), new: new.clone() }, format!("Renommer {arg} en {new}"))
         }
-        "supprimer-branche" => (RemoteOp::DeleteBranch { name: arg.clone(), force: false }, format!("Supprimer {arg}")),
-        "supprimer-branche-force" => {
-            (RemoteOp::DeleteBranch { name: arg.clone(), force: true }, format!("Supprimer {arg}"))
+        "supprimer-branche" | "supprimer-branche-force" => {
+            local()?;
+            let force = verb == "supprimer-branche-force";
+            (RemoteOp::DeleteBranch { name: arg.clone(), force }, format!("Supprimer {arg}"))
         }
         "publier" => {
             // Vers sa branche suivie (sur son remote à elle) ou, sans suivi, sur le remote par défaut.
-            let remote = match v.refs.as_deref().map(|r| (r, r.local(&arg))) {
+            designated(&arg)?;
+            let remote = match refs.map(|r| (r, r.local(&arg))) {
                 Some((refs, Some(l))) => publish_remote(refs, l, v.default_remote())?,
                 // Branches pas encore lues par DragonTree : seulement la courante, sans suivi d'après son état.
                 _ if st.is_some_and(|s| s.branch.as_deref() == Some(arg.as_str()) && s.upstream.is_none()) => {
@@ -1050,13 +1089,19 @@ pub fn parse(v: &RepoView, action: &str, input: Option<&str>) -> Result<(RemoteO
             let label = format!("Pousser {arg} vers {remote}/{arg}");
             (RemoteOp::PushBranch { name: arg.clone(), remote }, label)
         }
-        "fusionner" => (RemoteOp::Merge(arg.clone()), format!("Fusionner {arg}")),
-        "rebaser" => (RemoteOp::Rebase(arg.clone()), format!("Rebaser sur {arg}")),
+        "fusionner" => {
+            local_or_remote()?;
+            (RemoteOp::Merge(arg.clone()), format!("Fusionner {arg}"))
+        }
+        "rebaser" => {
+            local_or_remote()?;
+            (RemoteOp::Rebase(arg.clone()), format!("Rebaser sur {arg}"))
+        }
         "cherry-pick" => (RemoteOp::CherryPick(oid(&arg)?), "Cherry-pick".into()),
         "revert" => (RemoteOp::Revert(oid(&arg)?), "Revert".into()),
-        "reset-soft" => (RemoteOp::Reset { rev: arg, mode: ResetMode::Soft }, "Reset (soft)".into()),
-        "reset-mixed" => (RemoteOp::Reset { rev: arg, mode: ResetMode::Mixed }, "Reset (mixed)".into()),
-        "reset-hard" => (RemoteOp::Reset { rev: arg, mode: ResetMode::Hard }, "Reset (hard)".into()),
+        "reset-soft" => (RemoteOp::Reset { rev: oid(&arg)?.to_hex(), mode: ResetMode::Soft }, "Reset (soft)".into()),
+        "reset-mixed" => (RemoteOp::Reset { rev: oid(&arg)?.to_hex(), mode: ResetMode::Mixed }, "Reset (mixed)".into()),
+        "reset-hard" => (RemoteOp::Reset { rev: oid(&arg)?.to_hex(), mode: ResetMode::Hard }, "Reset (hard)".into()),
         "continuer" => (RemoteOp::Continue, "Continuer".into()),
         "abandonner" => (RemoteOp::Abort, "Abandonner".into()),
         "passer" => (RemoteOp::Skip, "Passer le commit".into()),
@@ -1065,11 +1110,16 @@ pub fn parse(v: &RepoView, action: &str, input: Option<&str>) -> Result<(RemoteO
             (RemoteOp::CreateTag { name: name.clone(), rev: "HEAD".into() }, format!("Étiquette {name}"))
         }
         "etiquette-ici" => {
+            let rev = oid(&arg)?.to_hex();
             let name = tag()?;
-            (RemoteOp::CreateTag { name: name.clone(), rev: arg }, format!("Étiquette {name}"))
+            (RemoteOp::CreateTag { name: name.clone(), rev }, format!("Étiquette {name}"))
         }
-        "supprimer-etiquette" => (RemoteOp::DeleteTag(arg.clone()), format!("Supprimer l'étiquette {arg}")),
+        "supprimer-etiquette" => {
+            tagged()?;
+            (RemoteOp::DeleteTag(arg.clone()), format!("Supprimer l'étiquette {arg}"))
+        }
         "pousser-etiquette" => {
+            tagged()?;
             let remote = v.default_remote().ok_or("Aucun remote : ajoutez-en un sur le PC.")?;
             (RemoteOp::PushTag { name: arg.clone(), remote }, format!("Pousser l'étiquette {arg}"))
         }
@@ -1150,7 +1200,7 @@ mod tests {
             remotes: vec![RemoteBranch {
                 remote: "origin".into(),
                 name: "autre".into(),
-                full: "refs/remotes/origin/autre".into(),
+                full: "origin/autre".into(),
                 oid: oid_of('c'),
                 is_symbolic: false,
             }],
@@ -1258,6 +1308,79 @@ mod tests {
             parse(&v, "nouvelle-etiquette", Some("v1.2.0")).unwrap().0,
             RemoteOp::CreateTag { name: "v1.2.0".into(), rev: "HEAD".into() }
         );
+    }
+
+    /// Une branche, une étiquette ou un commit que désigne une action part aussi en argument de git, et le téléphone
+    /// choisit ce qu'il envoie (un écran `commit/<id>` propose un reset sur `<id>`, quel qu'il soit). Une branche ou
+    /// une étiquette : jamais une option ni un caractère de contrôle, même si DragonTree en a lu une de ce nom, et
+    /// seulement une que DragonTree a lue ; un commit : un identifiant complet.
+    #[test]
+    fn a_designated_branch_tag_or_commit_never_reaches_git_as_an_option() {
+        let mut v = view();
+        let mut refs = (**v.refs.as_ref().unwrap()).clone();
+        // Des noms qu'une autre commande que `git branch` ou `git tag` a pu créer (`git update-ref`).
+        let mut dashed = refs.locals[1].clone();
+        dashed.name = "-f".into();
+        refs.locals.push(dashed);
+        refs.tags =
+            ["v1", "--force"].map(|name| TagRef { name: name.into(), oid: oid_of('a'), annotated: false }).into();
+        v.refs = Some(Arc::new(refs));
+        let named = [
+            "basculer",
+            "fusionner",
+            "rebaser",
+            "renommer",
+            "supprimer-branche",
+            "supprimer-branche-force",
+            "suivre",
+            "publier",
+            "supprimer-etiquette",
+            "pousser-etiquette",
+        ];
+        for verb in named {
+            for bad in ["-f", "--force", "--output=C:/secret.txt", "feature/x\n-f", "v1\u{0}", "", "inconnue"] {
+                assert!(parse(&v, &format!("{verb}:{bad}"), Some("nouveau-nom")).is_err(), "{verb}:{bad}");
+            }
+        }
+        let refused = parse(&v, "basculer:-f", None).unwrap_err();
+        assert!(refused.contains("refusé"), "{refused}");
+        let missing = parse(&v, "fusionner:inconnue", None).unwrap_err();
+        assert!(missing.contains("introuvable"), "{missing}");
+        let ok = |action: &str| parse(&v, action, Some("nouveau-nom")).map(|(op, _)| op);
+        assert_eq!(ok("basculer:feature/x"), Ok(RemoteOp::Checkout("feature/x".into())));
+        assert_eq!(ok("fusionner:origin/autre"), Ok(RemoteOp::Merge("origin/autre".into())));
+        assert_eq!(ok("rebaser:feature/x"), Ok(RemoteOp::Rebase("feature/x".into())));
+        assert_eq!(
+            ok("renommer:feature/x"),
+            Ok(RemoteOp::RenameBranch { old: "feature/x".into(), new: "nouveau-nom".into() })
+        );
+        assert_eq!(
+            ok("supprimer-branche:feature/x"),
+            Ok(RemoteOp::DeleteBranch { name: "feature/x".into(), force: false })
+        );
+        assert_eq!(ok("supprimer-etiquette:v1"), Ok(RemoteOp::DeleteTag("v1".into())));
+        assert_eq!(ok("pousser-etiquette:v1"), Ok(RemoteOp::PushTag { name: "v1".into(), remote: "origin".into() }));
+        assert!(ok("basculer:origin/autre").is_err(), "une distante ne se bascule pas d'ici");
+        assert!(ok("suivre:feature/x").is_err() && ok("supprimer-branche:origin/autre").is_err());
+        // Branches pas encore lues par DragonTree : rien à désigner.
+        let unread = RepoView { refs: None, ..view() };
+        assert!(parse(&unread, "basculer:feature/x", None).unwrap_err().contains("pas encore relue"));
+        assert!(parse(&unread, "supprimer-etiquette:v1", None).is_err());
+
+        let c = "c".repeat(40);
+        let with_newline = format!("{c}\n");
+        for verb in ["reset-soft", "reset-mixed", "reset-hard", "branche-ici", "etiquette-ici", "detacher"] {
+            for bad in ["-x", "--hard", "HEAD~1", "main", &c[1..], with_newline.as_str()] {
+                assert!(parse(&v, &format!("{verb}:{bad}"), Some("nouveau-nom")).is_err(), "{verb}:{bad}");
+            }
+            assert!(parse(&v, &format!("{verb}:{c}"), Some("nouveau-nom")).is_ok(), "{verb}");
+        }
+        assert_eq!(ok(&format!("reset-hard:{c}")), Ok(RemoteOp::Reset { rev: c.clone(), mode: ResetMode::Hard }));
+        assert_eq!(
+            ok(&format!("branche-ici:{c}")),
+            Ok(RemoteOp::CreateBranch { name: "nouveau-nom".into(), start: c.clone() })
+        );
+        assert_eq!(ok(&format!("etiquette-ici:{c}")), Ok(RemoteOp::CreateTag { name: "nouveau-nom".into(), rev: c }));
     }
 
     #[test]
