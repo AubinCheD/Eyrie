@@ -9,6 +9,8 @@ export struct UiAct {
     id: string,
     label: string,
     glyph: string,
+    // L'icône Material qui tient lieu du glyphe dans la barre du haut (voir `Icon`) ; vide : le glyphe.
+    icon: string,
     style: int,
     confirm: string,
     has-input: bool,
@@ -154,7 +156,8 @@ export struct PcItem {
     current: bool,
 }
 
-// Icônes dessinées (24 × 24) : elles ne dépendent pas des polices du téléphone.
+// Icônes dessinées (24 × 24), celles de Material Icons de Google (Apache 2.0) : elles ne dépendent pas des polices du
+// téléphone. Les actions des modules y sont ramenées par `view::material_icon`.
 export component Icon inherits Rectangle {
     in property <string> kind;
     in property <color> tint: Theme.text;
@@ -180,8 +183,8 @@ export component Icon inherits Rectangle {
             : kind == "qr" ? "M3 11h8V3H3v8zm2-6h4v4H5V5zM3 21h8v-8H3v8zm2-6h4v4H5v-4zM13 3v8h8V3h-8zm6 6h-4V5h4v4zm-6 4h2v2h-2zm2 2h2v2h-2zm-2 2h2v2h-2zm4 0h2v2h-2zm2-2h2v2h-2zm-2-2h2v2h-2zm2-2h2v2h-2zm0 6h2v2h-2z"
             : kind == "keyboard" ? "M20 5H4c-1.1 0-1.99.9-1.99 2L2 17c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm-9 3h2v2h-2V8zm0 3h2v2h-2v-2zM8 8h2v2H8V8zm0 3h2v2H8v-2zm-1 2H5v-2h2v2zm0-3H5V8h2v2zm9 7H8v-2h8v2zm0-4h-2v-2h2v2zm0-3h-2V8h2v2zm3 3h-2v-2h2v2zm0-3h-2V8h2v2z"
             : kind == "pc" ? "M20 18c1.1 0 1.99-.9 1.99-2L22 6c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2H0v2h24v-2h-4zM4 6h16v10H4V6z"
-            : kind == "zoom-in" ? "M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"
-            : kind == "zoom-out" ? "M19 13H5v-2h14v2z"
+            : kind == "zoom-in" || kind == "add" ? "M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"
+            : kind == "zoom-out" || kind == "remove" ? "M19 13H5v-2h14v2z"
             : kind == "down" ? "M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z"
             : kind == "check" ? "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"
             : kind == "star" ? "M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"
@@ -197,6 +200,44 @@ export component Icon inherits Rectangle {
             : kind == "eye" ? "M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"
             : kind == "star-outline" ? "M22 9.24l-7.19-.62L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21 12 17.27 18.18 21l-1.63-7.03L22 9.24zM12 15.4l-3.76 2.27 1-4.28-3.32-2.88 4.38-.38L12 6.1l1.71 4.04 4.38.38-3.32 2.88 1 4.28L12 15.4z"
             : kind == "mic" ? "M12 14c1.66 0 2.99-1.34 2.99-3L15 5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.48 6-3.3 6-6.72h-1.7z"
+            // Les actions de la barre du haut (voir `view::material_icon`).
+            : kind == "done-all" ? "M18 7l-1.41-1.41-6.34 6.34 1.41 1.41L18 7zm4.24-1.41L11.66 16.17 7.48 12l-1.41 1.41L11.66 19l12-12-1.42-1.41zM.41 13.41L6 19l1.41-1.41L1.83 12 .41 13.41z"
+            : kind == "mark-read" ? "M21.99 8c0-.72-.37-1.35-.94-1.7L12 1 2.95 6.3C2.38 6.65 2 7.28 2 8v10c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2l-.01-10zM12 13L3.74 7.84 12 3l8.26 4.84L12 13z"
+            : kind == "mark-unread" ? "M20 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"
+            : kind == "snooze" ? "M7.88 3.39L6.6 1.86 2 5.71l1.29 1.53 4.59-3.85zM22 5.72l-4.6-3.86-1.29 1.53 4.6 3.86L22 5.72zM12 4c-4.97 0-9 4.03-9 9s4.02 9 9 9a9 9 0 0 0 0-18zm0 16c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7zm-3-9h3.63L9 15.2V17h6v-2h-3.63L15 10.8V9H9v2z"
+            : kind == "undo" ? "M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z"
+            : kind == "refresh" ? "M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"
+            : kind == "notifications-off" ? "M20 18.69L7.84 6.14 5.27 3.49 4 4.76l2.8 2.8v.01c-.52.99-.8 2.16-.8 3.42v5l-2 2v1h13.73l2 2L21 19.72l-1-1.03zM12 22c1.11 0 2-.89 2-2h-4c0 1.11.89 2 2 2zm6-7.32V11c0-3.08-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68c-.15.03-.29.08-.42.12-.1.03-.2.07-.3.11h-.01c-.01 0-.01 0-.02.01-.23.09-.46.2-.68.31 0 0-.01 0-.01.01L18 14.68z"
+            : kind == "stop" ? "M6 6h12v12H6z"
+            : kind == "play" ? "M8 5v14l11-7z"
+            : kind == "pause" ? "M6 19h4V5H6v14zm8-14v14h4V5h-4z"
+            : kind == "delete" ? "M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"
+            : kind == "arrow-down" ? "M20 12l-1.41-1.41L13 16.17V4h-2v12.17l-5.58-5.59L4 12l8 8 8-8z"
+            : kind == "arrow-up" ? "M4 12l1.41 1.41L11 7.83V20h2V7.83l5.58 5.59L20 12l-8-8-8 8z"
+            : kind == "arrow-forward" ? "M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8z"
+            : kind == "download" ? "M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"
+            : kind == "upload" ? "M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"
+            : kind == "folder-open" ? "M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z"
+            : kind == "terminal" ? "M20 4H4c-1.11 0-2 .9-2 2v12c0 1.1.89 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.89-2-2-2zm0 14H4V8h16v10zm-2-1h-6v-2h6v2zM7.5 17l-1.41-1.41L8.67 13l-2.59-2.59L7.5 9l4 4-4 4z"
+            : kind == "sparkle" ? "M19 9l1.25-2.75L23 5l-2.75-1.25L19 1l-1.25 2.75L15 5l2.75 1.25L19 9zm-7.5.5L9 4 6.5 9.5 1 12l5.5 2.5L9 20l2.5-5.5L17 12l-5.5-2.5zM19 15l-1.25 2.75L15 19l2.75 1.25L19 23l1.25-2.75L23 19l-2.75-1.25L19 15z"
+            : kind == "sleep" ? "M12.34 2.02C6.59 1.82 2 6.42 2 12c0 5.52 4.48 10 10 10 3.71 0 6.93-2.02 8.66-5.02-7.51-.25-12.09-8.43-8.32-14.96z"
+            : kind == "wake" ? "M6.76 4.84l-1.8-1.79-1.41 1.41 1.79 1.79 1.42-1.41zM4 10.5H1v2h3v-2zm9-9.95h-2V3.5h2V.55zm7.45 3.91l-1.41-1.41-1.79 1.79 1.41 1.41 1.79-1.79zm-3.21 13.7l1.79 1.8 1.41-1.41-1.8-1.79-1.4 1.4zM20 10.5v2h3v-2h-3zm-8-5c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6-2.69-6-6-6zm-1 16.95h2V19.5h-2v2.95zm-7.45-3.91l1.41 1.41 1.79-1.8-1.41-1.41-1.79 1.8z"
+            : kind == "remote" ? "M12 11c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm6 2c0-3.31-2.69-6-6-6s-6 2.69-6 6c0 2.22 1.21 4.15 3 5.19l1-1.74c-1.19-.7-2-1.97-2-3.45 0-2.21 1.79-4 4-4s4 1.79 4 4c0 1.48-.81 2.75-2 3.45l1 1.74c1.79-1.04 3-2.97 3-5.19zM12 3C6.48 3 2 7.48 2 13c0 3.7 2.01 6.92 4.99 8.65l1-1.73C5.61 18.53 4 15.96 4 13c0-4.42 3.58-8 8-8s8 3.58 8 8c0 2.96-1.61 5.53-4 6.92l1 1.73c2.99-1.73 5-4.95 5-8.65 0-5.52-4.48-10-10-10z"
+            : kind == "label" ? "M17.63 5.84C17.27 5.33 16.67 5 16 5L5 5.01C3.9 5.01 3 5.9 3 7v10c0 1.1.9 1.99 2 1.99L16 19c.67 0 1.27-.33 1.63-.84L22 12l-4.37-6.16z"
+            : kind == "archive" ? "M20.54 5.23l-1.39-1.68C18.88 3.21 18.47 3 18 3H6c-.47 0-.88.21-1.16.55L3.46 5.23C3.17 5.57 3 6.02 3 6.5V19c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6.5c0-.48-.17-.93-.46-1.27zM12 17.5L6.5 12H10v-2h4v2h3.5L12 17.5zM5.12 5l.81-1h12l.94 1H5.12z"
+            : kind == "sweep" ? "M15 16h4v2h-4zm0-8h7v2h-7zm0 4h6v2h-6zM3 18c0 1.1.9 2 2 2h6c1.1 0 2-.9 2-2V8H3v10zM14 5h-3l-1-1H6L5 5H2v2h12z"
+            : kind == "swap" ? "M6.99 11L3 15l3.99 4v-3H14v-2H6.99v-3zM21 9l-3.99-4v3H10v2h7.01v3L21 9z"
+            : kind == "swap-vert" ? "M16 17.01V10h-2v7.01h-3L15 21l4-3.99h-3zM9 3L5 6.99h3V14h2V6.99h3L9 3z"
+            : kind == "warning" ? "M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"
+            : kind == "wallet" ? "M21 18v1c0 1.1-.9 2-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14c1.1 0 2 .9 2 2v1h-9a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h9zm-9-2h10V8H12v8zm4-2.5c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"
+            : kind == "merge" ? "M17 20.41L18.41 19 15 15.59 13.59 17 17 20.41zM7.5 8H11v5.59L5.59 19 7 20.41l6-6V8h3.5L12 3.5 7.5 8z"
+            : kind == "branch" ? "M14 4l2.29 2.29-2.88 2.88 1.42 1.42 2.88-2.88L20 10V4zm-4 0H4v6l2.29-2.29 4.71 4.7V20h2v-8.41l-5.29-5.3z"
+            : kind == "open-in-new" ? "M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"
+            : kind == "key" ? "M12.65 10A5.99 5.99 0 0 0 7 6c-3.31 0-6 2.69-6 6s2.69 6 6 6a5.99 5.99 0 0 0 5.65-4H17v4h4v-4h2v-4H12.65zM7 14c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"
+            : kind == "copy" ? "M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"
+            : kind == "chart" ? "M5 9.2h3V19H5zM10.6 5h2.8v14h-2.8zm5.6 8H19v6h-2.8z"
+            : kind == "history" ? "M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42A8.954 8.954 0 0 0 13 21a9 9 0 0 0 0-18zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"
+            : kind == "rewind" ? "M11 18V6l-8.5 6 8.5 6zm.5-6l8.5 6V6l-8.5 6z"
             : "";
     }
 }
@@ -1431,8 +1472,8 @@ export component EmptyView inherits Rectangle {
     }
 }
 
-// Une action de la barre du haut en icône : son glyphe (rouge si elle est dangereuse), son libellé pour le lecteur
-// d'écran, un indicateur quand elle est en cours.
+// Une action de la barre du haut en icône : son icône Material, sinon son glyphe (rouge si elle est dangereuse), son
+// libellé pour le lecteur d'écran, un indicateur quand elle est en cours.
 component GlyphButton inherits Rectangle {
     in property <UiAct> act;
     callback clicked();
@@ -1445,7 +1486,11 @@ component GlyphButton inherits Rectangle {
     accessible-enabled: !root.act.busy;
     accessible-action-default => { root.clicked(); }
     if root.act.busy: Busy { }
-    if !root.act.busy: Text {
+    if !root.act.busy && root.act.icon != "": Icon {
+        kind: root.act.icon;
+        tint: root.act.style == 2 ? Theme.danger : Theme.text;
+    }
+    if !root.act.busy && root.act.icon == "": Text {
         text: root.act.glyph;
         color: root.act.style == 2 ? Theme.danger : Theme.text-dim;
         font-size: 20px;
@@ -1459,7 +1504,8 @@ component GlyphButton inherits Rectangle {
 }
 
 // La barre du haut : retour, titre et sous-titre, actions (`bar` : en icônes, ou une seule en clair ; `acts` : le
-// menu ⋯).
+// menu ⋯). Tout se centre sur la bande des boutons ronds, en haut (la flèche de retour, ⋯) : le titre et les icônes
+// sur la même ligne qu'eux, quelle que soit la police du téléphone ; le sous-titre dessous, sous le titre.
 export component TopBar inherits Rectangle {
     in property <string> title;
     in property <string> subtitle;
@@ -1475,19 +1521,27 @@ export component TopBar inherits Rectangle {
     callback pc();
     height: 60px;
     background: Theme.bg;
+    // La bande des boutons ronds, en haut de la barre : tout s'y centre.
+    property <length> band: 44px;
     HorizontalLayout {
         padding-left: root.can-back ? 4px : Theme.pad;
         padding-right: 4px;
         spacing: 4px;
-        if root.can-back: IconButton {
-            icon: "back";
-            label: "Retour";
-            clicked => { root.back(); }
+        if root.can-back: VerticalLayout {
+            alignment: start;
+            IconButton {
+                icon: "back";
+                label: "Retour";
+                clicked => { root.back(); }
+            }
         }
-        VerticalLayout {
-            alignment: center;
+        Rectangle {
             horizontal-stretch: 1;
-            Text {
+            title-text := Text {
+                x: 0;
+                y: (root.band - self.height) / 2;
+                width: parent.width;
+                height: self.preferred-height;
                 text: root.title;
                 color: Theme.text;
                 font-size: root.subtitle == "" ? 22px : 18px;
@@ -1495,25 +1549,33 @@ export component TopBar inherits Rectangle {
                 overflow: elide;
             }
             if root.subtitle != "": Text {
+                x: 0;
+                y: title-text.y + title-text.height;
+                width: parent.width;
+                height: self.preferred-height;
                 text: root.subtitle;
                 color: Theme.text-dim;
                 font-size: Theme.font-small;
                 overflow: elide;
             }
         }
-        if root.show-pc: IconButton {
-            icon: "pc";
-            label: "Montrer sur le PC";
-            tint: Theme.text-dim;
-            clicked => { root.pc(); }
+        if root.show-pc: VerticalLayout {
+            alignment: start;
+            IconButton {
+                icon: "pc";
+                label: "Montrer sur le PC";
+                tint: Theme.text-dim;
+                clicked => { root.pc(); }
+            }
         }
-        // Une action seule : en clair (rouge si elle est dangereuse), son bord droit aligné sur celui des cartes.
+        // Une action seule : en clair (rouge si elle est dangereuse), son icône devant, son bord droit aligné sur celui
+        // des cartes.
         if root.bar.length == 1 && root.acts.length == 0: VerticalLayout {
-            alignment: center;
+            alignment: start;
             padding-right: Theme.pad - 4px;
             Rectangle {
-                width: first-label.preferred-width + 24px;
-                height: 44px;
+                width: first-row.preferred-width + 24px;
+                height: root.band;
                 accessible-role: button;
                 accessible-label: root.bar[0].label;
                 accessible-action-default => { root.act(root.bar[0]); }
@@ -1523,14 +1585,27 @@ export component TopBar inherits Rectangle {
                     border-radius: 18px;
                     background: first-ta.pressed ? Theme.pressed : root.bar[0].style == 2 ? Theme.danger.with-alpha(0.14) : Theme.surface-2;
                 }
-                first-label := Text {
-                    text: root.bar[0].glyph != "" ? root.bar[0].glyph + " " + root.bar[0].label : root.bar[0].label;
-                    color: root.bar[0].style == 2 ? Theme.danger : Theme.accent;
-                    font-size: 14px;
-                    font-weight: 600;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
+                first-row := HorizontalLayout {
+                    x: 12px;
+                    width: parent.width - 24px;
+                    spacing: 6px;
+                    alignment: center;
                     opacity: root.bar[0].busy ? 0 : 1;
+                    if root.bar[0].icon != "": VerticalLayout {
+                        alignment: center;
+                        Icon {
+                            kind: root.bar[0].icon;
+                            tint: root.bar[0].style == 2 ? Theme.danger : Theme.accent;
+                            size: 18px;
+                        }
+                    }
+                    Text {
+                        text: root.bar[0].glyph != "" && root.bar[0].icon == "" ? root.bar[0].glyph + " " + root.bar[0].label : root.bar[0].label;
+                        color: root.bar[0].style == 2 ? Theme.danger : Theme.accent;
+                        font-size: 14px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
                 }
                 if root.bar[0].busy: Busy {
                     size: 18px;
@@ -1545,17 +1620,20 @@ export component TopBar inherits Rectangle {
         if root.bar.length > 1 || root.acts.length > 0: HorizontalLayout {
             spacing: 2px;
             for a in root.bar: VerticalLayout {
-                alignment: center;
+                alignment: start;
                 GlyphButton {
                     act: a;
                     clicked => { root.act(a); }
                 }
             }
         }
-        if root.acts.length > 0: IconButton {
-            icon: "more";
-            label: "Plus d'actions";
-            clicked => { root.more(); }
+        if root.acts.length > 0: VerticalLayout {
+            alignment: start;
+            IconButton {
+                icon: "more";
+                label: "Plus d'actions";
+                clicked => { root.more(); }
+            }
         }
     }
 }

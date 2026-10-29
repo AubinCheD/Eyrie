@@ -57,12 +57,70 @@ pub fn act(a: &Act) -> UiAct {
     act_in(a, &Local::default())
 }
 
+/// L'icône Material (voir `Icon`, `ui/widgets.slint`) qui tient lieu du glyphe d'une action dans la barre du haut : les
+/// modules donnent des émojis, que chaque téléphone dessine à sa façon et que l'on comprend mal en petit. Vide : aucune
+/// ne convient, l'émoji reste. ✅ marque lue une entrée, sauf sur tout un groupe (« Tout marquer lu »).
+pub fn material_icon(a: &Act) -> &'static str {
+    let all = a.id.starts_with("tout");
+    match a.glyph.as_str() {
+        "✅" if all => "done-all",
+        "✅" => "mark-read",
+        "⚪" | "●" => "mark-unread",
+        "☑️" => "check",
+        "⏰" => "snooze",
+        "↩️" | "↶" => "undo",
+        "🔄" | "↻" | "🔁" => "refresh",
+        "🔕" => "notifications-off",
+        "🖥️" => "pc",
+        "➕" | "+" => "add",
+        "➖" => "remove",
+        "⏹" | "⏹️" => "stop",
+        "▶" | "▶️" => "play",
+        "⏸️" => "pause",
+        "✏️" | "📝" => "edit",
+        "🗑️" | "🗑" => "delete",
+        "⬇️" | "⬇" | "↓" => "arrow-down",
+        "⬆️" | "↑" | "⤴️" => "arrow-up",
+        "📥" => "download",
+        "📤" => "upload",
+        "📂" | "📁" => "folder-open",
+        "›_" => "terminal",
+        "✳️" | "✳" | "✨" => "sparkle",
+        "🌙" | "☾" => "sleep",
+        "☀️" => "wake",
+        "📡" => "remote",
+        "🏷️" => "label",
+        "📦" | "🗄️" => "archive",
+        "🧹" => "sweep",
+        "↪️" => "swap",
+        "↕️" => "swap-vert",
+        "⚠️" => "warning",
+        "💰" => "wallet",
+        "🔀" => "merge",
+        "🌿" => "branch",
+        "↗" | "🌐" => "open-in-new",
+        "🔑" => "key",
+        "🔗" => "link",
+        "⚙️" => "gear",
+        "🔌" => "power",
+        "✖️" | "×" => "close",
+        "📋" => "copy",
+        "📊" => "chart",
+        "🕘" => "history",
+        "⏪" => "rewind",
+        "➡️" => "arrow-forward",
+        "⬅️" => "back",
+        _ => "",
+    }
+}
+
 pub fn act_in(a: &Act, local: &Local) -> UiAct {
     let input = a.input.clone().unwrap_or_default();
     UiAct {
         id: a.id.as_str().into(),
         label: a.label.as_str().into(),
         glyph: a.glyph.as_str().into(),
+        icon: material_icon(a).into(),
         style: match a.style {
             ActStyle::Normal => 0,
             ActStyle::Primary => 1,
@@ -1140,6 +1198,24 @@ mod tests {
         assert_eq!(labels(&more), ["Pause", "Nouveau", "Tout replier"]);
         let sheet = [Act::new("x", "Supprimer").danger(), Act::new("y", "Basculer")];
         assert_eq!(labels(&menu(&sheet)), ["Basculer", "Supprimer"]);
+    }
+
+    /// Dans la barre du haut, une icône Material plutôt que l'émoji du module ; ✅ dit « marquer lue » sur une entrée,
+    /// « tout marquer lu » sur un groupe ; un émoji sans icône qui lui corresponde reste tel quel.
+    #[test]
+    fn top_bar_glyphs_become_material_icons() {
+        let icon = |id: &str, glyph: &str| act(&Act::new(id, "x").glyph(glyph)).icon.to_string();
+        assert_eq!(icon("lu", "✅"), "mark-read");
+        assert_eq!(icon("tout-lu:contoso/web", "✅"), "done-all");
+        assert_eq!(icon("tout_lu", "✅"), "done-all");
+        assert_eq!(icon("non-lu", "⚪"), "mark-unread");
+        assert_eq!(icon("fait", "☑️"), "check");
+        assert_eq!(icon("annuler", "↩️"), "undo");
+        assert_eq!(icon("actualiser", "🔄"), "refresh");
+        assert_eq!(icon("reporter", "⏰"), "snooze");
+        assert_eq!(act(&Act::link("Ouvrir", "https://example.com")).icon, "open-in-new");
+        assert_eq!(icon("x", "🐳"), "", "pas d'icône : l'émoji reste");
+        assert_eq!(icon("x", ""), "");
     }
 
     #[test]
