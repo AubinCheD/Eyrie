@@ -134,7 +134,11 @@ mêmes composants : cohérence, et un module ajouté au PC arrive au téléphone
 sorties par le haut) + lignes changées, couleurs symboliques (par défaut, 256 couleurs, RVB) que le téléphone
 résout dans son thème. Jusqu'à 30 images/s tant qu'un téléphone le suit. Saisie : texte, touches nommées (Entrée,
 Échap, Tab, flèches, Ctrl+C…), collage ; encodées par Fawkes lui-même (`replay_keyboard`), donc justes en mode
-win32-input de ConPTY. Une session Claude qui attend montre ses choix (« 1. Yes ») en boutons.
+win32-input de ConPTY. Une session Claude qui attend montre ses choix (« 1. Yes ») en boutons. Un collage sur
+plusieurs lignes, ou qui cache des caractères de contrôle (Échap…, qu'un shell lirait comme des touches, Entrée
+comprise), est demandé d'abord ; le PC retire ces caractères d'un collage et d'un texte tapé (sauf Alt+touche).
+Quand le programme demande un mot de passe, la saisie se masque : ni affichée, ni apprise par le clavier du
+téléphone (« Saisie masquée » la bascule à la main).
 
 ## 6. Ce que chaque module offre au téléphone
 
@@ -179,6 +183,8 @@ Fawkes, Owlery, Menagerie, Patronus et DragonTree) : `close_terminal`, `remote_c
 - **Notifications** : une bulle quand une notification arrive du PC ; sur Android, en arrière-plan, une
   notification du système pour ce qui se met à attendre (session Claude…) et pour les alertes, tant que
   l'application tourne (pas de service au premier plan : Android peut couper le réseau au bout d'un moment).
+  Téléphone verrouillé, elle ne dit que le module et ce qui attend (« Quelque chose vous attend sur le PC. ») ; le
+  détail (titre du terminal, message) est dans l'application.
 - **Thème** : celui du système (clair ou sombre), couleurs de la suite.
 - **Réglages** : PC appairés (changer, oublier), nom de l'appareil, Tailscale (état, connexion, déconnexion), taille
   du terminal, à propos.
