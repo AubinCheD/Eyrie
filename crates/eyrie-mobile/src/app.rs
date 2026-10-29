@@ -518,6 +518,9 @@ pub struct Controller {
     overlays_for: Option<(String, String)>,
     filter_timer: slint::Timer,
     target: Option<Target>,
+    /// L'appairage en cours, pour l'arrêter ; son numéro : ce que dit encore un appairage abandonné est ignoré.
+    pair_stop: Option<crate::net::PairStop>,
+    pair_gen: u64,
     /// Ce qui a déjà été signalé (bulle ou notification du système) : rien deux fois, et rien à la première connexion
     /// à un PC (l'état initial n'est pas une nouveauté). Après une coupure, ou un arrêt de l'application par Android,
     /// ce qui est arrivé sur le PC entre-temps l'est.
@@ -666,6 +669,8 @@ impl Controller {
             overlays_for: None,
             filter_timer: slint::Timer::default(),
             target: None,
+            pair_stop: None,
+            pair_gen: 0,
             signalled: Signalled::default(),
             demo,
             goto: None,
@@ -2219,15 +2224,28 @@ impl Controller {
         ui.set_pairing_pc(t.label.as_str().into());
         ui.set_pairing_error(SharedString::new());
         let (device, model) = self.device();
+        self.stop_pairing();
         self.target = Some(t.clone());
-        crate::net::pair(t.addrs, t.secret, t.key, self.store.identity.clone(), device, model, |ev| {
-            post(move |c| c.on_pair(ev));
-        });
+        let pair_gen = self.pair_gen;
+        let me = self.store.identity.clone();
+        self.pair_stop = Some(crate::net::pair(t.addrs, t.secret, t.key, me, device, model, move |ev| {
+            post(move |c| c.on_pair(pair_gen, ev));
+        }));
     }
 
-    fn on_pair(&mut self, ev: PairEvent) {
+    /// L'appairage en cours est abandonné (retour, un autre PC, « Réessayer ») : sa connexion se ferme, et ce qu'il
+    /// dirait encore (son code, le refus du PC au bout du délai, un accord) n'ira pas à l'appairage suivant.
+    fn stop_pairing(&mut self) {
+        if let Some(s) = self.pair_stop.take() {
+            s.stop();
+        }
+        self.pair_gen += 1;
+    }
+
+    /// Une nouvelle de l'appairage numéro `pair_gen` : ignorée s'il a été abandonné depuis.
+    fn on_pair(&mut self, pair_gen: u64, ev: PairEvent) {
         let Some(ui) = self.ui() else { return };
-        if ui.get_page() != 2 {
+        if ui.get_page() != 2 || pair_gen != self.pair_gen {
             return;
         }
         match ev {
@@ -2255,7 +2273,11 @@ impl Controller {
                 let weak = self.ui.clone();
                 slint::Timer::single_shot(Duration::from_millis(1100), move || {
                     if weak.upgrade().is_some_and(|u| u.get_page() == 2) {
-                        with(|c| c.pairing_done());
+                        with(|c| {
+                            if c.pair_gen == pair_gen {
+                                c.pairing_done();
+                            }
+                        });
                     }
                 });
             }
@@ -2301,6 +2323,7 @@ impl Controller {
 
     fn cancel_pairing(&mut self) {
         platform::stop_scan();
+        self.stop_pairing();
         self.target = None;
         if let Some(ui) = self.ui() {
             ui.set_code_error(SharedString::new());
@@ -2774,6 +2797,45 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         Controller::install(&ui, Store::open(&dir), false);
         ui
+    }
+
+    /// Ce que dit encore un appairage abandonné (le code, le refus du PC au bout de son délai, l'accord) ne touche pas
+    /// au suivant : ni son code à l'écran, ni son échec, ni la clé d'un PC rangée sous l'adresse d'un autre.
+    #[test]
+    fn a_dropped_pairing_does_not_speak_for_the_next() {
+        let ui = headless("appairage");
+        // Un port fermé : le fil de l'appairage échoue seul, et sans boucle d'évènements rien n'en revient.
+        let target = |host: &str| Target {
+            addrs: vec!["127.0.0.1:9".into()],
+            host: host.into(),
+            ip: "127.0.0.1".into(),
+            port: 9,
+            secret: vec![1; 32],
+            key: None,
+            label: host.into(),
+        };
+        let gen_a = with(|c| {
+            c.begin_pairing(target("pc-a"));
+            let gen_a = c.pair_gen;
+            c.cancel_pairing();
+            c.begin_pairing(target("pc-b"));
+            gen_a
+        })
+        .unwrap();
+        with(|c| {
+            c.on_pair(gen_a, PairEvent::Sas("1234 5678".into()));
+            c.on_pair(gen_a, PairEvent::Failed("Appairage refusé sur le PC.".into()));
+            c.on_pair(gen_a, PairEvent::Paired { pc: "PC A".into(), key: [0xa; 32] });
+        });
+        assert_eq!((ui.get_pairing_stage(), ui.get_pairing_sas().as_str()), (0, ""), "l'appairage de pc-b attend");
+        assert!(with(|c| c.store.pcs.is_empty()).unwrap(), "rien d'enregistré");
+
+        let gen_b = with(|c| c.pair_gen).unwrap();
+        with(|c| c.on_pair(gen_b, PairEvent::Sas("8765 4321".into())));
+        assert_eq!((ui.get_pairing_stage(), ui.get_pairing_sas().as_str()), (1, "8765 4321"));
+        with(|c| c.on_pair(gen_b, PairEvent::Paired { pc: "PC B".into(), key: [0xb; 32] }));
+        let pcs = with(|c| c.store.pcs.iter().map(|p| (p.name.clone(), p.host.clone())).collect::<Vec<_>>()).unwrap();
+        assert_eq!(pcs, [("PC B".to_string(), "pc-b".to_string())]);
     }
 
     /// Une confirmation ouverte sur un écran vaut pour lui. Le PC en ouvre un autre (le résultat d'une action) : elle

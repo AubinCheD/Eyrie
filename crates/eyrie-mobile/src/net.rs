@@ -388,6 +388,43 @@ pub enum PairEvent {
     Failed(String),
 }
 
+/// Arrête un appairage en cours (retour, ou un autre PC) : sa connexion se ferme, le PC le voit tout de suite, et ce
+/// que le fil dirait encore (l'échec de sa lecture coupée, un accord arrivé entre-temps) ne sort plus.
+#[derive(Clone, Default)]
+pub struct PairStop(Arc<Mutex<PairHeld>>);
+
+#[derive(Default)]
+struct PairHeld {
+    stopped: bool,
+    /// La connexion ouverte, le temps de l'appairage.
+    socket: Option<client::Stream>,
+}
+
+impl PairStop {
+    pub fn stop(&self) {
+        let mut held = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        held.stopped = true;
+        if let Some(s) = held.socket.take() {
+            let _ = s.shutdown(std::net::Shutdown::Both);
+        }
+    }
+
+    fn stopped(&self) -> bool {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).stopped
+    }
+
+    /// Garde la connexion (ou la ferme si l'appairage est déjà arrêté) ; `None` : rendue, l'appairage fini.
+    fn hold(&self, socket: Option<client::Stream>) {
+        let mut held = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        match socket {
+            Some(s) if held.stopped => {
+                let _ = s.shutdown(std::net::Shutdown::Both);
+            }
+            s => held.socket = s,
+        }
+    }
+}
+
 /// L'appairage, dans un fil : `secret` du QR code ou du code saisi ; `pc_key` si le QR la donne.
 pub fn pair(
     addrs: Vec<String>,
@@ -397,31 +434,45 @@ pub fn pair(
     device: String,
     model: String,
     on: impl Fn(PairEvent) + Send + 'static,
-) {
+) -> PairStop {
+    let stop = PairStop::default();
+    let held = stop.clone();
     let _ = std::thread::Builder::new().name("eyrie-appairage".into()).spawn(move || {
-        let mut conn = match open(&addrs, &me) {
-            Ok(c) => c,
-            Err(e) => {
-                on(PairEvent::Failed(format!(
-                    "PC injoignable ({e}). Vérifiez que ce téléphone est connecté à Tailscale (accueil d'Eyrie) et que \
-                     le PC affiche le code."
-                )));
-                return;
+        let on = |ev| {
+            if !held.stopped() {
+                on(ev);
             }
         };
-        let key = conn.peer.key;
-        match client::pair(&mut conn, &secret, pc_key.as_ref(), &device, &model) {
-            Ok(sas) => on(PairEvent::Sas(sas)),
-            Err(e) => {
-                on(PairEvent::Failed(e.to_string()));
-                return;
+        let steps = || {
+            let mut conn = match open(&addrs, &me) {
+                Ok(c) => c,
+                Err(e) => {
+                    on(PairEvent::Failed(format!(
+                        "PC injoignable ({e}). Vérifiez que ce téléphone est connecté à Tailscale (accueil d'Eyrie) et \
+                         que le PC affiche le code."
+                    )));
+                    return;
+                }
+            };
+            held.hold(conn.tx.get_mut().try_clone().ok());
+            let key = conn.peer.key;
+            match client::pair(&mut conn, &secret, pc_key.as_ref(), &device, &model) {
+                Ok(sas) => on(PairEvent::Sas(sas)),
+                Err(e) => {
+                    on(PairEvent::Failed(e.to_string()));
+                    return;
+                }
             }
-        }
-        match client::wait_paired(&mut conn) {
-            Ok(pc) => on(PairEvent::Paired { pc, key }),
-            Err(e) => on(PairEvent::Failed(e.to_string())),
-        }
+            match client::wait_paired(&mut conn) {
+                Ok(pc) => on(PairEvent::Paired { pc, key }),
+                Err(e) => on(PairEvent::Failed(e.to_string())),
+            }
+        };
+        steps();
+        // Fini : l'arrêt n'a plus de connexion à fermer.
+        held.hold(None);
     });
+    stop
 }
 
 #[cfg(test)]
@@ -493,6 +544,38 @@ mod tests {
         }
         drop(link);
         server.join().unwrap();
+    }
+
+    /// Un appairage abandonné pendant qu'il attend le PC (retour, ou un autre PC scanné) : sa connexion se ferme tout
+    /// de suite, le PC le voit, et rien n'en sort plus vers l'interface (pas d'échec affiché sur l'appairage suivant).
+    #[test]
+    fn a_stopped_pairing_closes_its_connection_and_says_nothing() {
+        let pc = Keypair::generate();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let (asked_tx, asked_rx) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let (t, _) = channel::accept(&mut s, &pc).unwrap();
+            let (mut r, _w) = t.split(s.try_clone().unwrap(), s);
+            let _pair: ToPc = r.recv().unwrap();
+            asked_tx.send(()).unwrap();
+            // La décision attend l'utilisateur du PC ; le téléphone, lui, abandonne.
+            r.get_ref().set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let since = Instant::now();
+            let closed = r.recv::<ToPc>().is_err_and(|e| e.kind() != io::ErrorKind::WouldBlock);
+            (closed, since.elapsed())
+        });
+        let (tx, rx) = mpsc::channel();
+        let stop = pair(vec![addr], vec![7; 32], None, Keypair::generate(), "x".into(), "y".into(), move |ev| {
+            let _ = tx.send(ev);
+        });
+        asked_rx.recv_timeout(Duration::from_secs(5)).expect("la demande d'appairage");
+        stop.stop();
+        let (closed, after) = server.join().unwrap();
+        assert!(closed && after < Duration::from_secs(2), "le PC voit la connexion fermée ({after:?})");
+        let late: Vec<PairEvent> = std::iter::from_fn(|| rx.recv_timeout(Duration::from_millis(500)).ok()).collect();
+        assert!(late.is_empty(), "rien après l'abandon : {late:?}");
     }
 
     /// Une liaison abandonnée pendant son salut (PC changé ou oublié) : son fil finit la connexion, mais rien n'en sort
