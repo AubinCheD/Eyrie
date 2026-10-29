@@ -849,6 +849,25 @@ fn key_event(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
     egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }
 }
 
+/// Un collage du téléphone, sans ses caractères de contrôle (Échap, Ctrl+O…, Effacer) : hors collage encadré, Fawkes
+/// l'écrit tel quel, et le shell les lirait comme des touches (`Échap [13;28;13;1;0;1_` est Entrée en mode win32). Il
+/// garde ses tabulations et retours à la ligne. Le téléphone demande déjà avant de coller un tel texte.
+fn paste_text(t: &str) -> String {
+    t.chars().filter(|&c| !c.is_control() || matches!(c, '\t' | '\r' | '\n')).collect()
+}
+
+/// Une saisie du téléphone, sans retour à la ligne ni caractère de contrôle, tabulation à part. Seule exception :
+/// Alt+touche, qui arrive en Échap suivi d'un caractère (Alt+Effacer : Échap et Effacer), d'un seul envoi.
+fn typed_text(t: &str) -> String {
+    let mut chars = t.chars();
+    if let (Some('\u{1b}'), Some(c), None) = (chars.next(), chars.next(), chars.next())
+        && (!c.is_control() || c == '\u{7f}')
+    {
+        return t.to_string();
+    }
+    t.chars().filter(|&c| !c.is_control() || c == '\t').collect()
+}
+
 /// Une saisie du téléphone, encodée par Fawkes comme une frappe sur le PC.
 pub fn term_input(app: &mut App, id: &str, input: &TermInput, cx: &mut Cx) -> Result<(), String> {
     let id: TermId = id.parse().map_err(|_| "terminal inconnu")?;
@@ -860,10 +879,10 @@ pub fn term_input(app: &mut App, id: &str, input: &TermInput, cx: &mut Cx) -> Re
     }
     let none = egui::Modifiers::NONE;
     let event = match input {
-        TermInput::Text(t) => egui::Event::Text(t.replace(['\r', '\n'], "")),
+        TermInput::Text(t) => egui::Event::Text(typed_text(t)),
         TermInput::Paste(t) => {
             let mode = *live.rt.term.lock().mode();
-            live.rt.write(fawkes::term::input::paste_bytes(t, mode));
+            live.rt.write(fawkes::term::input::paste_bytes(&paste_text(t), mode));
             return Ok(());
         }
         TermInput::Key(k) => match k {
@@ -1404,6 +1423,30 @@ mod tests {
         assert_eq!(short_path("C:"), "C:");
         assert_eq!(dir_key(r"C:\Dev\X"), dir_key(r"c:\dev\x"), "casse ignorée, comme sous Windows");
         assert_ne!(dir_key(r"C:\Dev\X"), dir_key(r"C:\Dev\Y"));
+    }
+
+    #[test]
+    fn a_phone_paste_keeps_no_control_character_but_tabs_and_line_breaks() {
+        // Échap et la suite que ConPTY lit comme Entrée (le mode win32 de Fawkes), Ctrl+O, Effacer, un CSI en C1.
+        assert_eq!(paste_text("ls\u{1b}[13;28;13;1;0;1_whoami"), "ls[13;28;13;1;0;1_whoami");
+        assert_eq!(paste_text("a\u{f}b\u{7f}c\u{9b}d\u{0}"), "abcd");
+        assert_eq!(paste_text("cargo\ttest\r\ngit status\n"), "cargo\ttest\r\ngit status\n");
+    }
+
+    #[test]
+    fn a_phone_text_keeps_escape_only_as_alt() {
+        // Alt+lettre et Alt+Effacer : Échap puis un caractère, d'un seul envoi.
+        assert_eq!(typed_text("\u{1b}b"), "\u{1b}b");
+        assert_eq!(typed_text("\u{1b}."), "\u{1b}.");
+        assert_eq!(typed_text("\u{1b}\u{7f}"), "\u{1b}\u{7f}");
+        // Ailleurs, Échap et les autres contrôles ne passent pas ; les retours non plus, comme avant.
+        assert_eq!(typed_text("a\u{1b}[13;28;13;1;0;1_b"), "a[13;28;13;1;0;1_b");
+        assert_eq!(typed_text("\u{1b}\r"), "");
+        assert_eq!(typed_text("\u{1b}\u{1b}"), "");
+        assert_eq!(typed_text("\u{1b}"), "");
+        assert_eq!(typed_text("l\u{f}s\r\n"), "ls");
+        assert_eq!(typed_text("a\tb"), "a\tb", "la tabulation reste : elle complète dans un shell");
+        assert_eq!(typed_text("3"), "3");
     }
 
     #[test]

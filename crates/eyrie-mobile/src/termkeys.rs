@@ -1,6 +1,6 @@
 //! Ce que le téléphone envoie au terminal suivi : les touches de la barre (Ctrl ou Alt « collé » s'applique à la
 //! touche suivante), un caractère tapé pendant que l'un d'eux est collé, la saisie du champ (sur plusieurs lignes, elle
-//! part en collage) et le texte collé (demandé d'abord s'il a plusieurs lignes, comme le terminal du PC).
+//! part en collage) et le texte collé (demandé d'abord s'il a plusieurs lignes ou des caractères de contrôle).
 //!
 //! Tout passe par le module du terminal sur le PC (Fawkes), qui l'encode comme une frappe ou un collage.
 
@@ -102,9 +102,19 @@ pub fn typed(text: &str, latch: Latch) -> Typed {
     }
 }
 
+/// Un caractère de contrôle qu'un shell peut lire comme une touche (Échap, Ctrl+O…, Effacer) : tous, sauf la
+/// tabulation et les retours à la ligne.
+fn is_key_control(c: char) -> bool {
+    c.is_control() && !matches!(c, '\t' | '\r' | '\n')
+}
+
 /// La saisie du champ, envoyée avec Entrée. Sur plusieurs lignes, elle part en collage : le programme la reçoit d'un
 /// bloc (encadrée s'il le demande), puis Entrée la valide. Les retours à la ligne de la fin ne comptent pas.
+///
+/// Les caractères de contrôle qu'un collage dans le champ y a mis sont retirés : le champ ne les montre pas, et un shell
+/// les lirait comme des touches (Échap suivi de `[13;28;13;1;0;1_` est Entrée pour la console Windows).
 pub fn line(text: &str) -> Vec<TermInput> {
+    let text: String = text.chars().filter(|&c| !is_key_control(c)).collect();
     let text = text.trim_end_matches(['\r', '\n']);
     let enter = TermInput::Key(Key::Enter);
     if text.is_empty() {
@@ -120,9 +130,10 @@ pub fn line(text: &str) -> Vec<TermInput> {
 #[derive(Debug, PartialEq)]
 pub enum Paste {
     Empty,
-    /// Une ligne sans retour : elle part tout de suite.
+    /// Une ligne sans retour ni caractère de contrôle : elle part tout de suite.
     Now(String),
-    /// Des retours à la ligne : un shell sans collage encadré exécuterait chaque ligne. On demande d'abord.
+    /// Des retours à la ligne, ou des caractères de contrôle : un shell sans collage encadré exécuterait chaque ligne,
+    /// ou lirait Échap et la suite comme des touches, Entrée comprise. On demande d'abord.
     Ask {
         text: String,
         question: String,
@@ -133,15 +144,32 @@ pub enum Paste {
 const PREVIEW_LINES: usize = 4;
 const PREVIEW_CHARS: usize = 48;
 
+/// Un caractère de contrôle tel que la question le montre : son symbole (␛ pour Échap, ␡ pour Effacer), ou � pour
+/// ceux qui n'en ont pas.
+fn shown(c: char) -> char {
+    match c {
+        '\u{0}'..='\u{1f}' => char::from_u32(0x2400 + c as u32).unwrap_or('\u{fffd}'),
+        '\u{7f}' => '\u{2421}',
+        c if c.is_control() => '\u{fffd}',
+        c => c,
+    }
+}
+
 pub fn paste(clip: &str) -> Paste {
     if clip.is_empty() {
         return Paste::Empty;
     }
-    if !clip.contains(['\r', '\n']) {
+    let controls = clip.chars().any(is_key_control);
+    if !controls && !clip.contains(['\r', '\n']) {
         return Paste::Now(clip.to_string());
     }
     let lines: Vec<&str> = clip.trim_end_matches(['\r', '\n']).lines().collect();
     let head = match lines.len() {
+        _ if controls => {
+            "Ce texte contient des caractères de contrôle (Échap…) qu'un shell peut lire comme des touches, \
+             Entrée comprise. Le coller ?"
+                .to_string()
+        }
         0 | 1 => {
             "Coller cette ligne et son retour à la ligne dans le terminal ? Un shell peut l'exécuter tout de suite."
                 .to_string()
@@ -152,6 +180,7 @@ pub fn paste(clip: &str) -> Paste {
         .iter()
         .take(PREVIEW_LINES)
         .map(|l| {
+            let l: String = l.chars().map(shown).collect();
             let l = l.trim_end();
             if l.chars().count() > PREVIEW_CHARS {
                 format!("{}…", l.chars().take(PREVIEW_CHARS - 1).collect::<String>())
@@ -226,6 +255,35 @@ mod tests {
             vec![TermInput::Paste("Relis le diff\net propose un titre".into()), enter.clone()]
         );
         assert_eq!(line("a\r\nb"), vec![TermInput::Paste("a\r\nb".into()), enter]);
+    }
+
+    #[test]
+    fn a_line_loses_its_control_characters_but_its_tabs() {
+        let enter = TermInput::Key(Key::Enter);
+        // Collé dans le champ : Échap et la suite que ConPTY lit comme Entrée ne partent pas.
+        assert_eq!(line("a\u{1b}[13;28;13;1;0;1_b"), vec![TermInput::Text("a[13;28;13;1;0;1_b".into()), enter.clone()]);
+        assert_eq!(line("a\u{f}b\u{7f}\u{9b}"), vec![TermInput::Text("ab".into()), enter.clone()]);
+        assert_eq!(line("a\tb"), vec![TermInput::Text("a\tb".into()), enter.clone()]);
+        assert_eq!(line("a\u{1b}\nb"), vec![TermInput::Paste("a\nb".into()), enter.clone()]);
+        assert_eq!(line("\u{1b}"), vec![enter], "il ne reste rien : Entrée seule");
+    }
+
+    #[test]
+    fn pasting_control_characters_asks_first_and_shows_them() {
+        // Sur une ligne, sans retour : Échap ou Ctrl+O suffisent à un shell pour exécuter ce qui précède.
+        let clip = "ls\u{1b}[13;28;13;1;0;1_whoami";
+        let Paste::Ask { text, question } = paste(clip) else { panic!("demande attendue") };
+        assert_eq!(text, clip, "confirmé, le collage part tel quel");
+        assert!(question.starts_with("Ce texte contient des caractères de contrôle"), "{question}");
+        assert!(question.ends_with("ls␛[13;28;13;1;0;1_whoami"), "{question}");
+        let Paste::Ask { question, .. } = paste("a\u{f}b\u{7f}c\u{9b}d") else { panic!("demande attendue") };
+        assert!(question.ends_with("a␏b␡c�d"), "{question}");
+        // Avec des retours aussi : c'est la question des caractères de contrôle, sur chaque ligne.
+        let Paste::Ask { question, .. } = paste("git status\u{1b}\nls\n") else { panic!("demande attendue") };
+        assert!(question.starts_with("Ce texte contient des caractères de contrôle"), "{question}");
+        assert!(question.ends_with("git status␛\nls"), "{question}");
+        // Une tabulation n'est pas une touche à craindre.
+        assert_eq!(paste("a\tb"), Paste::Now("a\tb".into()));
     }
 
     #[test]
