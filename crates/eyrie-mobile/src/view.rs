@@ -624,6 +624,17 @@ pub fn note_key(at: u64, module: &str, title: &str) -> String {
     format!("{at}\u{1f}{module}\u{1f}{title}")
 }
 
+/// Les espaces que le français veut insécables (dans « », avant : ; ? !) : un texte qui passe à la ligne ne laisse
+/// pas un « » » ou un « : » seul en tête de ligne. L'espace fine insécable (U+202F), pas l'espace insécable
+/// (U+00A0) : quand celle-ci tombe au bord de la ligne, la mise en page de Slint (parley 0.11) y coupe quand même.
+pub fn tied(text: &str) -> String {
+    let mut out = text.replace("« ", "«\u{202f}");
+    for mark in [" »", " :", " ;", " ?", " !"] {
+        out = out.replace(mark, &mark.replacen(' ', "\u{202f}", 1));
+    }
+    out
+}
+
 /// « il y a » : à l'instant, 5 min, 2 h, 3 j.
 pub fn ago(at: u64, now: u64) -> String {
     match now.saturating_sub(at) {
@@ -641,6 +652,17 @@ mod tests {
     use suite_mobile::ui::{Band, DIFF_CONTEXT, DIFF_HEADER, GRAPH_THROUGH, NODE_HEAD};
 
     use super::*;
+
+    #[test]
+    fn french_punctuation_stays_with_its_word() {
+        let t = tied("Démarrage refusé : ce téléphone n'a pas le droit « Agir » sur le PC ; vraiment ? oui !");
+        assert_eq!(
+            t,
+            "Démarrage refusé\u{202f}: ce téléphone n'a pas le droit «\u{202f}Agir\u{202f}» sur le PC\u{202f}; \
+             vraiment\u{202f}? oui\u{202f}!"
+        );
+        assert_eq!(tied(r"C:\Users\aubin › Réglages"), r"C:\Users\aubin › Réglages", "rien d'autre ne change");
+    }
 
     #[test]
     fn consecutive_rows_share_a_card() {

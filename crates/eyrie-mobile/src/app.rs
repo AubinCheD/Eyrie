@@ -797,9 +797,10 @@ impl Controller {
         let Some(ui) = self.ui() else { return };
         let s = self.away_shown();
         ui.set_away(s.kind);
-        ui.set_away_title(s.title.into());
-        ui.set_away_text(s.text.into());
-        ui.set_away_error(s.error.into());
+        // Ces textes passent à la ligne : les guillemets restent collés à leur mot (« Agir »).
+        ui.set_away_title(view::tied(&s.title).into());
+        ui.set_away_text(view::tied(&s.text).into());
+        ui.set_away_error(view::tied(&s.error).into());
         ui.set_can_start(s.can_start);
     }
 
