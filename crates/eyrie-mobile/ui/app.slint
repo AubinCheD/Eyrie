@@ -180,6 +180,8 @@ export component AppWindow inherits Window {
     callback toggle-wrap();
     callback search-edited(string);
     callback select-tab(string);
+    // Glisser de côté dans un écran à onglets : le suivant (1) ou le précédent (-1).
+    callback swipe-tab(int);
     callback open-url(string);
     callback haptic();
     callback toggle-pin(string);
@@ -637,6 +639,7 @@ export component AppWindow inherits Window {
                             root.haptic();
                             root.select-tab(p);
                         }
+                        swipe-tab(d) => { root.swipe-tab(d); }
                         open-path(p) => { root.open-path(p); }
                         act(a) => { root.start-act(a); }
                         menu(r) => { root.show-sheet(r.title, r.acts); }

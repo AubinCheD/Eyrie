@@ -26,6 +26,8 @@ export component ScreenPage inherits Rectangle {
     in property <[TabItem]> tabs;
     callback search-edited(string);
     callback select-tab(string);
+    // Glisser de côté : l'onglet suivant (1) ou précédent (-1).
+    callback swipe-tab(int);
     callback open-path(string);
     callback act(UiAct);
     callback menu(UiRow);
@@ -86,7 +88,24 @@ export component ScreenPage inherits Rectangle {
             text <=> root.search-text;
             edited(t) => { root.search-edited(t); }
         }
+        swipe := SwipeGestureHandler {
+            enabled: root.tabs.length > 1;
+            handle-swipe-left: true;
+            handle-swipe-right: true;
+            property <length> dx: self.swiping ? self.current-position.x - self.pressed-position.x : 0px;
+            swiped => {
+                if self.current-position.x - self.pressed-position.x < -60px {
+                    root.haptic();
+                    root.swipe-tab(1);
+                } else if self.current-position.x - self.pressed-position.x > 60px {
+                    root.haptic();
+                    root.swipe-tab(-1);
+                }
+            }
         list := ListView {
+            // La liste suit le doigt, freinée, le temps du glissé.
+            x: swipe.dx * 0.35;
+            animate x { duration: 160ms; easing: ease-out; }
             for r in root.rows: VerticalLayout {
                 if r.kind == 0: SectionHeader {
                     title: r.title;
@@ -159,6 +178,7 @@ export component ScreenPage inherits Rectangle {
                         for a in r.acts: ActButton {
                             text: a.label;
                             glyph: a.glyph;
+                            icon: a.icon;
                             style: a.style;
                             busy: a.busy;
                             clicked => { root.act(a); }
@@ -166,6 +186,7 @@ export component ScreenPage inherits Rectangle {
                     }
                 }
             }
+        }
         }
     }
     if root.loading && root.rows.length == 0: Text {
@@ -200,7 +221,7 @@ component NoteRow inherits VerticalLayout {
             title: root.note.title,
             subtitle: root.note.module-name + (root.note.body != "" && !root.note.expanded ? " · " + root.note.body : ""),
             detail: root.note.when,
-            glyph: root.note.read ? "·" : "●",
+            unread: !root.note.read,
             tone: root.tone,
             opens: root.note.has-path,
             first: root.first,
@@ -223,21 +244,21 @@ component NoteRow inherits VerticalLayout {
                 width: 3px;
                 background: Theme.tone(root.tone);
             }
-            // Aligné sur le titre (14 + 34 + 12 px dans la ligne).
+            // Aligné sur le titre (16 px dans la ligne, qui n'a pas de signe à gauche).
             body := Text {
-                x: 60px;
+                x: 16px;
                 y: 0;
-                width: parent.width - 60px - 16px;
+                width: parent.width - 32px;
                 text: root.note.body;
                 color: Theme.text-dim;
                 font-size: 13.5px;
                 wrap: word-wrap;
             }
             if !root.last: Rectangle {
-                x: 62px;
+                x: 16px;
                 y: parent.height - 1px;
                 height: 1px;
-                width: parent.width - 62px;
+                width: parent.width - 16px;
                 background: Theme.border;
             }
         }
@@ -497,6 +518,7 @@ export component OverviewPage inherits Rectangle {
                     title: w.text,
                     subtitle: w.module-name,
                     glyph: w.glyph,
+                    icon: w.icon,
                     color: w.color,
                     has-color: true,
                     tone: 3,
@@ -546,7 +568,8 @@ export component OverviewPage inherits Rectangle {
                 item: {
                     kind: 1,
                     title: "Toutes les notifications",
-                    glyph: "●",
+                    glyph: "🔔",
+                    icon: "bell",
                     opens: true,
                     first: false,
                     last: true,
@@ -630,6 +653,7 @@ export component MorePage inherits Rectangle {
                             alignment: center;
                             IconButton {
                                 icon: m.pinned ? "star" : "star-outline";
+                            filled: m.pinned;
                                 label: m.pinned ? "Retirer de la barre du bas" : "Mettre dans la barre du bas";
                                 tint: m.pinned ? Theme.warn : Theme.text-faint;
                                 clicked => { root.toggle-pin(m.id); }
@@ -649,15 +673,16 @@ export component MorePage inherits Rectangle {
                 title: "ET AUSSI";
             }
             for e[i] in [
-                { kind: 1, title: "Notifications", subtitle: "Le centre de notifications du PC", glyph: "●", opens: true, path: "notes", first: true, last: false },
-                { kind: 1, title: "Commandes du PC", subtitle: "La palette des modules, exécutée sur le PC", glyph: "▶", opens: true, path: "commandes", first: false, last: false },
-                { kind: 1, title: "Réglages", subtitle: "PC appairés, apparence, à propos", glyph: "⚙", opens: true, path: "reglages", first: false, last: true },
+                { kind: 1, title: "Notifications", subtitle: "Le centre de notifications du PC", glyph: "🔔", icon: "bell", opens: true, path: "notes", first: true, last: false },
+                { kind: 1, title: "Commandes du PC", subtitle: "La palette des modules, exécutée sur le PC", glyph: "›_", icon: "terminal", opens: true, path: "commandes", first: false, last: false },
+                { kind: 1, title: "Réglages", subtitle: "PC appairés, apparence, à propos", glyph: "⚙", icon: "gear", opens: true, path: "reglages", first: false, last: true },
             ]: RowView {
                 item: {
                     kind: e.kind,
                     title: e.title,
                     subtitle: e.subtitle,
                     glyph: e.glyph,
+                    icon: e.icon,
                     opens: true,
                     path: e.path,
                     first: e.first,
@@ -715,6 +740,7 @@ export component CommandsPage inherits Rectangle {
                     title: c.title,
                     subtitle: c.module-name,
                     glyph: "▶",
+                    icon: "play",
                     first: i == 0,
                     last: i == root.commands.length - 1,
                 };
@@ -914,7 +940,8 @@ export component SettingsPage inherits Rectangle {
                         kind: 1,
                         title: p.name,
                         subtitle: p.host,
-                        glyph: "▣",
+                        glyph: "🖥",
+                        icon: "pc",
                         opens: true,
                         first: true,
                         last: true,

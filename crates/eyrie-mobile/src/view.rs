@@ -57,60 +57,118 @@ pub fn act(a: &Act) -> UiAct {
     act_in(a, &Local::default())
 }
 
-/// L'icône Material (voir `Icon`, `ui/widgets.slint`) qui tient lieu du glyphe d'une action dans la barre du haut : les
+/// L'icône Material (voir `Icon`, `ui/icons.slint`) qui tient lieu d'un glyphe envoyé par un module, partout : les
 /// modules donnent des émojis, que chaque téléphone dessine à sa façon et que l'on comprend mal en petit. Vide : aucune
-/// ne convient, l'émoji reste. ✅ marque lue une entrée, sauf sur tout un groupe (« Tout marquer lu »).
-pub fn material_icon(a: &Act) -> &'static str {
-    let all = a.id.starts_with("tout");
-    match a.glyph.as_str() {
-        "✅" if all => "done-all",
-        "✅" => "mark-read",
-        "⚪" | "●" => "mark-unread",
-        "☑️" => "check",
+/// ne convient, l'émoji reste (une ou deux lettres aussi, voir [`mark`]). Le sélecteur de variante (U+FE0F) ne compte
+/// pas : « ⚠️ » et « ⚠ » sont la même icône.
+pub fn icon_for(glyph: &str) -> &'static str {
+    match glyph.trim_end_matches('\u{fe0f}') {
+        "✅" => "check-circle",
+        "⚪" => "mark-unread",
+        "☑" => "checkbox",
         "⏰" => "snooze",
-        "↩️" | "↶" => "undo",
-        "🔄" | "↻" | "🔁" => "refresh",
+        "↩" | "↶" => "undo",
+        "🔄" | "↻" => "refresh",
+        "🔁" => "restart",
         "🔕" => "notifications-off",
-        "🖥️" => "pc",
+        "🖥" | "💻" => "pc",
         "➕" | "+" => "add",
         "➖" => "remove",
-        "⏹" | "⏹️" => "stop",
-        "▶" | "▶️" => "play",
-        "⏸️" => "pause",
-        "✏️" | "📝" => "edit",
-        "🗑️" | "🗑" => "delete",
-        "⬇️" | "⬇" | "↓" => "arrow-down",
-        "⬆️" | "↑" | "⤴️" => "arrow-up",
+        "⏹" => "stop",
+        "▶" | "▸" => "play",
+        "⏸" => "pause",
+        "✏" => "edit",
+        "📝" => "edit-note",
+        "🗑" => "delete",
+        "⬇" | "↓" => "arrow-down",
+        "⬆" | "↑" | "⤴" => "arrow-up",
         "📥" => "download",
         "📤" => "upload",
-        "📂" | "📁" => "folder-open",
-        "›_" => "terminal",
-        "✳️" | "✳" | "✨" => "sparkle",
+        "📂" => "folder-open",
+        "📁" => "folder",
+        "›_" | ">_" => "terminal",
+        "✳" | "✨" => "sparkle",
         "🌙" | "☾" => "sleep",
-        "☀️" => "wake",
+        "☀" => "wake",
         "📡" => "remote",
-        "🏷️" => "label",
-        "📦" | "🗄️" => "archive",
+        "🏷" => "label",
+        "📦" => "stash",
+        "🗄" => "archive",
         "🧹" => "sweep",
-        "↪️" => "swap",
-        "↕️" => "swap-vert",
-        "⚠️" => "warning",
-        "💰" => "wallet",
+        "↪" => "swap",
+        "↕" => "swap-vert",
+        "⚠" => "warning",
+        "❌" => "cancel",
+        "✖" | "×" => "close",
+        "💰" => "savings",
         "🔀" => "merge",
         "🌿" => "branch",
-        "↗" | "🌐" => "open-in-new",
+        "🌳" => "tree",
+        "🍒" => "cherry",
+        "↗" => "open-in-new",
+        "🌐" => "globe",
         "🔑" => "key",
         "🔗" => "link",
-        "⚙️" => "gear",
+        "⚙" => "gear",
         "🔌" => "power",
-        "✖️" | "×" => "close",
         "📋" => "copy",
         "📊" => "chart",
-        "🕘" => "history",
+        "🕘" | "🕐" => "history",
         "⏪" => "rewind",
-        "➡️" => "arrow-forward",
-        "⬅️" => "back",
+        "➡" | "⇢" => "arrow-forward",
+        "⬅" => "back",
+        "📌" => "pin",
+        "📍" => "place",
+        "👤" => "person",
+        "👀" => "eye",
+        "🐳" => "container",
+        "🧩" => "extension",
+        "📜" => "doc",
+        "📒" | "📓" => "book",
+        "🔥" => "fire",
+        "◐" => "contrast",
+        "▾" => "down",
+        "🔒" => "lock",
+        "🔔" => "bell",
+        "⭐" => "star",
         _ => "",
+    }
+}
+
+/// Le glyphe d'une ligne quand c'est une ou deux lettres (l'état d'un fichier : « M », « ?? », « A ») : dessiné en
+/// texte dans une petite pastille. Vide sinon.
+pub fn mark(glyph: &str) -> &str {
+    let short = (1..=2).contains(&glyph.chars().count());
+    if short && glyph.chars().all(|c| c.is_ascii_alphanumeric() || "?!".contains(c)) { glyph } else { "" }
+}
+
+/// L'icône d'un module (barre du bas, cartes, « Plus ») ; vide pour un module que le téléphone ne connaît pas (son
+/// logo, sinon son initiale).
+pub fn module_icon(id: &str) -> &'static str {
+    match id {
+        "fawkes" => "terminal",
+        "dragontree" => "tree",
+        "owlery" => "inbox",
+        "patronus" => "agent",
+        "menagerie" => "dns",
+        "grimoire" => "book",
+        "gringotts" => "savings",
+        "carnet" => "edit-note",
+        _ => "",
+    }
+}
+
+/// L'icône d'une action : celle de son glyphe ([`icon_for`]) ; ✅ marque lue une entrée, sauf sur tout un groupe
+/// (« Tout marquer lu »), ● la marque non lue ; 🌐 et un lien s'ouvrent ailleurs.
+pub fn material_icon(a: &Act) -> &'static str {
+    match a.glyph.trim_end_matches('\u{fe0f}') {
+        "✅" if a.id.starts_with("tout") => "done-all",
+        "✅" => "mark-read",
+        "●" => "mark-unread",
+        "☑" => "check",
+        "🌐" => "open-in-new",
+        "" if a.url.is_some() => "open-in-new",
+        g => icon_for(g),
     }
 }
 
@@ -471,6 +529,7 @@ fn chips(list: &[Chip], shown: usize) -> ModelRc<UiChip> {
         .map(|c| UiChip {
             text: c.text.as_str().into(),
             glyph: c.glyph.as_str().into(),
+            icon: icon_for(&c.glyph).into(),
             color: c.color.map(rgb).unwrap_or_default(),
             has_color: c.color.is_some(),
             tone: tone(c.tone),
@@ -500,7 +559,10 @@ fn row(r: &Row, first: bool, last: bool, local: &Local) -> UiRow {
         // Le sous-titre passe à la ligne : « il y a 1 h » ne s'y coupe pas.
         subtitle: tied(&r.subtitle).into(),
         detail: r.detail.as_str().into(),
-        glyph: if r.glyph.is_empty() { "•".into() } else { r.glyph.as_str().into() },
+        glyph: r.glyph.as_str().into(),
+        icon: icon_for(&r.glyph).into(),
+        mark: mark(&r.glyph).into(),
+        unread: r.unread,
         color: r.color.map(rgb).unwrap_or_default(),
         has_color: r.color.is_some(),
         tone: tone(r.tone),
@@ -545,6 +607,7 @@ fn section(b: &Block, open: Option<bool>, local: &Local) -> UiRow {
         title: title.as_str().into(),
         detail: aside.as_str().into(),
         glyph: glyph.as_str().into(),
+        icon: icon_for(glyph).into(),
         color: color.map(rgb).unwrap_or_default(),
         has_color: color.is_some(),
         badge: badge.as_str().into(),
@@ -1214,8 +1277,40 @@ mod tests {
         assert_eq!(icon("actualiser", "🔄"), "refresh");
         assert_eq!(icon("reporter", "⏰"), "snooze");
         assert_eq!(act(&Act::link("Ouvrir", "https://example.com")).icon, "open-in-new");
-        assert_eq!(icon("x", "🐳"), "", "pas d'icône : l'émoji reste");
+        assert_eq!(icon("x", "🦄"), "", "pas d'icône : l'émoji reste");
+        assert_eq!(icon("x", "⚠️"), icon("x", "⚠"), "le sélecteur de variante ne compte pas");
         assert_eq!(icon("x", ""), "");
+    }
+
+    /// Chaque icône que le téléphone demande existe dans `ui/icons.slint` (sinon rien ne serait dessiné) ; deux
+    /// lettres restent du texte.
+    #[test]
+    fn every_icon_asked_for_is_drawn() {
+        let file = include_str!("../ui/icons.slint");
+        let names = file.lines().skip_while(|l| !l.contains("Les noms connus")).nth(1).unwrap_or_default();
+        let known: HashSet<&str> = names.trim_start_matches("// ").split(' ').collect();
+        assert!(known.len() > 100, "la liste des noms est en fin de fichier");
+        let glyphs = [
+            "✅", "⚪", "☑️", "⏰", "↩️", "↶", "🔄", "↻", "🔁", "🔕", "🖥️", "💻", "➕", "+", "➖", "⏹", "⏹️", "▶",
+            "▶️", "▸", "⏸️", "✏️", "📝", "🗑️", "🗑", "⬇️", "↓", "⬆️", "↑", "⤴️", "📥", "📤", "📂", "📁", "›_", "✳️",
+            "✳", "✨", "🌙", "☾", "☀️", "📡", "🏷️", "📦", "🗄️", "🧹", "↪️", "↕️", "⚠️", "❌", "✖️", "×", "💰", "🔀",
+            "🌿", "🌳", "🍒", "↗", "🌐", "🔑", "🔗", "⚙️", "🔌", "📋", "📊", "🕘", "⏪", "➡️", "⇢", "⬅️", "📌", "📍",
+            "👤", "👀", "🐳", "🧩", "📜", "📒", "🔥", "◐", "▾", "🔒", "🔔", "⭐", "●",
+        ];
+        for g in glyphs {
+            for icon in [
+                icon_for(g),
+                material_icon(&Act::new("x", "x").glyph(g)),
+                material_icon(&Act::new("tout", "x").glyph(g)),
+            ] {
+                assert!(icon.is_empty() || known.contains(icon), "{g} → {icon} : absente de icons.slint");
+            }
+        }
+        for id in ["fawkes", "dragontree", "owlery", "patronus", "menagerie", "grimoire", "gringotts", "carnet"] {
+            assert!(known.contains(module_icon(id)), "{id}");
+        }
+        assert_eq!(icon_for("🌿"), "branch");
+        assert_eq!((mark("M"), mark("??"), mark("🌿"), mark("abc")), ("M", "??", "", ""));
     }
 
     #[test]

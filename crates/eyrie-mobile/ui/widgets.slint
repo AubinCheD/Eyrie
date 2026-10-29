@@ -2,6 +2,9 @@
 // barres du haut et du bas, feuilles et dialogues.
 
 import { Theme } from "theme.slint";
+import { Icon } from "icons.slint";
+
+export { Icon }
 
 // Une action (bouton, toucher d'une ligne, entrée d'un menu). `style` : 0 normal, 1 principal, 2 danger. `busy` : en
 // cours (envoyée sans réponse du PC, ou déjà faite par le module) : grisée, avec un indicateur.
@@ -35,6 +38,8 @@ export struct UiAct {
 export struct UiChip {
     text: string,
     glyph: string,
+    // L'icône Material du glyphe (vide : le glyphe en texte).
+    icon: string,
     color: color,
     has-color: bool,
     tone: int,
@@ -60,6 +65,12 @@ export struct UiRow {
     subtitle: string,
     detail: string,
     glyph: string,
+    // L'icône Material du glyphe (`view::icon_for`), sinon `mark` : une ou deux lettres (l'état d'un fichier) ; sans
+    // l'une ni l'autre, un glyphe qui reste en texte, ou rien.
+    icon: string,
+    mark: string,
+    // Une entrée non lue : titre en gras et point de couleur.
+    unread: bool,
     color: color,
     has-color: bool,
     tone: int,
@@ -106,6 +117,8 @@ export struct ModuleItem {
     id: string,
     name: string,
     glyph: string,
+    // L'icône Material du module (`view::module_icon`) ; vide : son logo, sinon son initiale.
+    icon: string,
     color: color,
     logo: image,
     has-logo: bool,
@@ -121,6 +134,8 @@ export struct WaitItem {
     module: string,
     module-name: string,
     glyph: string,
+    // L'icône Material du module (vide : `glyph`, son initiale).
+    icon: string,
     color: color,
     text: string,
     // L'écran du module où y répondre (vide : son accueil).
@@ -154,92 +169,6 @@ export struct PcItem {
     name: string,
     host: string,
     current: bool,
-}
-
-// Icônes dessinées (24 × 24), celles de Material Icons de Google (Apache 2.0) : elles ne dépendent pas des polices du
-// téléphone. Les actions des modules y sont ramenées par `view::material_icon`.
-export component Icon inherits Rectangle {
-    in property <string> kind;
-    in property <color> tint: Theme.text;
-    in property <length> size: 24px;
-    width: size;
-    height: size;
-    Path {
-        width: parent.width;
-        height: parent.height;
-        viewbox-width: 24;
-        viewbox-height: 24;
-        fill: root.tint;
-        commands: kind == "back" ? "M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"
-            : kind == "close" ? "M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"
-            : kind == "more" ? "M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"
-            : kind == "send" ? "M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"
-            : kind == "search" ? "M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"
-            : kind == "chevron" ? "M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"
-            : kind == "home" ? "M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"
-            : kind == "apps" ? "M4 8h4V4H4v4zm6 12h4v-4h-4v4zm-6 0h4v-4H4v4zm0-6h4v-4H4v4zm6 0h4v-4h-4v4zm6-10v4h4V4h-4zm-6 4h4V4h-4v4zm6 6h4v-4h-4v4zm0 6h4v-4h-4v4z"
-            : kind == "bell" ? "M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"
-            : kind == "gear" ? "M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"
-            : kind == "qr" ? "M3 11h8V3H3v8zm2-6h4v4H5V5zM3 21h8v-8H3v8zm2-6h4v4H5v-4zM13 3v8h8V3h-8zm6 6h-4V5h4v4zm-6 4h2v2h-2zm2 2h2v2h-2zm-2 2h2v2h-2zm4 0h2v2h-2zm2-2h2v2h-2zm-2-2h2v2h-2zm2-2h2v2h-2zm0 6h2v2h-2z"
-            : kind == "keyboard" ? "M20 5H4c-1.1 0-1.99.9-1.99 2L2 17c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm-9 3h2v2h-2V8zm0 3h2v2h-2v-2zM8 8h2v2H8V8zm0 3h2v2H8v-2zm-1 2H5v-2h2v2zm0-3H5V8h2v2zm9 7H8v-2h8v2zm0-4h-2v-2h2v2zm0-3h-2V8h2v2zm3 3h-2v-2h2v2zm0-3h-2V8h2v2z"
-            : kind == "pc" ? "M20 18c1.1 0 1.99-.9 1.99-2L22 6c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2H0v2h24v-2h-4zM4 6h16v10H4V6z"
-            : kind == "zoom-in" || kind == "add" ? "M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"
-            : kind == "zoom-out" || kind == "remove" ? "M19 13H5v-2h14v2z"
-            : kind == "down" ? "M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z"
-            : kind == "check" ? "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"
-            : kind == "star" ? "M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"
-            : kind == "edit" ? "M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"
-            : kind == "folder" ? "M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"
-            : kind == "repo" ? "M22 11V3h-7v3H9V3H2v8h7V8h2v10h4v3h7v-8h-7v3h-2V8h2v3z"
-            : kind == "drive" ? "M2 20h20v-4H2v4zm2-3h2v2H4v-2zM2 4v4h20V4H2zm4 3H4V5h2v2zm-4 7h20v-4H2v4zm2-3h2v2H4v-2z"
-            : kind == "cloud" ? "M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"
-            : kind == "link" ? "M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z"
-            : kind == "power" ? "M13 3h-2v10h2V3zm4.83 2.17l-1.42 1.42A6.92 6.92 0 0 1 19 12c0 3.87-3.13 7-7 7A6.995 6.995 0 0 1 7.58 6.58L6.17 5.17A8.932 8.932 0 0 0 3 12a9 9 0 0 0 18 0c0-2.74-1.23-5.18-3.17-6.83z"
-            : kind == "cloud-off" ? "M19.35 10.04A7.49 7.49 0 0 0 12 4c-1.48 0-2.85.43-4.01 1.17l1.46 1.46A5.497 5.497 0 0 1 17.5 11.5v.5H19c1.66 0 3 1.34 3 3 0 1.13-.64 2.11-1.56 2.62l1.45 1.45C23.16 18.16 24 16.68 24 15c0-2.64-2.05-4.78-4.65-4.96zM3 5.27l2.75 2.74C2.56 8.15 0 10.77 0 14c0 3.31 2.69 6 6 6h11.73l2 2L21 20.73 4.27 4 3 5.27zM7.73 10l8 8H6c-2.21 0-4-1.79-4-4s1.79-4 4-4h1.73z"
-            : kind == "lock" ? "M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"
-            : kind == "eye" ? "M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"
-            : kind == "star-outline" ? "M22 9.24l-7.19-.62L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21 12 17.27 18.18 21l-1.63-7.03L22 9.24zM12 15.4l-3.76 2.27 1-4.28-3.32-2.88 4.38-.38L12 6.1l1.71 4.04 4.38.38-3.32 2.88 1 4.28L12 15.4z"
-            : kind == "mic" ? "M12 14c1.66 0 2.99-1.34 2.99-3L15 5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.48 6-3.3 6-6.72h-1.7z"
-            // Les actions de la barre du haut (voir `view::material_icon`).
-            : kind == "done-all" ? "M18 7l-1.41-1.41-6.34 6.34 1.41 1.41L18 7zm4.24-1.41L11.66 16.17 7.48 12l-1.41 1.41L11.66 19l12-12-1.42-1.41zM.41 13.41L6 19l1.41-1.41L1.83 12 .41 13.41z"
-            : kind == "mark-read" ? "M21.99 8c0-.72-.37-1.35-.94-1.7L12 1 2.95 6.3C2.38 6.65 2 7.28 2 8v10c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2l-.01-10zM12 13L3.74 7.84 12 3l8.26 4.84L12 13z"
-            : kind == "mark-unread" ? "M20 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"
-            : kind == "snooze" ? "M7.88 3.39L6.6 1.86 2 5.71l1.29 1.53 4.59-3.85zM22 5.72l-4.6-3.86-1.29 1.53 4.6 3.86L22 5.72zM12 4c-4.97 0-9 4.03-9 9s4.02 9 9 9a9 9 0 0 0 0-18zm0 16c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7zm-3-9h3.63L9 15.2V17h6v-2h-3.63L15 10.8V9H9v2z"
-            : kind == "undo" ? "M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z"
-            : kind == "refresh" ? "M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"
-            : kind == "notifications-off" ? "M20 18.69L7.84 6.14 5.27 3.49 4 4.76l2.8 2.8v.01c-.52.99-.8 2.16-.8 3.42v5l-2 2v1h13.73l2 2L21 19.72l-1-1.03zM12 22c1.11 0 2-.89 2-2h-4c0 1.11.89 2 2 2zm6-7.32V11c0-3.08-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68c-.15.03-.29.08-.42.12-.1.03-.2.07-.3.11h-.01c-.01 0-.01 0-.02.01-.23.09-.46.2-.68.31 0 0-.01 0-.01.01L18 14.68z"
-            : kind == "stop" ? "M6 6h12v12H6z"
-            : kind == "play" ? "M8 5v14l11-7z"
-            : kind == "pause" ? "M6 19h4V5H6v14zm8-14v14h4V5h-4z"
-            : kind == "delete" ? "M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"
-            : kind == "arrow-down" ? "M20 12l-1.41-1.41L13 16.17V4h-2v12.17l-5.58-5.59L4 12l8 8 8-8z"
-            : kind == "arrow-up" ? "M4 12l1.41 1.41L11 7.83V20h2V7.83l5.58 5.59L20 12l-8-8-8 8z"
-            : kind == "arrow-forward" ? "M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8z"
-            : kind == "download" ? "M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"
-            : kind == "upload" ? "M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"
-            : kind == "folder-open" ? "M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z"
-            : kind == "terminal" ? "M20 4H4c-1.11 0-2 .9-2 2v12c0 1.1.89 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.89-2-2-2zm0 14H4V8h16v10zm-2-1h-6v-2h6v2zM7.5 17l-1.41-1.41L8.67 13l-2.59-2.59L7.5 9l4 4-4 4z"
-            : kind == "sparkle" ? "M19 9l1.25-2.75L23 5l-2.75-1.25L19 1l-1.25 2.75L15 5l2.75 1.25L19 9zm-7.5.5L9 4 6.5 9.5 1 12l5.5 2.5L9 20l2.5-5.5L17 12l-5.5-2.5zM19 15l-1.25 2.75L15 19l2.75 1.25L19 23l1.25-2.75L23 19l-2.75-1.25L19 15z"
-            : kind == "sleep" ? "M12.34 2.02C6.59 1.82 2 6.42 2 12c0 5.52 4.48 10 10 10 3.71 0 6.93-2.02 8.66-5.02-7.51-.25-12.09-8.43-8.32-14.96z"
-            : kind == "wake" ? "M6.76 4.84l-1.8-1.79-1.41 1.41 1.79 1.79 1.42-1.41zM4 10.5H1v2h3v-2zm9-9.95h-2V3.5h2V.55zm7.45 3.91l-1.41-1.41-1.79 1.79 1.41 1.41 1.79-1.79zm-3.21 13.7l1.79 1.8 1.41-1.41-1.8-1.79-1.4 1.4zM20 10.5v2h3v-2h-3zm-8-5c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6-2.69-6-6-6zm-1 16.95h2V19.5h-2v2.95zm-7.45-3.91l1.41 1.41 1.79-1.8-1.41-1.41-1.79 1.8z"
-            : kind == "remote" ? "M12 11c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm6 2c0-3.31-2.69-6-6-6s-6 2.69-6 6c0 2.22 1.21 4.15 3 5.19l1-1.74c-1.19-.7-2-1.97-2-3.45 0-2.21 1.79-4 4-4s4 1.79 4 4c0 1.48-.81 2.75-2 3.45l1 1.74c1.79-1.04 3-2.97 3-5.19zM12 3C6.48 3 2 7.48 2 13c0 3.7 2.01 6.92 4.99 8.65l1-1.73C5.61 18.53 4 15.96 4 13c0-4.42 3.58-8 8-8s8 3.58 8 8c0 2.96-1.61 5.53-4 6.92l1 1.73c2.99-1.73 5-4.95 5-8.65 0-5.52-4.48-10-10-10z"
-            : kind == "label" ? "M17.63 5.84C17.27 5.33 16.67 5 16 5L5 5.01C3.9 5.01 3 5.9 3 7v10c0 1.1.9 1.99 2 1.99L16 19c.67 0 1.27-.33 1.63-.84L22 12l-4.37-6.16z"
-            : kind == "archive" ? "M20.54 5.23l-1.39-1.68C18.88 3.21 18.47 3 18 3H6c-.47 0-.88.21-1.16.55L3.46 5.23C3.17 5.57 3 6.02 3 6.5V19c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6.5c0-.48-.17-.93-.46-1.27zM12 17.5L6.5 12H10v-2h4v2h3.5L12 17.5zM5.12 5l.81-1h12l.94 1H5.12z"
-            : kind == "sweep" ? "M15 16h4v2h-4zm0-8h7v2h-7zm0 4h6v2h-6zM3 18c0 1.1.9 2 2 2h6c1.1 0 2-.9 2-2V8H3v10zM14 5h-3l-1-1H6L5 5H2v2h12z"
-            : kind == "swap" ? "M6.99 11L3 15l3.99 4v-3H14v-2H6.99v-3zM21 9l-3.99-4v3H10v2h7.01v3L21 9z"
-            : kind == "swap-vert" ? "M16 17.01V10h-2v7.01h-3L15 21l4-3.99h-3zM9 3L5 6.99h3V14h2V6.99h3L9 3z"
-            : kind == "warning" ? "M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"
-            : kind == "wallet" ? "M21 18v1c0 1.1-.9 2-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14c1.1 0 2 .9 2 2v1h-9a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h9zm-9-2h10V8H12v8zm4-2.5c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"
-            : kind == "merge" ? "M17 20.41L18.41 19 15 15.59 13.59 17 17 20.41zM7.5 8H11v5.59L5.59 19 7 20.41l6-6V8h3.5L12 3.5 7.5 8z"
-            : kind == "branch" ? "M14 4l2.29 2.29-2.88 2.88 1.42 1.42 2.88-2.88L20 10V4zm-4 0H4v6l2.29-2.29 4.71 4.7V20h2v-8.41l-5.29-5.3z"
-            : kind == "open-in-new" ? "M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"
-            : kind == "key" ? "M12.65 10A5.99 5.99 0 0 0 7 6c-3.31 0-6 2.69-6 6s2.69 6 6 6a5.99 5.99 0 0 0 5.65-4H17v4h4v-4h2v-4H12.65zM7 14c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"
-            : kind == "copy" ? "M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"
-            : kind == "chart" ? "M5 9.2h3V19H5zM10.6 5h2.8v14h-2.8zm5.6 8H19v6h-2.8z"
-            : kind == "history" ? "M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42A8.954 8.954 0 0 0 13 21a9 9 0 0 0 0-18zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"
-            : kind == "rewind" ? "M11 18V6l-8.5 6 8.5 6zm.5-6l8.5 6V6l-8.5 6z"
-            : "";
-    }
 }
 
 // Une action en cours : un arc qui tourne.
@@ -292,6 +221,8 @@ export component ThinProgress inherits Rectangle {
 // Un bouton rond, une icône dedans.
 export component IconButton inherits Rectangle {
     in property <string> icon;
+    // L'icône pleine (une étoile choisie).
+    in property <bool> filled;
     // Ce que dit le lecteur d'écran.
     in property <string> label;
     in property <color> tint: Theme.text;
@@ -307,8 +238,9 @@ export component IconButton inherits Rectangle {
     animate background { duration: 120ms; }
     Icon {
         kind: root.icon;
+        filled: root.filled;
         tint: root.tint;
-        size: 24px;
+        size: root.size >= 44px ? 24px : 22px;
     }
     ta := TouchArea {
         clicked => { root.clicked(); }
@@ -477,6 +409,8 @@ export component SearchField inherits Rectangle {
 export component ActButton inherits Rectangle {
     in property <string> text;
     in property <string> glyph;
+    // L'icône Material (`UiAct.icon`) ; vide : le glyphe en texte.
+    in property <string> icon;
     in property <int> style: 0;
     in property <bool> enabled: true;
     in property <bool> busy;
@@ -484,24 +418,25 @@ export component ActButton inherits Rectangle {
     // Marge de part et d'autre du libellé (plus serrée dans une ligne).
     in property <length> pad: 16px;
     callback clicked();
-    property <color> ink: root.style == 1 ? Theme.on-accent : root.style == 2 ? Theme.danger : Theme.text;
-    property <bool> round: root.compact && root.glyph != "";
-    height: 48px;
+    property <color> ink: root.style == 1 ? Theme.on-accent : root.style == 2 ? Theme.danger : Theme.accent-ink;
+    property <bool> has-mark: root.icon != "" || root.glyph != "";
+    property <bool> round: root.compact && root.has-mark;
+    height: 40px;
     preferred-width: root.round ? self.height : content.preferred-width;
     border-radius: self.height / 2;
     opacity: !enabled ? 0.45 : busy ? 0.7 : 1;
     background: style == 1 ? (ta.pressed ? Theme.accent.darker(0.15) : Theme.accent)
-        : style == 2 ? (ta.pressed ? Theme.danger.with-alpha(0.25) : Theme.danger.with-alpha(0.14))
-        : (ta.pressed ? Theme.pressed : Theme.surface-2);
+        : style == 2 ? (ta.pressed ? Theme.danger.with-alpha(0.25) : Theme.danger.with-alpha(0.12))
+        : (ta.pressed ? Theme.accent.with-alpha(0.22) : Theme.accent-soft);
     animate background { duration: 100ms; }
     accessible-role: button;
     accessible-label: root.busy ? root.text + " (en cours)" : root.text;
     accessible-enabled: root.enabled && !root.busy;
     accessible-action-default => { root.clicked(); }
     content := HorizontalLayout {
-        padding-left: root.round ? 0 : root.pad;
+        padding-left: root.round ? 0 : root.has-mark ? root.pad - 4px : root.pad;
         padding-right: root.round ? 0 : root.pad;
-        spacing: 7px;
+        spacing: 8px;
         alignment: center;
         if root.busy: VerticalLayout {
             alignment: center;
@@ -510,7 +445,15 @@ export component ActButton inherits Rectangle {
                 tint: root.ink;
             }
         }
-        if !root.busy && root.glyph != "": Text {
+        if !root.busy && root.icon != "": VerticalLayout {
+            alignment: center;
+            Icon {
+                kind: root.icon;
+                tint: root.ink;
+                size: 18px;
+            }
+        }
+        if !root.busy && root.icon == "" && root.glyph != "": Text {
             text: root.glyph;
             color: root.ink;
             font-size: root.round ? 18px : 15px;
@@ -519,7 +462,7 @@ export component ActButton inherits Rectangle {
         if !root.round: Text {
             text: root.text;
             color: root.ink;
-            font-size: 15px;
+            font-size: 14px;
             font-weight: 600;
             vertical-alignment: center;
             overflow: elide;
@@ -531,21 +474,31 @@ export component ActButton inherits Rectangle {
     }
 }
 
-// Le logo d'un module : son image, sinon son glyphe sur sa couleur.
+// Le signe d'un module : son icône Material sur sa couleur, sinon son logo, sinon son initiale. `bare` : l'icône seule
+// (la barre du bas), pleine quand `filled`.
 export component ModuleAvatar inherits Rectangle {
     in property <ModuleItem> module;
     in property <length> size: 36px;
+    in property <bool> bare;
+    in property <bool> filled;
+    in property <color> tint: module.color;
     width: size;
     height: size;
-    border-radius: size * 0.28;
-    background: module.has-logo ? transparent : module.color.with-alpha(0.18);
-    if module.has-logo: Image {
+    border-radius: size * 0.3;
+    background: root.bare || (module.icon == "" && module.has-logo) ? transparent : module.color.with-alpha(0.16);
+    if module.icon != "": Icon {
+        kind: module.icon;
+        filled: root.filled;
+        tint: root.tint;
+        size: root.bare ? root.size : root.size * 0.6;
+    }
+    if module.icon == "" && module.has-logo: Image {
         source: module.logo;
         width: parent.width;
         height: parent.height;
         image-fit: contain;
     }
-    if !module.has-logo: Text {
+    if module.icon == "" && !module.has-logo: Text {
         text: module.glyph;
         font-size: root.size * 0.48;
         font-weight: 700;
@@ -555,19 +508,20 @@ export component ModuleAvatar inherits Rectangle {
     }
 }
 
-// Une pastille (compteur, « attend »).
+// Une pastille (compteur, « attend ») : pleine, ou douce (`soft` : fond pâle, texte du ton) dans une ligne.
 export component Pill inherits Rectangle {
     in property <string> text;
     in property <int> tone: 3;
+    in property <bool> soft;
     visible: text != "";
     height: 20px;
-    width: max(20px, label.preferred-width + 12px);
+    width: max(20px, label.preferred-width + (root.soft ? 14px : 12px));
     border-radius: 10px;
-    background: Theme.tone(tone);
-    // Texte foncé sur les pastilles du thème sombre (le blanc y manque de contraste).
+    background: root.soft ? Theme.tone(tone).with-alpha(Theme.dark ? 0.22 : 0.13) : Theme.tone(tone);
+    // Texte foncé sur les pastilles pleines du thème sombre (le blanc y manque de contraste).
     label := Text {
         text: root.text;
-        color: Theme.dark ? #121316 : #ffffff;
+        color: root.soft ? Theme.tone-ink(tone) : Theme.dark ? #121316 : #ffffff;
         font-size: 11.5px;
         font-weight: 700;
         horizontal-alignment: center;
@@ -575,41 +529,35 @@ export component Pill inherits Rectangle {
     }
 }
 
-// Les onglets d'un écran, sous la barre du haut : une rangée qui défile de côté si elle ne tient pas.
+// Les onglets d'un écran, sous la barre du haut : onglets Material, soulignés, de largeur égale quand ils tiennent,
+// sinon une rangée qui défile de côté.
 export component ScreenTabs inherits Rectangle {
     in property <[TabItem]> tabs;
     callback selected(string);
-    height: 48px;
+    height: 46px;
     accessible-role: tab-list;
     Flickable {
-        content-width: max(self.width, strip.preferred-width);
+        interactive: strip.min-width > root.width;
+        content-width: max(self.width, strip.min-width);
         strip := HorizontalLayout {
-            padding-left: Theme.pad - 4px;
-            padding-right: Theme.pad - 4px;
-            alignment: start;
+            width: max(root.width, self.min-width);
             for t in root.tabs: Rectangle {
-                width: content.preferred-width;
+                horizontal-stretch: 1;
+                min-width: content.preferred-width;
                 accessible-role: tab;
                 accessible-label: t.badge != "" ? t.label + ", " + t.badge : t.label;
                 accessible-item-selected: t.active;
                 accessible-action-default => { root.selected(t.path); }
-                Rectangle {
-                    x: 4px;
-                    y: 6px;
-                    width: parent.width - 8px;
-                    height: parent.height - 12px;
-                    border-radius: self.height / 2;
-                    background: t.active ? Theme.accent-soft : ta.pressed ? Theme.pressed : transparent;
-                    animate background { duration: 120ms; }
-                }
+                background: ta.pressed ? Theme.pressed : transparent;
+                animate background { duration: 120ms; }
                 content := HorizontalLayout {
-                    padding-left: 16px;
-                    padding-right: 16px;
+                    padding-left: 14px;
+                    padding-right: 14px;
                     spacing: 6px;
                     alignment: center;
                     Text {
                         text: t.label;
-                        color: t.active ? Theme.accent : Theme.text-dim;
+                        color: t.active ? Theme.accent-ink : Theme.text-dim;
                         font-size: 14px;
                         font-weight: t.active ? 700 : 500;
                         vertical-alignment: center;
@@ -619,8 +567,18 @@ export component ScreenTabs inherits Rectangle {
                         Pill {
                             text: t.badge;
                             tone: 1;
+                            soft: !t.active;
                         }
                     }
+                }
+                // L'indicateur sous l'onglet actif, de la largeur de son libellé.
+                if t.active: Rectangle {
+                    y: parent.height - 3px;
+                    height: 3px;
+                    width: max(28px, content.preferred-width - 16px);
+                    border-top-left-radius: 3px;
+                    border-top-right-radius: 3px;
+                    background: Theme.accent;
                 }
                 ta := TouchArea {
                     clicked => { root.selected(t.path); }
@@ -668,9 +626,10 @@ export component ChipView inherits Rectangle {
     in property <UiChip> chip;
     property <color> ink: chip.has-color ? chip.color : chip.tone > 0 ? Theme.tone(chip.tone) : Theme.text-dim;
     property <length> keep: (chip.glyph != "" ? 20px : 0px) + 8 * 6.5px + 12px;
+    property <bool> has-icon: chip.icon != "";
     height: 20px;
     min-width: min(self.preferred-width, root.keep);
-    preferred-width: min(150px, label.preferred-width + 12px);
+    preferred-width: min(150px, label.preferred-width + 12px + (root.has-icon ? 16px : 0px));
     max-width: self.preferred-width;
     // Dans une mise en page trop étroite, ce qui s'étire se réduit d'abord ; le reste ensuite, à parts égales.
     horizontal-stretch: chip.strong ? 0 : 1;
@@ -678,10 +637,16 @@ export component ChipView inherits Rectangle {
     background: chip.strong ? root.ink : root.ink.with-alpha(0.14);
     border-width: chip.strong ? 0 : 1px;
     border-color: root.ink.with-alpha(0.5);
+    if root.has-icon: Icon {
+        x: 5px;
+        kind: chip.icon;
+        size: 13px;
+        tint: !chip.strong ? root.ink : Theme.dark ? #121316 : #ffffff;
+    }
     label := Text {
-        x: 6px;
-        width: parent.width - 12px;
-        text: chip.glyph != "" ? chip.glyph + " " + chip.text : chip.text;
+        x: root.has-icon ? 21px : 6px;
+        width: parent.width - (root.has-icon ? 27px : 12px);
+        text: chip.glyph != "" && !root.has-icon ? chip.glyph + " " + chip.text : chip.text;
         color: !chip.strong ? root.ink : Theme.dark ? #121316 : #ffffff;
         font-size: 11.5px;
         font-weight: chip.strong ? 700 : 500;
@@ -716,13 +681,14 @@ component ChipLine inherits Rectangle {
 }
 
 // Un bandeau : l'en-tête d'un groupe de lignes, qui se plie et se déplie d'un toucher n'importe où ; pastille de couleur,
-// glyphe, titre, texte à droite, pastille de ton (visible même plié), menu ⋯. Pendant une recherche, il reste ouvert.
+// icône, titre, compte, pastille de ton (visible même plié), menu ⋮, et le chevron de pliage à droite (à la façon
+// d'Android). Pendant une recherche, il reste ouvert.
 export component BandHeader inherits Rectangle {
     in property <UiRow> item;
     callback toggle();
     callback menu();
     property <bool> foldable: item.fold == 1 || item.fold == 2;
-    height: 52px;
+    height: 48px;
     accessible-role: button;
     accessible-label: item.title + (item.detail != "" ? ", " + item.detail : "") + (item.badge != "" ? ", " + item.badge : "");
     accessible-expandable: root.foldable;
@@ -742,20 +708,15 @@ export component BandHeader inherits Rectangle {
         background: ta.pressed ? Theme.pressed : transparent;
         animate background { duration: 90ms; }
     }
+    // Sous le contenu : ⋮ reçoit ses touchers, le reste plie le bandeau.
+    ta := TouchArea {
+        enabled: root.foldable;
+        clicked => { root.toggle(); }
+    }
     HorizontalLayout {
-        padding-left: Theme.pad;
-        padding-right: item.acts.length > 0 ? 4px : Theme.pad;
-        spacing: 10px;
-        if root.foldable: VerticalLayout {
-            alignment: center;
-            Icon {
-                kind: "chevron";
-                size: 20px;
-                tint: Theme.text-dim;
-                transform-rotation: item.fold == 1 ? 90deg : 0deg;
-                animate transform-rotation { duration: 160ms; easing: ease-out; }
-            }
-        }
+        padding-left: Theme.pad + 4px;
+        padding-right: Theme.pad - 6px;
+        spacing: 8px;
         if item.has-color: VerticalLayout {
             alignment: center;
             Rectangle {
@@ -765,32 +726,43 @@ export component BandHeader inherits Rectangle {
                 background: item.color;
             }
         }
-        if item.glyph != "": Text {
+        if item.icon != "": VerticalLayout {
+            alignment: center;
+            Icon {
+                kind: item.icon;
+                size: 18px;
+                tint: item.has-color ? item.color : Theme.text-dim;
+            }
+        }
+        if item.icon == "" && item.glyph != "": Text {
             text: item.glyph;
             color: item.has-color ? item.color : Theme.text-dim;
-            font-size: 16px;
+            font-size: 15px;
             vertical-alignment: center;
         }
         Text {
             text: item.title;
             color: Theme.text;
-            font-size: 15px;
-            font-weight: 600;
+            font-size: 14.5px;
+            font-weight: 700;
             vertical-alignment: center;
             overflow: elide;
-            horizontal-stretch: 1;
         }
         if item.detail != "": Text {
             text: item.detail;
-            color: Theme.text-dim;
+            color: Theme.text-faint;
             font-size: 13px;
             vertical-alignment: center;
+        }
+        Rectangle {
+            horizontal-stretch: 1;
         }
         if item.badge != "": VerticalLayout {
             alignment: center;
             Pill {
                 text: item.badge;
                 tone: item.tone > 0 ? item.tone : 1;
+                soft: true;
             }
         }
         if item.busy: VerticalLayout {
@@ -801,17 +773,22 @@ export component BandHeader inherits Rectangle {
             alignment: center;
             IconButton {
                 icon: "more";
+                size: 40px;
                 label: "Actions de « " + item.title + " »";
-                tint: Theme.text-dim;
+                tint: Theme.text-faint;
                 clicked => { root.menu(); }
             }
         }
-    }
-    ta := TouchArea {
-        x: 0;
-        width: parent.width - (item.acts.length > 0 ? 52px : 0px);
-        enabled: root.foldable;
-        clicked => { root.toggle(); }
+        if root.foldable: VerticalLayout {
+            alignment: center;
+            Icon {
+                kind: "down";
+                size: 22px;
+                tint: Theme.text-dim;
+                transform-rotation: item.fold == 1 ? 180deg : 0deg;
+                animate transform-rotation { duration: 160ms; easing: ease-out; }
+            }
+        }
     }
 }
 
@@ -825,6 +802,7 @@ component TrailingButton inherits ActButton {
     compact: root.narrow;
     text: root.act.label;
     glyph: root.act.glyph;
+    icon: root.act.icon;
     style: root.act.style;
     busy: root.act.busy;
 }
@@ -848,7 +826,15 @@ component TapPill inherits Rectangle {
                 tint: root.ink;
             }
         }
-        if !root.act.busy && root.act.glyph != "": Text {
+        if !root.act.busy && root.act.icon != "": VerticalLayout {
+            alignment: center;
+            Icon {
+                kind: root.act.icon;
+                tint: root.ink;
+                size: 15px;
+            }
+        }
+        if !root.act.busy && root.act.icon == "" && root.act.glyph != "": Text {
             text: root.act.glyph;
             color: root.ink;
             font-size: 12.5px;
@@ -865,8 +851,48 @@ component TapPill inherits Rectangle {
     }
 }
 
-// Une ligne de liste, dans une carte arrondie par section. Le toucher ouvre son écran (chevron), sinon fait son action
-// (en pastille), sinon ouvre son menu ; l'appui long ou ⋯ ouvre le menu ; un bouton visible peut être à droite.
+// Le signe à gauche d'une ligne : son icône Material (dans un rond de sa couleur quand elle en a une : un groupe de
+// Fawkes), une ou deux lettres dans une pastille du ton (l'état d'un fichier), sinon le glyphe en texte.
+component RowLead inherits Rectangle {
+    in property <UiRow> item;
+    property <color> ink: item.has-color ? item.color : item.tone >= 2 ? Theme.tone(item.tone) : Theme.text-dim;
+    width: item.has-color ? 36px : 24px;
+    height: self.width;
+    if item.icon != "": Rectangle {
+        border-radius: self.width / 2;
+        background: item.has-color ? item.color.with-alpha(Theme.dark ? 0.22 : 0.14) : transparent;
+        Icon {
+            kind: item.icon;
+            tint: root.ink;
+            size: item.has-color ? 20px : 24px;
+        }
+    }
+    if item.icon == "" && item.mark != "": Rectangle {
+        y: (parent.height - self.height) / 2;
+        height: 22px;
+        border-radius: 6px;
+        background: Theme.tone(item.tone > 0 ? item.tone : 1).with-alpha(Theme.dark ? 0.24 : 0.13);
+        Text {
+            text: item.mark;
+            color: item.tone > 0 ? Theme.tone-ink(item.tone) : Theme.accent-ink;
+            font-size: 12px;
+            font-weight: 700;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+    if item.icon == "" && item.mark == "": Text {
+        text: item.glyph;
+        color: root.ink;
+        font-size: 18px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// Une ligne de liste, dans une carte arrondie par section. Le toucher ouvre son écran, sinon fait son action (en
+// pastille), sinon ouvre son menu ; l'appui long ou ⋮ ouvre le menu ; un bouton visible peut être à droite. Sans
+// chevron ni tuile : un signe à gauche s'il y en a un, le texte, ce qui agit à droite.
 export component RowView inherits Rectangle {
     in property <UiRow> item;
     // Le séparateur sous la ligne (sauf la dernière de sa carte) ; sans, quand ce qui suit lui appartient.
@@ -876,9 +902,12 @@ export component RowView inherits Rectangle {
     callback trailing();
     callback haptic();
     property <bool> long-fired;
-    height: max(60px, content.preferred-height);
+    property <bool> has-lead: item.glyph != "";
+    // Où commence le texte : le séparateur part de là.
+    property <length> text-x: root.has-lead ? (item.has-color ? 64px : 52px) : 16px;
+    height: max(56px, content.preferred-height);
     accessible-role: list-item;
-    accessible-label: item.title + (item.badge != "" ? ", " + item.badge : "") + (item.subtitle != "" ? ", " + item.subtitle : "") + (item.detail != "" ? ", " + item.detail : "");
+    accessible-label: (item.unread ? "Non lu, " : "") + item.title + (item.badge != "" ? ", " + item.badge : "") + (item.subtitle != "" ? ", " + item.subtitle : "") + (item.detail != "" ? ", " + item.detail : "");
     accessible-description: item.opens ? "Ouvre l'écran" : item.has-tap ? item.tap.label + " sur le PC" : "";
     accessible-action-default => { root.tapped(); }
     Rectangle {
@@ -891,7 +920,7 @@ export component RowView inherits Rectangle {
         border-bottom-left-radius: item.last ? Theme.radius : 0;
         border-bottom-right-radius: item.last ? Theme.radius : 0;
         clip: true;
-        // Sous le contenu : les boutons de la ligne (⋯, bouton visible) reçoivent leurs touchers, le reste va à la ligne.
+        // Sous le contenu : les boutons de la ligne (⋮, bouton visible) reçoivent leurs touchers, le reste va à la ligne.
         ta := TouchArea {
             pointer-event(e) => {
                 if e.kind == PointerEventKind.down {
@@ -904,93 +933,109 @@ export component RowView inherits Rectangle {
                 }
             }
         }
-        // Liseré du ton (Claude attend, échec…).
-        if item.tone >= 3: Rectangle {
+        // Liseré du ton (échec, Claude attend…), quand aucune pastille ne le dit déjà.
+        if item.tone >= 3 && item.badge == "": Rectangle {
             x: 0;
             width: 3px;
             background: Theme.tone(item.tone);
         }
         content := HorizontalLayout {
-            padding-left: 14px;
-            padding-right: 6px;
-            // Le bouton visible fait 48 px : la ligne garde ses 60 px.
-            padding-top: item.has-trailing ? 6px : 8px;
-            padding-bottom: item.has-trailing ? 6px : 8px;
-            spacing: 12px;
-            Rectangle {
-                width: 34px;
-                height: 34px;
-                border-radius: 10px;
-                background: item.has-color ? item.color.with-alpha(0.2) : Theme.surface-2;
-                Text {
-                    text: item.glyph;
-                    color: item.has-color ? item.color : Theme.text-dim;
-                    font-size: 15px;
-                    font-weight: 600;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                }
-            }
-            VerticalLayout {
+            padding-left: root.has-lead ? (item.has-color ? 14px : 16px) : 16px;
+            padding-right: item.acts.length > 0 ? 2px : 14px;
+            // Le bouton visible fait 40 px : la ligne garde ses 56 px.
+            padding-top: 9px;
+            padding-bottom: 9px;
+            spacing: root.has-lead ? (item.has-color ? 14px : 12px) : 0;
+            if root.has-lead: VerticalLayout {
                 alignment: center;
-                spacing: 2px;
-                HorizontalLayout {
-                    spacing: 8px;
-                    // Le titre garde au moins 30 % de la ligne : les boutons et le texte à droite cèdent avant lui. En
-                    // entier (`wrap`), il passe à la ligne autant qu'il faut.
-                    Text {
-                        text: item.title;
-                        color: Theme.text;
-                        font-size: Theme.font-body;
-                        font-weight: 500;
-                        wrap: item.wrap ? TextWrap.word-wrap : TextWrap.no-wrap;
-                        overflow: elide;
-                        min-width: min(self.preferred-width, root.width * 0.3);
-                        horizontal-stretch: 1;
-                    }
-                    // Seulement s'il y en a une : même cachée, une pastille vide prendrait sa place au titre.
-                    if item.badge != "": Pill {
-                        text: item.badge;
-                        tone: item.tone >= 3 ? item.tone : 1;
-                    }
-                }
-                if item.chips.length > 0: VerticalLayout {
-                    padding-top: 2px;
-                    padding-bottom: 2px;
-                    ChipLine {
-                        chips: item.chips;
-                    }
-                }
-                // Deux lignes au plus ; en entier (`wrap`), toutes (un nom de branche sans espace se coupe n'importe où).
-                if item.subtitle != "": Text {
-                    text: item.subtitle;
-                    color: Theme.text-dim;
-                    font-size: Theme.font-small;
-                    wrap: word-wrap;
-                    overflow: elide;
-                    max-height: item.wrap ? 600px : 36px;
+                RowLead {
+                    item: root.item;
                 }
             }
-            if item.detail != "": Text {
-                text: item.detail;
-                color: Theme.text-faint;
-                font-size: Theme.font-small;
-                vertical-alignment: center;
-                horizontal-alignment: right;
-                max-width: 110px;
-                min-width: item.has-trailing ? 0px : min(110px, self.preferred-width);
-                horizontal-stretch: 0;
-                overflow: elide;
+            HorizontalLayout {
+                spacing: 10px;
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 2px;
+                    horizontal-stretch: 1;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        // Le titre garde au moins 30 % de la ligne : les boutons et le texte à droite cèdent avant lui.
+                        // En entier (`wrap`), il passe à la ligne autant qu'il faut.
+                        Text {
+                            text: item.title;
+                            color: Theme.text;
+                            font-size: Theme.font-body;
+                            font-weight: item.unread ? 700 : 500;
+                            wrap: item.wrap ? TextWrap.word-wrap : TextWrap.no-wrap;
+                            overflow: elide;
+                            min-width: min(self.preferred-width, root.width * 0.3);
+                            horizontal-stretch: 1;
+                        }
+                        // Seulement s'il y en a une : même cachée, une pastille vide prendrait sa place au titre.
+                        if item.badge != "": VerticalLayout {
+                            alignment: start;
+                            padding-top: 1px;
+                            Pill {
+                                text: item.badge;
+                                tone: item.tone >= 2 ? item.tone : 1;
+                                soft: true;
+                            }
+                        }
+                    }
+                    if item.chips.length > 0: VerticalLayout {
+                        padding-top: 2px;
+                        padding-bottom: 2px;
+                        ChipLine {
+                            chips: item.chips;
+                        }
+                    }
+                    // Deux lignes au plus ; en entier (`wrap`), toutes (un nom de branche sans espace se coupe n'importe où).
+                    if item.subtitle != "": Text {
+                        text: item.subtitle;
+                        color: item.unread ? Theme.text : Theme.text-dim;
+                        font-size: Theme.font-small;
+                        wrap: word-wrap;
+                        overflow: elide;
+                        max-height: item.wrap ? 600px : 36px;
+                    }
+                }
+                if item.detail != "" || item.unread: VerticalLayout {
+                    alignment: center;
+                    spacing: 6px;
+                    if item.detail != "": Text {
+                        text: item.detail;
+                        color: item.unread ? Theme.accent-ink : Theme.text-faint;
+                        font-size: Theme.font-small;
+                        font-weight: item.unread ? 600 : 400;
+                        horizontal-alignment: right;
+                        max-width: 110px;
+                        min-width: item.has-trailing ? 0px : min(110px, self.preferred-width);
+                        overflow: elide;
+                    }
+                    // Le point d'une entrée non lue.
+                    if item.unread: HorizontalLayout {
+                        alignment: end;
+                        Rectangle {
+                            width: 10px;
+                            height: 10px;
+                            border-radius: 5px;
+                            background: Theme.accent;
+                        }
+                    }
+                }
             }
             if item.has-tap && !item.opens: VerticalLayout {
                 alignment: center;
+                padding-left: 8px;
                 TapPill {
                     act: item.tap;
                 }
             }
-            // Les boutons de droite, serrés : ⋯ et le chevron ont déjà leur marge dans leur cible.
-            if item.has-trailing || item.busy || item.acts.length > 0 || item.opens: HorizontalLayout {
-                spacing: 4px;
+            // Les boutons de droite, serrés : ⋮ a déjà sa marge dans sa cible.
+            if item.has-trailing || item.busy || item.acts.length > 0: HorizontalLayout {
+                spacing: 2px;
+                padding-left: 6px;
                 if item.has-trailing: VerticalLayout {
                     alignment: center;
                     TrailingButton {
@@ -1003,37 +1048,33 @@ export component RowView inherits Rectangle {
                     alignment: center;
                     Busy { }
                 }
-                if item.acts.length > 0: IconButton {
-                    icon: "more";
-                    label: "Actions de « " + item.title + " »";
-                    tint: Theme.text-dim;
-                    clicked => { root.menu(); }
-                }
-                if item.opens: VerticalLayout {
+                if item.acts.length > 0: VerticalLayout {
                     alignment: center;
-                    Icon {
-                        kind: "chevron";
+                    IconButton {
+                        icon: "more";
+                        size: 40px;
+                        label: "Actions de « " + item.title + " »";
                         tint: Theme.text-faint;
-                        size: 22px;
+                        clicked => { root.menu(); }
                     }
                 }
             }
         }
         // Une opération en cours sur la ligne : une barre en bas.
         if item.has-progress: ThinProgress {
-            x: 62px;
+            x: root.text-x;
             y: parent.height - 7px;
-            width: parent.width - 62px - 14px;
+            width: parent.width - root.text-x - 14px;
             value: item.value;
             indeterminate: item.indeterminate;
             tint: item.tone >= 3 ? Theme.tone(item.tone) : Theme.accent;
         }
-        // Séparateur sous la ligne, sauf la dernière de la section.
+        // Séparateur sous la ligne, sauf la dernière de la section, aligné sur le texte.
         if !item.last && root.separator: Rectangle {
-            x: 62px;
+            x: root.text-x;
             y: parent.height - 1px;
             height: 1px;
-            width: parent.width - 62px;
+            width: parent.width - root.text-x;
             background: Theme.border;
         }
         Timer {
@@ -1152,6 +1193,7 @@ export component CommitRowView inherits Rectangle {
                         Pill {
                             text: item.badge;
                             tone: item.tone >= 3 ? item.tone : 1;
+                            soft: true;
                         }
                     }
                 }
@@ -1185,21 +1227,14 @@ export component CommitRowView inherits Rectangle {
                 alignment: center;
                 Busy { }
             }
-            if item.acts.length > 0: VerticalLayout {
+            if item.acts.length > 0 && !item.opens: VerticalLayout {
                 alignment: center;
                 IconButton {
                     icon: "more";
+                    size: 40px;
                     label: "Actions de « " + item.title + " »";
-                    tint: Theme.text-dim;
-                    clicked => { root.menu(); }
-                }
-            }
-            if item.opens: VerticalLayout {
-                alignment: center;
-                Icon {
-                    kind: "chevron";
                     tint: Theme.text-faint;
-                    size: 22px;
+                    clicked => { root.menu(); }
                 }
             }
         }
@@ -1273,6 +1308,7 @@ export component NoteView inherits Rectangle {
                     for a in root.acts: ActButton {
                         text: a.label;
                         glyph: a.glyph;
+                        icon: a.icon;
                         style: a.style;
                         busy: a.busy;
                         clicked => { root.act(a); }
@@ -1675,7 +1711,7 @@ export component BottomNav inherits Rectangle {
                 Rectangle {
                     height: 30px;
                     Rectangle {
-                        width: 56px;
+                        width: 60px;
                         height: 30px;
                         border-radius: 15px;
                         background: on ? Theme.accent-soft : transparent;
@@ -1684,15 +1720,20 @@ export component BottomNav inherits Rectangle {
                     if item.is-module: ModuleAvatar {
                         module: item.module;
                         size: 24px;
+                        bare: true;
+                        filled: on;
+                        tint: on ? Theme.accent-ink : Theme.text-dim;
                     }
                     if !item.is-module: Icon {
                         kind: item.icon;
                         size: 24px;
-                        tint: on ? Theme.accent : Theme.text-dim;
+                        filled: on;
+                        tint: on ? Theme.accent-ink : Theme.text-dim;
                     }
                     Pill {
-                        x: parent.width / 2 + 6px;
-                        y: -4px;
+                        x: parent.width / 2 + 4px;
+                        y: -3px;
+                        height: 16px;
                         text: item.badge;
                         tone: item.badge-tone;
                     }
@@ -1791,7 +1832,15 @@ export component ActionSheet inherits Rectangle {
                                 width: 24px;
                                 Busy { }
                             }
-                            if !a.busy: Text {
+                            if !a.busy && a.icon != "": VerticalLayout {
+                                alignment: center;
+                                width: 24px;
+                                Icon {
+                                    kind: a.icon;
+                                    tint: a.style == 2 ? Theme.danger : Theme.text-dim;
+                                }
+                            }
+                            if !a.busy && a.icon == "": Text {
                                 text: a.glyph;
                                 width: 24px;
                                 color: a.style == 2 ? Theme.danger : Theme.text-dim;

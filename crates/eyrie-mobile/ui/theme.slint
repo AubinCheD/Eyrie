@@ -22,6 +22,8 @@ export global Theme {
     // Le texte sur un bouton plein : foncé dans le thème sombre (le blanc y manque de contraste), comme les pastilles.
     out property <color> on-accent: dark ? #121316 : #ffffff;
     out property <color> accent-soft: dark ? #5b8def33 : #0067c01f;
+    // Le texte de l'accent sur un fond pâle (`accent-soft`, un bouton tonal, un onglet actif) : 4,5:1 au moins.
+    out property <color> accent-ink: dark ? #9dbdf7 : #005299;
     out property <color> ok: dark ? #4cb872 : #1d7a41;
     // Plus foncé qu'un orange vif en clair : le blanc des pastilles « attend » y garde plus de 5:1.
     out property <color> warn: dark ? #f2a93b : #9e5c00;
@@ -45,6 +47,14 @@ export global Theme {
 
     public pure function lane(i: int) -> color {
         return lanes[mod(i, 10)];
+    }
+
+    // Le texte d'un ton sur son fond pâle (une pastille douce) : plus contrasté que le ton lui-même.
+    public pure function tone-ink(t: int) -> color {
+        if (t == 2) { return dark ? #7fd6a0 : #146034; }
+        if (t == 3) { return dark ? #f6c477 : #7f4a00; }
+        if (t == 4) { return dark ? #f19aa7 : #a3200f; }
+        return accent-ink;
     }
 
     // Ton : 0 aucun, 1 info, 2 ok, 3 attention, 4 danger.

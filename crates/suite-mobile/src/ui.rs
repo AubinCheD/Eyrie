@@ -336,6 +336,10 @@ pub struct Row {
     /// sous-titre sur deux, coupés au-delà). Un téléphone plus ancien l'ignore et les coupe.
     #[serde(default)]
     pub full: bool,
+    /// Une entrée non lue (Owlery) : le titre en gras et un point de couleur, à la façon des messageries. Un téléphone
+    /// plus ancien l'ignore (le module ne s'en sert que pour lui).
+    #[serde(default)]
+    pub unread: bool,
 }
 
 impl Row {
@@ -417,6 +421,12 @@ impl Row {
     /// Le titre et le sous-titre en entier (un titre de PR, un nom de branche), jamais coupés.
     pub fn full(mut self) -> Self {
         self.full = true;
+        self
+    }
+
+    /// Non lue : titre en gras, point de couleur.
+    pub fn unread(mut self, yes: bool) -> Self {
+        self.unread = yes;
         self
     }
 }

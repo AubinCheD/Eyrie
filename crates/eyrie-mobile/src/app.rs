@@ -1281,6 +1281,7 @@ impl Controller {
             id: c.id.as_str().into(),
             name: c.name.as_str().into(),
             glyph: initial(&c.name).into(),
+            icon: view::module_icon(&c.id).into(),
             color: view::rgb(c.color),
             has_logo: logo.is_some(),
             logo: logo.unwrap_or_default(),
@@ -1337,6 +1338,7 @@ impl Controller {
                     module: w.module.as_str().into(),
                     module_name: c.map(|c| c.name.as_str()).unwrap_or(&w.module).into(),
                     glyph: initial(c.map(|c| c.name.as_str()).unwrap_or(&w.module)).into(),
+                    icon: view::module_icon(&w.module).into(),
                     color: view::rgb(c.map(|c| c.color).unwrap_or(0x5b8def)),
                     text: w.text.as_str().into(),
                     path: w.path.clone().unwrap_or_default().into(),
@@ -1853,6 +1855,16 @@ impl Controller {
             Some(Moved::Screen) => self.refresh_screen(),
             None => {}
         }
+    }
+
+    /// Glisser de côté : l'onglet voisin de celui qui est affiché (`dir` : 1 le suivant, -1 le précédent), s'il y en a un.
+    pub(crate) fn swipe_tab(&mut self, dir: i32) {
+        let Some(ui) = self.ui() else { return };
+        let tabs: Vec<TabItem> = ui.get_tabs().iter().collect();
+        let Some(i) = tabs.iter().position(|t| t.active) else { return };
+        let Some(next) = i.checked_add_signed(dir as isize).and_then(|j| tabs.get(j)) else { return };
+        let path = next.path.to_string();
+        self.select_tab(&path);
     }
 
     /// Toucher une notification : l'écran du module où elle mène ; sans écran, son texte entier (ou de nouveau
@@ -3028,6 +3040,9 @@ fn wire(ui: &AppWindow) {
     });
     ui.on_select_tab(|path| {
         with(|c| c.select_tab(&path));
+    });
+    ui.on_swipe_tab(|dir| {
+        with(|c| c.swipe_tab(dir));
     });
     ui.on_open_url(|u| platform::open_url(&u));
     ui.on_haptic(platform::haptic);
