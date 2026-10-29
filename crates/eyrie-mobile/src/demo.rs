@@ -780,9 +780,24 @@ pub fn play(ui: &AppWindow, scene: &str) {
     });
     feed(ToPhone::Commands {
         commands: vec![
-            CommandCard { module: "fawkes".into(), id: "terminal".into(), title: "Nouveau terminal".into() },
-            CommandCard { module: "dragontree".into(), id: "fetch".into(), title: "Récupérer (fetch)".into() },
-            CommandCard { module: "gringotts".into(), id: "relire".into(), title: "Relire les conversations".into() },
+            CommandCard {
+                module: "fawkes".into(),
+                id: "terminal".into(),
+                title: "Nouveau terminal".into(),
+                terminal: true,
+            },
+            CommandCard {
+                module: "dragontree".into(),
+                id: "fetch".into(),
+                title: "Récupérer (fetch)".into(),
+                terminal: false,
+            },
+            CommandCard {
+                module: "gringotts".into(),
+                id: "relire".into(),
+                title: "Relire les conversations".into(),
+                terminal: false,
+            },
         ],
     });
     feed(ToPhone::Screen { module: "fawkes".into(), path: String::new(), screen: fawkes_home() });

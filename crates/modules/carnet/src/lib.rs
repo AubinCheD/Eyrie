@@ -243,11 +243,14 @@ impl Module for Carnet {
 
     fn commands(&self) -> Vec<CommandInfo> {
         vec![
-            CommandInfo { id: "hors_depot".into(), title: "Notes hors dépôt".into(), shortcut: None },
+            CommandInfo {
+                id: "hors_depot".into(), title: "Notes hors dépôt".into(), shortcut: None, terminal: false
+            },
             CommandInfo {
                 id: "effacer_bus".into(),
                 title: "Effacer le journal du bus".into(),
                 shortcut: Shortcut::parse("Ctrl+Maj+K"),
+                terminal: false,
             },
         ]
     }

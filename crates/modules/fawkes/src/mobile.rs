@@ -170,8 +170,9 @@ fn remote_possible(s: &Seen) -> bool {
 fn term_acts(t: &TermSpec, s: &Seen) -> Vec<Act> {
     let id = t.id;
     let mut acts = Vec::new();
+    // Remote Control mène la session depuis l'application Claude : comme y écrire, avec le droit « Terminaux ».
     if remote_possible(s) {
-        acts.push(Act::new(format!("remote:{id}"), "Activer Remote Control").glyph("📡"));
+        acts.push(Act::new(format!("remote:{id}"), "Activer Remote Control").glyph("📡").terminal());
     }
     acts.push(Act::new(format!("redemarrer:{id}"), "Redémarrer").glyph("🔄"));
     acts.push(if s.live {
@@ -278,7 +279,7 @@ fn group_acts(g: &Group, n: &Tally) -> Vec<Act> {
     }
     acts.push(Act::screen("Nouveau terminal dans ce groupe…", format!("nouveau/g/{gid}")).glyph("➕"));
     if n.without_remote > 0 {
-        acts.push(Act::new(format!("remote:g{gid}"), "Remote Control sur les sessions Claude").glyph("📡"));
+        acts.push(Act::new(format!("remote:g{gid}"), "Remote Control sur les sessions Claude").glyph("📡").terminal());
     }
     if n.live < n.terms {
         acts.push(Act::new(format!("reveiller:g{gid}"), "Tout réveiller").glyph("☀️"));
@@ -1322,16 +1323,18 @@ mod tests {
     }
 
     /// Ouvrir un shell ou Claude (`shell:…`, `claude:…` : dans un dossier, dans le dépôt d'un groupe, dans un autre
-    /// dossier) ouvre un terminal : le pont le refuse à un téléphone sans le droit « Terminaux ». Rien d'autre ne l'est.
+    /// dossier) ouvre un terminal, et Remote Control (`remote:…`) mène une session Claude d'ailleurs : le pont les
+    /// refuse à un téléphone sans le droit « Terminaux ». Rien d'autre ne l'est.
     #[test]
     fn opening_a_shell_or_claude_is_marked_as_opening_a_terminal() {
-        let (mut st, seen) = three_groups();
+        let (mut st, mut seen) = three_groups();
+        seen.insert(1, claude(State::Ready));
         st.groups[1].repo = Some(r"C:\DEV\Eyrie".into());
         st.recent_dirs = vec![r"C:\DEV\Ozmo".into()];
         let mut opening = std::collections::BTreeSet::new();
         for s in [home(&st, &seen), new_terminal(&st, None), new_terminal(&st, st.group(5))] {
             for a in s.all_acts().into_iter().filter(|a| a.reaches_pc()) {
-                let new = a.id.starts_with("shell:") || a.id.starts_with("claude:");
+                let new = ["shell:", "claude:", "remote:"].iter().any(|p| a.id.starts_with(p));
                 assert_eq!(a.terminal, new, "{}", a.id);
                 if new {
                     opening.insert(a.id.clone());
@@ -1339,7 +1342,8 @@ mod tests {
             }
         }
         let ozmo = dir_key(r"C:\DEV\Ozmo");
-        for id in ["shell:g5".to_string(), "claude:g5".into(), format!("shell:{ozmo}"), format!("claude:{ozmo}")] {
+        let ids = ["shell:g5".to_string(), "claude:g5".into(), "remote:g5".into(), "remote:1".into()];
+        for id in ids.into_iter().chain([format!("shell:{ozmo}"), format!("claude:{ozmo}")]) {
             assert!(opening.contains(&id), "{id} : {opening:?}");
         }
         assert!(opening.contains("shell:saisi") && opening.contains("claude:saisi"), "{opening:?}");

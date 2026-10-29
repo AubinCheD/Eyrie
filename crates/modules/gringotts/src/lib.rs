@@ -385,7 +385,12 @@ impl Module for Gringotts {
     }
 
     fn commands(&self) -> Vec<CommandInfo> {
-        vec![CommandInfo { id: "relire".into(), title: "Relire les conversations".into(), shortcut: None }]
+        vec![CommandInfo {
+            id: "relire".into(),
+            title: "Relire les conversations".into(),
+            shortcut: None,
+            terminal: false,
+        }]
     }
 
     fn run_command(&mut self, id: &str, _cx: &mut Cx) {

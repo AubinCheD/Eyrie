@@ -8,8 +8,9 @@
 //!
 //! Une action n'est exécutée que si l'appareil a le droit d'agir et si le dernier écran envoyé la proposait (même
 //! module, même chemin, même identifiant) ; celle qui ouvre un terminal (`Act::terminal`) demande aussi le droit
-//! « Terminaux ». Les actions qui commencent par `@` sont celles de l'hôte (« Montrer sur le PC », « Relancer » un
-//! module arrêté), comme celles des écrans génériques (`cmd:<id>` : une commande de la palette du module).
+//! « Terminaux », comme une commande de la palette qui le fait (`CommandInfo::terminal`, envoyée seule ou touchée sur
+//! un écran générique). Les actions qui commencent par `@` sont celles de l'hôte (« Montrer sur le PC », « Relancer »
+//! un module arrêté), comme celles des écrans génériques (`cmd:<id>` : une commande de la palette du module).
 //!
 //! Une action qui demande un dossier du PC (`input.folder`) garde sa saisie avec la liste blanche : le téléphone ne
 //! parcourt les dossiers ([`ToPc::Browse`], lu dans un fil par [`browse`]) que pour elle, avec le droit « Dossiers du
@@ -487,16 +488,23 @@ fn message(
                 reply(core, id, req, Err("Ce téléphone n'a plus le droit d'agir (réglage du PC).".into()));
                 return;
             }
-            let title = core
+            let found = core
                 .slot(&module)
                 .and_then(|s| s.module())
                 .and_then(|m| m.commands().into_iter().find(|c| c.id == command))
-                .map(|c| c.title);
-            let Some(title) = title else {
+                .map(|c| (c.title, c.terminal));
+            let Some((title, terminal)) = found else {
                 reply(core, id, req, Err("Commande inconnue sur le PC.".into()));
                 return;
             };
             let text = format!("{} › {title} (sur le PC)", module_name(core, &module));
+            // « Nouveau terminal » en ouvre un : comme une action d'écran qui le fait, avec le droit « Terminaux ».
+            if terminal && !rights.terminals {
+                let e = "Ce téléphone n'a pas le droit d'ouvrir de terminal (réglage du PC).";
+                core.mobile.store.journal(&name, "refus", format!("{text} : {e}"));
+                reply(core, id, req, Err(e.into()));
+                return;
+            }
             core.mobile.store.journal(&name, "action", &text);
             mirror(core, &name, &text);
             core.host.show(&module);
@@ -586,6 +594,7 @@ fn push_light(core: &mut Core) {
                 module: slot.info.id.into(),
                 id: c.id,
                 title: c.title,
+                terminal: c.terminal,
             }));
             cards.push(ModuleCard {
                 id: slot.info.id.into(),
@@ -694,7 +703,8 @@ fn generic_screen(core: &Core, module: &str) -> Option<Screen> {
             if !cmds.is_empty() {
                 s.section("Sur le PC", "");
                 for c in cmds {
-                    let act = Act::new(format!("cmd:{}", c.id), c.title.clone()).glyph("▶️");
+                    let mut act = Act::new(format!("cmd:{}", c.id), c.title.clone()).glyph("▶️");
+                    act.terminal = c.terminal;
                     s.row(Row::new(c.title).subtitle("S'exécute dans Eyrie, sur le PC").tap(act));
                 }
             }

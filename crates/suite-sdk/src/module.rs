@@ -109,6 +109,9 @@ pub struct CommandInfo {
     pub title: String,
     /// Raccourci par défaut, actif quand le module a le clavier.
     pub shortcut: Option<Shortcut>,
+    /// La commande ouvre un terminal sur le PC (« Nouveau terminal » de Fawkes) : le pont ne la lance, pour un
+    /// téléphone, qu'avec le droit « Terminaux ».
+    pub terminal: bool,
 }
 
 /// Réponse à « peut-on fermer ? ».

@@ -71,7 +71,7 @@ impl Module for Factice {
     }
 
     fn commands(&self) -> Vec<CommandInfo> {
-        vec![CommandInfo { id: "bonjour".into(), title: "Dire bonjour".into(), shortcut: None }]
+        vec![CommandInfo { id: "bonjour".into(), title: "Dire bonjour".into(), shortcut: None, terminal: false }]
     }
 
     fn mobile_screen(&mut self, path: &str, _cx: &mut Cx) -> Option<Screen> {
@@ -497,6 +497,112 @@ fn opening_a_terminal_needs_the_terminals_right() {
     assert_eq!(OPENED.load(Ordering::Relaxed), 1);
 }
 
+/// Les commandes de la palette lancées pour un téléphone, par le module muet.
+static RAN: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Sans écran mobile : le pont montre son écran générique, avec ses commandes ; l'une ouvre un terminal.
+struct Muet {
+    info: ModuleInfo,
+}
+
+fn muet_info() -> ModuleInfo {
+    ModuleInfo { id: "muet", name: "Muet", icon: "m", summary: "essai des commandes", ..info() }
+}
+
+fn build_muet(_: &suite_sdk::BuildCx) -> Result<Box<dyn Module>, Unavailable> {
+    Ok(Box::new(Muet { info: muet_info() }))
+}
+
+impl Module for Muet {
+    fn info(&self) -> &ModuleInfo {
+        &self.info
+    }
+
+    fn logic(&mut self, _ctx: &egui::Context, _cx: &mut Cx) {}
+
+    fn ui(&mut self, _ui: &mut egui::Ui, _view: &str, _cx: &mut Cx) {}
+
+    fn commands(&self) -> Vec<CommandInfo> {
+        vec![
+            CommandInfo { id: "bonjour".into(), title: "Dire bonjour".into(), shortcut: None, terminal: false },
+            CommandInfo { id: "terminal".into(), title: "Nouveau terminal".into(), shortcut: None, terminal: true },
+        ]
+    }
+
+    fn run_command(&mut self, id: &str, _cx: &mut Cx) {
+        RAN.lock().unwrap().push(id.to_string());
+    }
+}
+
+/// Une commande de la palette qui ouvre un terminal (« Nouveau terminal » de Fawkes) demande aussi le droit
+/// « Terminaux », envoyée seule (`ToPc::Command`) comme touchée sur l'écran générique (`cmd:<id>`) : sans lui, refusée
+/// avant d'être lancée, et notée au journal. Les autres commandes partent.
+#[test]
+fn a_command_that_opens_a_terminal_needs_the_terminals_right() {
+    let mut h = suite();
+    {
+        let ctx = h.ctx.clone();
+        let s = h.state_mut();
+        let mut slot = Slot::new(muet_info(), build_muet);
+        let cc = eframe::CreationContext::_new_kittest(ctx);
+        slot.start(&cc, &s.core.host, suite_sdk::DataMode::Shared, &mut s.core.journal);
+        s.core.slots.push(slot);
+    }
+    let (command, generic, other) = with_phone(
+        &mut h,
+        |s| {
+            let id = s.core.mobile.store.devices[0].id.clone();
+            s.core.mobile.set_rights(&id, suite_mobile::msg::Rights { terminals: false, ..Default::default() });
+        },
+        |c| {
+            let command = |c: &mut client::Connection, req: u32, id: &str| {
+                c.tx.send(&ToPc::Command { req, module: "muet".into(), id: id.into() }).unwrap();
+                until(c, |m| match m {
+                    ToPhone::Result { req: r, ok, message } if r == req => Some((ok, message)),
+                    _ => None,
+                })
+            };
+            let cards = until(c, |m| match m {
+                ToPhone::Commands { commands } => Some(commands),
+                _ => None,
+            });
+            let opening: Vec<&str> = cards.iter().filter(|k| k.terminal).map(|k| k.id.as_str()).collect();
+            assert_eq!(opening, ["terminal"], "le téléphone sait laquelle ouvre un terminal : {cards:?}");
+            let refused = command(c, 1, "terminal");
+            c.tx.send(&ToPc::Follow { screen: Some(("muet".into(), "".into())), terminal: None }).unwrap();
+            let screen = until(c, |m| match m {
+                ToPhone::Screen { module, screen, .. } if module == "muet" => Some(screen),
+                _ => None,
+            });
+            let act = screen.all_acts().into_iter().find(|a| a.id == "cmd:terminal").cloned();
+            assert!(act.is_some_and(|a| a.terminal), "{screen:?}");
+            c.tx.send(&ToPc::Action {
+                req: 2,
+                module: "muet".into(),
+                path: "".into(),
+                action: "cmd:terminal".into(),
+                input: None,
+            })
+            .unwrap();
+            let generic = until(c, |m| match m {
+                ToPhone::Result { req: 2, ok, message } => Some((ok, message)),
+                _ => None,
+            });
+            (refused, generic, command(c, 3, "bonjour"))
+        },
+    );
+    h.run_steps(2);
+    for r in [&command, &generic] {
+        assert!(!r.0 && r.1.contains("pas le droit d'ouvrir de terminal"), "{r:?}");
+    }
+    assert!(other.0, "{other:?}");
+    assert_eq!(*RAN.lock().unwrap(), ["bonjour"], "aucun terminal n'est ouvert");
+    let journal = h.state().core.mobile.store.read_journal(50);
+    let refusals: Vec<&str> = journal.iter().filter(|l| l.kind == "refus").map(|l| l.text.as_str()).collect();
+    assert_eq!(refusals.len(), 2, "{journal:?}");
+    assert!(refusals.iter().all(|t| t.starts_with("Muet › Nouveau terminal")), "{refusals:?}");
+}
+
 /// Une liste de dossiers qui attend son tour (une lecture en cours) quand le droit « Dossiers du PC » est retiré n'est
 /// pas lue : le téléphone reçoit le refus, pour cette demande.
 #[test]
@@ -587,7 +693,7 @@ impl Module for Fragile {
     fn ui(&mut self, _ui: &mut egui::Ui, _view: &str, _cx: &mut Cx) {}
 
     fn commands(&self) -> Vec<CommandInfo> {
-        vec![CommandInfo { id: "bonjour".into(), title: "Dire bonjour".into(), shortcut: None }]
+        vec![CommandInfo { id: "bonjour".into(), title: "Dire bonjour".into(), shortcut: None, terminal: false }]
     }
 }
 

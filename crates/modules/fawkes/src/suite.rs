@@ -53,10 +53,12 @@ pub fn instance_name(data_dir: Option<&std::ffi::OsStr>) -> String {
     }
 }
 
+/// Ses raccourcis, dans la palette de la suite. Ouvrir un terminal (un nouveau, celui qu'on a fermé) demande, depuis un
+/// téléphone, le droit « Terminaux ».
 fn commands() -> Vec<KeyCommand> {
     vec![
-        KeyCommand::new("terminal", "Nouveau terminal", "Ctrl+Maj+T"),
-        KeyCommand::new("rouvrir", "Rouvrir le terminal fermé", "Ctrl+Maj+R"),
+        KeyCommand::new("terminal", "Nouveau terminal", "Ctrl+Maj+T").terminal(),
+        KeyCommand::new("rouvrir", "Rouvrir le terminal fermé", "Ctrl+Maj+R").terminal(),
         KeyCommand::new("groupe", "Nouveau groupe", "Ctrl+Maj+N"),
         KeyCommand::new("fermer", "Fermer le terminal", "Ctrl+Maj+W"),
         KeyCommand::new("agrandir", "Agrandir le terminal", "Ctrl+Maj+M"),
@@ -305,6 +307,14 @@ mod tests {
         for dir in [r"\\hote.invalid\partage", "//hote.invalid/partage", "relatif", r"C:\n'existe\pas", ""] {
             assert!(super::check_open(dir, None).is_err(), "{dir}");
         }
+    }
+
+    /// « Nouveau terminal » et « Rouvrir le terminal fermé » ouvrent un terminal : le pont ne les lance, pour un
+    /// téléphone, qu'avec le droit « Terminaux ». Les autres commandes, non.
+    #[test]
+    fn the_commands_that_open_a_terminal_say_so() {
+        let opening: Vec<&str> = super::commands().into_iter().filter(|k| k.terminal).map(|k| k.id).collect();
+        assert_eq!(opening, ["terminal", "rouvrir"]);
     }
 
     /// Touchée sur le téléphone, la notification mène à la session qui attend ; à l'accueil s'il y en a plusieurs.

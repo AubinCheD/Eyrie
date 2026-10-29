@@ -26,12 +26,20 @@ pub struct KeyCommand {
     pub id: &'static str,
     pub title: &'static str,
     pub shortcut: Shortcut,
+    /// Elle ouvre un terminal sur le PC ([`CommandInfo::terminal`]).
+    pub terminal: bool,
 }
 
 impl KeyCommand {
     pub fn new(id: &'static str, title: &'static str, shortcut: &str) -> Self {
         let shortcut = Shortcut::parse(shortcut).unwrap_or_else(|| panic!("raccourci illisible : {shortcut}"));
-        KeyCommand { id, title, shortcut }
+        KeyCommand { id, title, shortcut, terminal: false }
+    }
+
+    /// Elle ouvre un terminal sur le PC : réservée, depuis un téléphone, à ceux qui ont le droit « Terminaux ».
+    pub fn terminal(mut self) -> Self {
+        self.terminal = true;
+        self
     }
 }
 
@@ -294,7 +302,12 @@ impl<A: eframe::App> Module for Embedded<A> {
     fn commands(&self) -> Vec<CommandInfo> {
         self.keys
             .iter()
-            .map(|k| CommandInfo { id: k.id.to_string(), title: k.title.to_string(), shortcut: Some(k.shortcut) })
+            .map(|k| CommandInfo {
+                id: k.id.to_string(),
+                title: k.title.to_string(),
+                shortcut: Some(k.shortcut),
+                terminal: k.terminal,
+            })
             .collect()
     }
 

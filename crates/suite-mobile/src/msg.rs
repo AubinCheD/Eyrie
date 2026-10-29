@@ -167,6 +167,10 @@ pub struct CommandCard {
     pub module: String,
     pub id: String,
     pub title: String,
+    /// Elle ouvre un terminal sur le PC : le PC ne la lance que pour un téléphone qui a le droit « Terminaux ». Absent
+    /// (PC plus ancien) : non.
+    #[serde(default)]
+    pub terminal: bool,
 }
 
 /// PC → téléphone.
@@ -386,6 +390,23 @@ mod tests {
         let bytes = rmp_serde::to_vec_named(&OldRights { see: true, act: false, terminals: true }).unwrap();
         let r: Rights = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(r, Rights { see: true, act: false, terminals: true, files: true });
+    }
+
+    /// Une commande envoyée par un PC plus ancien (sans `terminal`) n'ouvre pas de terminal ; le champ fait
+    /// l'aller-retour.
+    #[test]
+    fn a_command_card_says_whether_it_opens_a_terminal() {
+        #[derive(Serialize)]
+        struct OldCard {
+            module: String,
+            id: String,
+            title: String,
+        }
+        let old = OldCard { module: "fawkes".into(), id: "groupe".into(), title: "Nouveau groupe".into() };
+        let card: CommandCard = rmp_serde::from_slice(&rmp_serde::to_vec_named(&old).unwrap()).unwrap();
+        assert!(!card.terminal);
+        let new = CommandCard { id: "terminal".into(), terminal: true, ..card };
+        assert_eq!(rmp_serde::from_slice::<CommandCard>(&rmp_serde::to_vec_named(&new).unwrap()).unwrap(), new);
     }
 
     #[test]

@@ -440,6 +440,9 @@ struct Tabs {
     subtitle: String,
 }
 
+/// Ce que dit le PC à un téléphone sans le droit « Terminaux » qui veut ouvrir un terminal : dit ici sans rien envoyer.
+const NO_TERMINAL: &str = "Ce téléphone n'a pas le droit d'ouvrir de terminal (réglage du PC).";
+
 /// Deux vibrations brèves : un échec.
 fn haptic_error() {
     platform::haptic();
@@ -1765,6 +1768,14 @@ impl Controller {
             self.toast("L'écran a changé : rien n'est parti.", 3);
             return;
         }
+        // Ouvrir un terminal (un shell, une session Claude) demande le droit « Terminaux » : le PC la refuserait.
+        let key = (module.clone(), path.clone());
+        let opens = self.screens.get(&key).and_then(|s| find_act(s, &a.id)).is_some_and(|f| f.terminal);
+        if opens && !self.rights.terminals {
+            self.toast(NO_TERMINAL, 4);
+            haptic_error();
+            return;
+        }
         // Une seule fois tant que le PC n'a pas répondu.
         let Some(req) = self.pendings.send(&module, &path, &a.id) else { return };
         self.hold_bands(&module, &path, &a.id);
@@ -2036,6 +2047,12 @@ impl Controller {
     }
 
     fn run_command(&mut self, c: &CommandItem) {
+        let opens = self.commands.iter().any(|k| k.module == c.module.as_str() && k.id == c.id.as_str() && k.terminal);
+        if opens && !self.rights.terminals {
+            self.toast(NO_TERMINAL, 4);
+            haptic_error();
+            return;
+        }
         if !self.online {
             self.toast("Hors ligne : la commande n'est pas partie.", 3);
             return;
@@ -2866,6 +2883,53 @@ mod tests {
         with(|c| c.run_act(&on_b, ""));
         let sent = with(|c| c.pendings.acts(&key("dragontree", "depot/b"))).unwrap();
         assert_eq!(sent, HashSet::from(["tout-annuler".to_string()]));
+    }
+
+    /// Sans le droit « Terminaux », ce qui ouvre un terminal sur le PC (une action `Act::terminal`, une commande de la
+    /// palette qui le dit) ne part pas : la bulle dit pourquoi, comme le PC le refuserait. Le reste part.
+    #[test]
+    fn without_the_terminals_right_opening_a_terminal_does_not_leave() {
+        let ui = headless("terminaux");
+        let shell = Act::new("shell:1", "Ouvrir un shell").terminal();
+        let sleep = Act::new("veille:1", "Mettre en veille");
+        let (shell, sleep) = with(|c| {
+            c.online = true;
+            c.rights = Rights { terminals: false, ..Default::default() };
+            c.open_module_path("fawkes", "");
+            let screen = Screen::new("Fawkes").act(shell.clone()).act(sleep.clone());
+            c.on_message(ToPhone::Screen { module: "fawkes".into(), path: String::new(), screen });
+            let local = c.local(&key("fawkes", ""));
+            (view::act_in(&shell, &local), view::act_in(&sleep, &local))
+        })
+        .unwrap();
+        with(|c| c.run_act(&shell, ""));
+        assert_eq!(ui.get_toast_text(), NO_TERMINAL);
+        with(|c| c.run_act(&sleep, ""));
+        let sent = with(|c| c.pendings.acts(&key("fawkes", ""))).unwrap();
+        assert_eq!(sent, HashSet::from(["veille:1".to_string()]), "seule la mise en veille est partie");
+
+        let card = |id: &str, terminal: bool| CommandCard {
+            module: "fawkes".into(),
+            id: id.into(),
+            title: id.into(),
+            terminal,
+        };
+        let item = |id: &str| CommandItem {
+            module: "fawkes".into(),
+            module_name: "Fawkes".into(),
+            id: id.into(),
+            title: id.into(),
+        };
+        let asked = with(|c| {
+            c.on_message(ToPhone::Commands { commands: vec![card("terminal", true), card("groupe", false)] });
+            let before = c.pendings.req;
+            c.run_command(&item("terminal"));
+            let refused = c.pendings.req - before;
+            c.run_command(&item("groupe"));
+            (refused, c.pendings.req - before)
+        })
+        .unwrap();
+        assert_eq!(asked, (0, 1), "« Nouveau terminal » ne part pas, « Nouveau groupe » si");
     }
 
     /// Les bulles passent l'une après l'autre, sans doublon ; quand trop attendent, les plus anciennes cèdent leur

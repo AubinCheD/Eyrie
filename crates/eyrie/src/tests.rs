@@ -432,7 +432,12 @@ impl Module for Tuned {
     fn ui(&mut self, _ui: &mut egui::Ui, _view: &str, _cx: &mut Cx) {}
 
     fn commands(&self) -> Vec<suite_sdk::CommandInfo> {
-        vec![suite_sdk::CommandInfo { id: "reglages".into(), title: "Réglages".into(), shortcut: None }]
+        vec![suite_sdk::CommandInfo {
+            id: "reglages".into(),
+            title: "Réglages".into(),
+            shortcut: None,
+            terminal: false,
+        }]
     }
 
     fn run_command(&mut self, id: &str, _cx: &mut Cx) {
