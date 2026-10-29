@@ -65,7 +65,8 @@ fn modules() -> Vec<ModuleCard> {
         card("patronus", "Patronus", "🦌", 0x9fc5ff, Some((2, Tone::Info)), "1 tâche en cours"),
         card("menagerie", "Menagerie", "🐾", 0x4cb872, None, "4 services"),
         card("grimoire", "Grimoire", "📖", 0xb07ce0, None, "2 profils"),
-        card("gringotts", "Gringotts", "🏦", 0xe8b84a, None, "5 h 38 % · 7 j 61 %"),
+        // La ligne d'état de la barre du PC, son ↻ remplacé par le pont.
+        card("gringotts", "Gringotts", "🏦", 0xe8b84a, None, "Claude 5 h 38 % · semaine 61 % · 🔄 17:40"),
         card("carnet", "Carnet", "🗒", 0x8a919d, None, ""),
     ]
 }
@@ -78,7 +79,7 @@ fn group_menu(g: &str) -> Band {
         .act(Act::new(format!("veille:{g}"), "Tout mettre en veille").glyph("☾"))
         .act(
             Act::new(format!("redemarrer:{g}"), "Tout redémarrer")
-                .glyph("↻")
+                .glyph("🔄")
                 .danger()
                 .confirm("Redémarrer tous les terminaux du groupe ?"),
         )

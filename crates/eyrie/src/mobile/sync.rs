@@ -194,6 +194,12 @@ fn rgb(c: egui::Color32) -> u32 {
     ((c.r() as u32) << 16) | ((c.g() as u32) << 8) | c.b() as u32
 }
 
+/// Une ligne d'état écrite pour la barre du PC, telle que le téléphone la montre : ↻ (l'heure où les limites de
+/// Gringotts se remettent à zéro) n'est pas un émoji, la police du téléphone ne l'a pas et en faisait un carré vide.
+fn status_for_phone(text: String) -> String {
+    text.replace('↻', "🔄")
+}
+
 /// Appelle un module dans le bac à sable de l'hôte ; `None` s'il ne tourne pas (ou vient de planter).
 fn with_module<R>(
     core: &mut Core,
@@ -674,7 +680,7 @@ fn push_light(core: &mut Core) {
                 running: slot.is_running(),
                 reason,
                 badge: status.badge.map(|b| Badge { count: b.count, tone: tone(b.tone), tip: b.tip }),
-                status: status.status_line.map(|l| l.text).unwrap_or_default(),
+                status: status.status_line.map(|l| status_for_phone(l.text)).unwrap_or_default(),
                 summary: slot.info.summary.into(),
             });
         }
@@ -761,7 +767,7 @@ fn generic_screen(core: &Core, module: &str) -> Option<Screen> {
             }
             if let Some(line) = st.status_line {
                 let text = if line.tip.is_empty() { line.text } else { format!("{}\n{}", line.text, line.tip) };
-                s.note(text, tone(line.tone));
+                s.note(status_for_phone(text), tone(line.tone));
             }
             if !st.waiting.is_empty() {
                 s.section("Ce qui attend", st.waiting.len().to_string());

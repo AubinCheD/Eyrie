@@ -14,7 +14,9 @@ use suite_mobile::msg::{ENTRY_DENIED, ENTRY_REPO, Listing, ToPc, ToPhone};
 use suite_mobile::pairing::Ticket;
 use suite_mobile::term::{Line, TermFrame, TermInput, TermView};
 use suite_mobile::ui::{Act, FOLDER_REPO, FolderInput, Row, Screen};
-use suite_sdk::{Badge, CommandInfo, Cx, Module, ModuleInfo, ModuleStatus, Notification, Origin, Tone, Unavailable};
+use suite_sdk::{
+    Badge, CommandInfo, Cx, Module, ModuleInfo, ModuleStatus, Notification, Origin, StatusText, Tone, Unavailable,
+};
 
 use super::browse;
 use crate::app::Suite;
@@ -49,6 +51,11 @@ fn build(_: &suite_sdk::BuildCx) -> Result<Box<dyn Module>, suite_sdk::Unavailab
     Ok(Box::new(Factice { info: info() }))
 }
 
+/// Une ligne d'état comme celle de Gringotts, avec l'heure de remise à zéro des limites.
+fn reset_line() -> StatusText {
+    StatusText { text: "Claude 5 h 38 % · ↻ 14:30".into(), tone: Tone::Ok, tip: String::new() }
+}
+
 impl Module for Factice {
     fn info(&self) -> &ModuleInfo {
         &self.info
@@ -62,6 +69,7 @@ impl Module for Factice {
         ModuleStatus {
             badge: Some(Badge::count(1, Tone::Warn, "une chose attend")),
             waiting: vec!["Une chose attend".into()],
+            status_line: Some(reset_line()),
             ..Default::default()
         }
     }
@@ -217,6 +225,8 @@ fn a_phone_pairs_follows_acts_and_types_and_the_pc_sees_it() {
         assert!(card.running);
         assert_eq!(card.color, 0x123456);
         assert_eq!(card.badge.as_ref().and_then(|b| b.count), Some(1));
+        // Sa ligne d'état, sans le ↻ que la police du téléphone n'a pas.
+        assert_eq!(card.status, "Claude 5 h 38 % · 🔄 14:30");
         // Ce qui attend mène à son écran.
         let waiting = until(&mut c, |m| match m {
             ToPhone::Overview { waiting } => Some(waiting),
@@ -826,6 +836,10 @@ impl Module for Fragile {
 
     fn ui(&mut self, _ui: &mut egui::Ui, _view: &str, _cx: &mut Cx) {}
 
+    fn status(&self) -> ModuleStatus {
+        ModuleStatus { status_line: Some(reset_line()), ..Default::default() }
+    }
+
     fn commands(&self) -> Vec<CommandInfo> {
         vec![CommandInfo { id: "bonjour".into(), title: "Dire bonjour".into(), shortcut: None, terminal: false }]
     }
@@ -880,6 +894,9 @@ fn the_generic_screen_restarts_a_stopped_module_and_says_a_command_left() {
             // Il tourne : ses commandes, plus de « Relancer » ; une commande lancée dit qu'elle est partie.
             let running = fragile_screen_with(c, "cmd:bonjour");
             assert!(!running.action_ids().contains("@relancer"), "{running:?}");
+            // Sa ligne d'état en note, sans le ↻ que la police du téléphone n'a pas.
+            let shown = format!("{running:?}");
+            assert!(shown.contains("Claude 5 h 38 % · 🔄 14:30") && !shown.contains('↻'), "{shown}");
             let (ok, message) = fragile_act(c, 3, "cmd:bonjour");
             assert_eq!((ok, message.as_str()), (true, "« Dire bonjour » lancée sur le PC"));
             // Ce qu'il ne propose plus est refusé.
