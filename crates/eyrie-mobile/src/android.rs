@@ -389,8 +389,8 @@ fn dictee_class() -> Option<&'static GlobalRef> {
                     ("erreur", "(II)V", erreur as *mut c_void),
                     ("niveau", "(IF)V", niveau as *mut c_void),
                 ];
-                let natives = natives
-                    .map(|(name, sig, fn_ptr)| NativeMethod { name: name.into(), sig: sig.into(), fn_ptr });
+                let natives =
+                    natives.map(|(name, sig, fn_ptr)| NativeMethod { name: name.into(), sig: sig.into(), fn_ptr });
                 env.register_native_methods(&class, &natives)?;
                 env.new_global_ref(class)
             })
@@ -408,7 +408,12 @@ pub fn recognizer() -> Recognizer {
             1 => Recognizer::OnDevice,
             2 => {
                 let name = env
-                    .call_static_method(class, "service", format!("{CTX}Ljava/lang/String;"), &[JValue::Object(activity)])?
+                    .call_static_method(
+                        class,
+                        "service",
+                        format!("{CTX}Ljava/lang/String;"),
+                        &[JValue::Object(activity)],
+                    )?
                     .l()?;
                 let name = if name.is_null() { String::new() } else { env.get_string(&JString::from(name))?.into() };
                 Recognizer::Service(name)

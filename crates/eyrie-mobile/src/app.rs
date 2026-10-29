@@ -3515,7 +3515,11 @@ mod tests {
         ui.set_term_masked(false);
         with(|c| {
             c.term_dictate();
-            c.on_net(NetEvent::Offline { reason: "essai".into(), retry_in: Duration::from_secs(1), away: Away::default() });
+            c.on_net(NetEvent::Offline {
+                reason: "essai".into(),
+                retry_in: Duration::from_secs(1),
+                away: Away::default(),
+            });
         });
         assert!(!ui.get_term_listening(), "liaison coupée");
         // L'application en arrière-plan : l'écoute s'abandonne, même pas encore ouverte (sans question du micro).
