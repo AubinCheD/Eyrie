@@ -5,12 +5,15 @@
 //! Eyrie à la demande d'un téléphone appairé. Eyrie :
 //! - s'y rattache par son tube au lieu de lancer un compagnon ([`crate::tailnet`]) ;
 //! - l'inscrit à l'ouverture de session (valeur `EyrieVeille` de `HKCU\…\Run`), seulement si son dossier est à l'abri
-//!   des autres comptes du poste (le veilleur lance l'`eyrie.exe` rangé à côté de lui) ;
+//!   des autres comptes du poste (le veilleur lance l'`eyrie.exe` rangé à côté de lui), selon les règles du veilleur
+//!   ([`exeplace`]) ;
 //! - lui écrit son réglage, `mobile\veille.dpapi`, chiffré par DPAPI : actif ou non, sa clé, le verrou d'Eyrie ;
 //! - donne à chaque téléphone son secret de démarrage dans `Welcome` (tiré de cette clé et de sa clé publique).
 //!
 //! Tout ce qui touche au système (verrou du nœud, tube, processus, registre, DPAPI, droits d'un dossier) passe par
 //! [`Os`] : les essais n'approchent ni le vrai registre, ni le vrai nœud, ni les vraies données.
+
+mod exeplace;
 
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
@@ -383,7 +386,8 @@ pub trait Os: Send + Sync {
     /// Chiffre pour le compte de l'utilisateur sur ce poste (DPAPI, entropie [`ENTROPY`]).
     fn seal(&self, plain: &[u8]) -> Result<Vec<u8>, String>;
     fn unseal(&self, sealed: &[u8]) -> Result<Vec<u8>, String>;
-    /// L'exécutable et son dossier sont-ils à l'abri des autres comptes du poste ? Sinon, pourquoi.
+    /// L'exécutable, son dossier et les dossiers au-dessus sont-ils à l'abri des autres comptes du poste, selon les
+    /// règles du veilleur ([`exeplace`]) ? Sinon, pourquoi.
     fn place_safe(&self, exe: &Path) -> Result<(), String>;
     /// Eyrie tourne-t-elle en administrateur (jeton élevé) ? Le veilleur qu'elle lancerait le serait aussi.
     fn elevated(&self) -> bool;
@@ -510,7 +514,8 @@ impl Os for System {
     }
 
     fn place_safe(&self, exe: &Path) -> Result<(), String> {
-        fawkes::exeplace::check(exe)
+        // Celles du veilleur (propriétaire, droits sous condition, dossiers au-dessus), puis celles de Fawkes.
+        exeplace::check(exe).and_then(|()| fawkes::exeplace::check(exe))
     }
 
     fn elevated(&self) -> bool {
@@ -579,7 +584,7 @@ mod win {
     }
 
     /// Le compte (TOKEN_USER) d'un processus, dans un tampon aligné.
-    fn token_user(process: HANDLE) -> Result<Vec<u64>, String> {
+    pub fn token_user(process: HANDLE) -> Result<Vec<u64>, String> {
         // SAFETY : jeton fermé avant de sortir ; tampon aligné pour TOKEN_USER, de la taille demandée.
         unsafe {
             let mut token: HANDLE = std::ptr::null_mut();
@@ -1151,6 +1156,29 @@ mod system_tests {
         assert_eq!(System.attach(node.path(), &me).err(), Some(Attach::Absent));
     }
 
+    fn icacls(path: &Path, args: &[&str]) {
+        let out = std::process::Command::new("icacls").arg(path).args(args).output().unwrap();
+        assert!(out.status.success(), "icacls {args:?} : {}", String::from_utf8_lossy(&out.stdout));
+    }
+
+    /// Eyrie contrôle l'emplacement comme le veilleur avant chaque lancement (`compagnon/exeplace.go`), sans quoi elle
+    /// inscrirait un veilleur qui refuserait ensuite de la démarrer : un dossier au-dessus qu'un autre compte peut
+    /// renommer (il mettrait le sien à la place) est refusé, même quand l'exécutable et son dossier sont sûrs.
+    #[test]
+    fn a_folder_above_others_can_rename_is_refused_as_by_the_standby() {
+        let tmp = tempfile::tempdir().unwrap();
+        let above = tmp.path().join("Outils");
+        let exe = above.join("Eyrie").join(crate::tailnet::COMPANION);
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::write(&exe, b"").unwrap();
+        assert_eq!(System.place_safe(&exe), Ok(()));
+        icacls(&above, &["/grant", "*S-1-5-11:(DE)"]);
+        let refused = System.place_safe(&exe);
+        icacls(&above, &["/remove:g", "*S-1-5-11"]);
+        let err = refused.expect_err("dossier au-dessus renommable");
+        assert!(err.contains(&*above.to_string_lossy()) && err.contains("S-1-5-11"), "{err}");
+    }
+
     /// Contrôle à la main de la vraie Eyrie, en lecture seule (droits et propriétaires : rien n'est lancé ni écrit) :
     /// `EYRIE_PLACE_REELLE` nomme les exécutables, séparés par « ; ». Le même côté veilleur :
     /// `TestTheRealEyrieIsInASafePlace` (`compagnon/exeplace_test.go`).
@@ -1164,8 +1192,14 @@ mod system_tests {
             eprintln!("EYRIE_PLACE_REELLE absent : rien à contrôler");
             return;
         };
+        let me = exeplace::user_sid().unwrap();
         let mut refused = Vec::new();
         for exe in std::env::split_paths(&list) {
+            for (path, rights) in exeplace::levels(&exe) {
+                let read = exeplace::read_rights(&path);
+                let who = read.as_ref().map(|r| exeplace::other_writer(r, &me, rights));
+                eprintln!("{}\n\t{read:?}\n\tdroits {rights:#x} : autre compte {who:?}", path.display());
+            }
             let checked = System.place_safe(&exe);
             eprintln!("{} : {checked:?}", exe.display());
             refused.extend(checked.err());

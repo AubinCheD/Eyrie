@@ -9,7 +9,8 @@ package main
 // `%LOCALAPPDATA%\Programs` et `Program Files` sont sûrs. Le propriétaire de chacun compte aussi (il peut toujours
 // changer les droits), et les dossiers au-dessus ne doivent pas pouvoir être renommés par un autre (il mettrait le
 // sien à la place). Repris de ../Fawkes/src/exeplace.rs, plus le propriétaire et les dossiers au-dessus ; refait
-// avant chaque lancement.
+// avant chaque lancement. Eyrie applique les mêmes règles avant d'inscrire le veilleur
+// (crates/eyrie/src/veille/exeplace.rs) : les changer ensemble.
 
 import (
 	"errors"
