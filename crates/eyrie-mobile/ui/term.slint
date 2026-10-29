@@ -675,8 +675,9 @@ export component TermView inherits Rectangle {
                 width: parent.width - 36px;
                 stopping: root.dictation-stopping;
                 heard: root.heard;
-                // Espace fine insécable (\u{202f}) avant « : », comme `view::tied`.
-                hint: root.sends ? "Parlez\u{202f}: le texte partira au terminal, avec Entrée." : "Parlez, puis touchez le micro rouge\u{202f}: le texte s'ajoute à la saisie.";
+                // Espace fine insécable (\u{202f}) avant « : », comme `view::tied`. Claude attend un choix : rien ne
+                // part aussitôt (Entrée y choisirait la réponse en surbrillance).
+                hint: root.sends && root.replies.length == 0 ?"Parlez\u{202f}: le texte partira au terminal, avec Entrée." : "Parlez, puis touchez le micro rouge\u{202f}: le texte s'ajoute à la saisie.";
             }
         }
 

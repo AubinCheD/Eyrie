@@ -2329,7 +2329,8 @@ impl Controller {
     }
 
     /// Le texte final, au bout de la saisie de sa cible si elle est toujours là : à relire, puis à envoyer ; dans le
-    /// terminal, envoyé aussitôt avec Entrée si l'utilisateur l'a choisi (« Envoyer la dictée aussitôt »).
+    /// terminal, envoyé aussitôt avec Entrée si l'utilisateur l'a choisi (« Envoyer la dictée aussitôt »), sauf quand
+    /// Claude attend un choix : Entrée y choisirait la réponse en surbrillance (« 1. Yes »), quoi qu'on ait dit.
     fn dictated(&mut self, target: &dictee::Target, text: &str) {
         let Some(ui) = self.ui() else { return };
         match target {
@@ -2340,7 +2341,11 @@ impl Controller {
                 let draft = dictee::append(&ui.get_term_draft(), text);
                 ui.set_term_draft(draft.as_str().into());
                 if dictee::sends_now(target, self.store.prefs.dictation_send) {
-                    self.term_send_line(&draft);
+                    if self.term.replies.is_empty() {
+                        self.term_send_line(&draft);
+                    } else {
+                        self.toast("Claude attend un choix : le texte dicté reste dans la saisie.", 3);
+                    }
                 }
             }
             // Fermée, la saisie a abandonné l'écoute (`dictation-cancel`) : ouverte, c'est la sienne.
@@ -3516,5 +3521,28 @@ mod tests {
             c.on_heard(c.dictation.seq(), Heard::Final("le diff".into()));
         });
         assert_eq!(ui.get_term_draft().as_str(), "", "parti au terminal, avec Entrée");
+    }
+
+    /// Claude attend un choix (« ❯ 1. Yes … 3. No ») : même avec « Envoyer la dictée aussitôt », le texte dicté reste
+    /// dans la saisie (son Entrée choisirait la réponse en surbrillance, sans relecture), et une bulle le dit.
+    #[test]
+    fn dictation_is_not_sent_at_once_into_a_pending_choice() {
+        use suite_mobile::term::{Line, TermFrame, TermView, numbered_choices};
+        let ui = dictating_terminal("dictee-choix");
+        let lines: Vec<Line> =
+            ["Do you want to make this edit to android.rs?", " ❯ 1. Yes", "   2. Yes, allow all edits", "   3. No"]
+                .into_iter()
+                .map(Line::plain)
+                .collect();
+        let replies = numbered_choices(&lines);
+        let choice = TermView { cols: 52, rows: 20, lines, waiting: true, replies, ..Default::default() };
+        with(|c| {
+            c.on_message(ToPhone::Term(TermFrame::full("fawkes", "3", &choice)));
+            c.store.prefs.dictation_send = true;
+            c.term_dictate();
+            c.on_heard(c.dictation.seq(), Heard::Final("non, relis d'abord le diff".into()));
+        });
+        assert_eq!(ui.get_term_draft().as_str(), "non, relis d'abord le diff", "pas parti dans le choix");
+        assert!(ui.get_toast_text().contains("Claude attend un choix"), "{}", ui.get_toast_text());
     }
 }
