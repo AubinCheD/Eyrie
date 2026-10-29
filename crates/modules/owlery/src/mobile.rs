@@ -1,5 +1,6 @@
-//! Owlery sur le téléphone : la boîte de réception groupée comme sur le PC (par dépôt par défaut, ou par sorte, selon
-//! son réglage), le détail d'une entrée, et les gestes de la liste du PC : marquer lue ou non lue, traitée, reportée
+//! Owlery sur le téléphone : la boîte de réception en onglets, un par sorte d'entrée (revues, pull requests, CI,
+//! tickets, mentions), que l'on fait glisser ; dans un onglet, les entrées groupées par dépôt quand c'est le réglage
+//! du PC ; le détail d'une entrée, et les gestes de la liste du PC : marquer lue ou non lue, traitée, reportée
 //! (3 h, demain, lundi), tout un groupe marqué lu, ignorer le dépôt, annuler le dernier geste, corriger avec Claude (une
 //! session dans Fawkes, que le téléphone ouvre ensuite), ouvrir sur le téléphone ou sur le PC, actualiser.
 //!
@@ -16,9 +17,13 @@ use owlery::contract::{Incoming, kind_id};
 use owlery::inbox::{Filter, Group, GroupBy, Inbox, Rules, Snooze};
 use owlery::model::{Ci, Item, Kind, Status, Target};
 use suite_sdk::mobile::msg::MODULE_PREFIX;
-use suite_sdk::mobile::ui::{Act, Band, Row, Screen, Tone};
+use suite_sdk::mobile::ui::{Act, Band, Row, Screen, Tab, Tone};
 
-/// Entrées montrées dans l'accueil par groupe qui a des non lues ; toutes sont sur l'écran du groupe (`groupe/<clé>`).
+/// Les sortes dans l'ordre des onglets de l'accueil, toujours le même (un onglet ne change pas de place quand on lit
+/// ses entrées) : ce qui attend un geste de l'utilisateur d'abord.
+const KINDS: [Kind; 5] = [Kind::ReviewRequested, Kind::MyPr, Kind::CiFailed, Kind::Assigned, Kind::Mention];
+
+/// Entrées montrées dans un onglet par dépôt qui a des non lues ; toutes sont sur l'écran du dépôt (`groupe/<clé>`).
 const PER_GROUP: usize = 15;
 /// … par groupe tout lu (plié au départ).
 const PER_READ_GROUP: usize = 5;
@@ -60,6 +65,22 @@ fn kind_title(k: Kind) -> &'static str {
     }
 }
 
+/// Le libellé d'une sorte en onglet, court.
+fn kind_tab(k: Kind) -> &'static str {
+    match k {
+        Kind::ReviewRequested => "Revues",
+        Kind::CiFailed => "CI",
+        Kind::Mention => "Mentions",
+        Kind::Assigned => "Tickets",
+        Kind::MyPr => "Pull Requests",
+    }
+}
+
+/// La sorte d'un identifiant d'onglet (`sorte/<id>`).
+fn kind_of(id: &str) -> Option<Kind> {
+    KINDS.into_iter().find(|k| kind_id(*k) == id)
+}
+
 /// Le titre d'une entrée sur le téléphone, et la sorte de ticket qu'Owlery met devant celui d'un ticket Azure DevOps
 /// (« Product Backlog Item : Corrige l'export ») : elle prend de la place pour rien en tête de ligne, le détail la
 /// montre à part.
@@ -86,7 +107,8 @@ pub fn ago(t: i64, now: i64) -> String {
 fn ci_tone(ci: Option<Ci>) -> Option<Tone> {
     match ci? {
         Ci::Failure => Some(Tone::Danger),
-        Ci::Pending => Some(Tone::Warn),
+        // Une CI qui tourne n'est pas une alerte : pas de couleur.
+        Ci::Pending => None,
         Ci::Success => Some(Tone::Ok),
     }
 }
@@ -112,16 +134,20 @@ fn group_key(g: &Group, by: GroupBy) -> String {
     }
 }
 
-/// Une entrée dans la liste : son titre en entier et son auteur, rien d'autre (la sorte se lit à son glyphe) ; le
-/// reste (dépôt, numéro, activité, branche) est sur l'écran de l'entrée.
-fn item_row(item: &Item, status: Status) -> Row {
+/// Une entrée dans la liste : son titre en entier et son auteur, en gras tant qu'elle n'est pas lue ; sa sorte en
+/// glyphe quand la liste en mêle plusieurs (`glyph`), sinon l'onglet la dit. Le reste (dépôt, numéro, activité,
+/// branche) est sur l'écran de l'entrée.
+fn item_row(item: &Item, status: Status, glyph: bool) -> Row {
     let id = &item.id;
     let mut row = Row::new(split_title(item).0)
         .full()
         .key(id)
         .subtitle(&item.author)
-        .glyph(kind_glyph(item.kind))
+        .unread(status == Status::Unread)
         .open(format!("item/{id}"));
+    if glyph {
+        row = row.glyph(kind_glyph(item.kind));
+    }
     if let Some(t) = ci_tone(item.ci) {
         row = row.tone(t);
     }
@@ -129,7 +155,7 @@ fn item_row(item: &Item, status: Status) -> Row {
         row = row.act(Act::link("Ouvrir", &item.url));
     }
     if status == Status::Unread {
-        row = row.badge("non lu").act(Act::new(format!("lu:{id}"), "Marquer lue").glyph("✅"));
+        row = row.act(Act::new(format!("lu:{id}"), "Marquer lue").glyph("✅"));
     } else {
         row = row.act(Act::new(format!("non-lu:{id}"), "Marquer non lue").glyph("⚪"));
     }
@@ -153,6 +179,17 @@ fn mark_group_act(key: &str) -> Act {
     Act::new(format!("tout-lu:{key}"), "Tout marquer lu").glyph("✅")
 }
 
+/// « Tout marquer lu » sur l'onglet d'une sorte, quel que soit le groupement du PC.
+fn mark_kind_act(k: Kind) -> Act {
+    Act::new(format!("tout-lu-sorte:{}", kind_id(k)), "Tout marquer lu").glyph("✅")
+}
+
+/// Les entrées d'une seule sorte, groupées comme sur le PC (par dépôt, ou toutes ensemble par sorte).
+fn kind_groups<'a>(inbox: &'a Inbox, rules: &Rules, by: GroupBy, k: Kind, now: i64) -> Vec<Group<'a>> {
+    let filter = Filter { kinds: [k].into(), ..Default::default() };
+    inbox.view(&filter, rules, by, now)
+}
+
 /// « Annuler le dernier geste » en barre du haut, seulement s'il y en a un (`App::can_undo`).
 fn with_undo(s: Screen, can_undo: bool) -> Screen {
     if can_undo { s.act(Act::new("annuler", "Annuler le dernier geste").glyph("↩️")) } else { s }
@@ -166,52 +203,71 @@ fn group_title<'a>(g: &'a Group, by: GroupBy) -> &'a str {
     }
 }
 
-/// Le bandeau d'un groupe : ouvert s'il a des non lues, en alerte si une CI y échoue ; son menu reprend celui de
-/// l'en-tête du PC.
-fn group_band(g: &Group, key: &str, by: GroupBy) -> Band {
-    let glyph = match by {
-        GroupBy::Repo => "📦",
-        GroupBy::Kind => g.entries.first().map_or("✉", |(i, _)| kind_glyph(i.kind)),
-    };
-    let mut band =
-        Band::new(key, group_title(g, by)).aside(g.entries.len().to_string()).glyph(glyph).open(g.unread > 0);
-    if g.unread > 0 {
-        band = band.badge(unread_text(g.unread)).act(mark_group_act(key));
-    }
+/// Le titre d'un dépôt dans un onglet (groupement par dépôt) : un simple intitulé, son compte, et son menu (ignorer
+/// le dépôt) ; il ne se plie pas : l'onglet est déjà une page à part.
+fn repo_band(g: &Group) -> Band {
+    let mut band = Band::new("", &g.title).aside(g.entries.len().to_string()).act(mute_act(&g.title));
     if g.entries.iter().any(|(i, _)| i.ci == Some(Ci::Failure)) {
         band = band.tone(Tone::Danger);
-    }
-    if by == GroupBy::Repo {
-        band = band.act(mute_act(&g.title));
     }
     band
 }
 
-/// L'accueil : un bandeau par groupe, dans l'ordre du PC (ceux qui ont des non lues d'abord) ; au-delà de
-/// `PER_GROUP` entrées (`PER_READ_GROUP` dans un groupe tout lu), ou de `HOME_ROWS` dans tout l'accueil, une ligne
-/// mène à l'écran du groupe. `can_undo` : Owlery a un geste à annuler.
-pub fn home(inbox: &Inbox, rules: &Rules, by: GroupBy, now: i64, can_undo: bool) -> Screen {
-    let view = groups(inbox, rules, by, now);
-    let unread: usize = view.iter().map(|g| g.unread).sum();
+/// L'accueil et ses onglets : une sorte par onglet (celles qui ont des entrées, dans l'ordre de `KINDS`), le premier
+/// à l'accueil (`""`), les autres en `sorte/<id>` ; ses non lues en pastille d'onglet. `tab` : l'onglet montré (aucun :
+/// le premier). Dans l'onglet, les entrées par dépôt quand le PC groupe par dépôt (au-delà de `PER_GROUP` entrées —
+/// `PER_READ_GROUP` pour un dépôt tout lu — ou de `HOME_ROWS` dans l'onglet, une ligne mène à l'écran du dépôt),
+/// sinon toutes ensemble. `can_undo` : Owlery a un geste à annuler.
+pub fn home(inbox: &Inbox, rules: &Rules, by: GroupBy, now: i64, can_undo: bool, tab: Option<Kind>) -> Screen {
+    let unread: usize = groups(inbox, rules, by, now).iter().map(|g| g.unread).sum();
     let subtitle = match unread {
         0 => "Rien en attente".to_string(),
         1 => "1 en attente".to_string(),
         n => format!("{n} en attente"),
     };
-    let s = Screen::new("Owlery").subtitle(subtitle).act(Act::new("actualiser", "Actualiser").glyph("🔄"));
-    let mut s = with_undo(s, can_undo);
-    if view.is_empty() {
+    // Chaque sorte qui a des entrées : (sorte, non lues) ; l'onglet demandé reste, même vidé.
+    let kinds: Vec<(Kind, usize)> = KINDS
+        .into_iter()
+        .filter_map(|k| {
+            let view = kind_groups(inbox, rules, GroupBy::Kind, k, now);
+            let shown = view.iter().any(|g| !g.entries.is_empty()) || tab == Some(k);
+            shown.then(|| (k, view.iter().map(|g| g.unread).sum()))
+        })
+        .collect();
+    let first = kinds.first().map(|(k, _)| *k);
+    let mut s = Screen::new("Owlery").subtitle(subtitle);
+    let Some(current) = tab.or(first) else {
+        s = with_undo(s.act(Act::new("actualiser", "Actualiser").glyph("🔄")), can_undo);
         s.empty("Boîte de réception vide.");
+        return s;
+    };
+    for &(k, n) in &kinds {
+        let path = if Some(k) == first { String::new() } else { format!("sorte/{}", kind_id(k)) };
+        let badge = if n > 0 { n.to_string() } else { String::new() };
+        s.tabs.push(Tab { label: kind_tab(k).into(), path, badge });
+    }
+    if kinds.iter().any(|&(k, n)| k == current && n > 0) {
+        s = s.act(mark_kind_act(current));
+    }
+    s = with_undo(s.act(Act::new("actualiser", "Actualiser").glyph("🔄")), can_undo);
+    let view = kind_groups(inbox, rules, by, current, now);
+    if view.iter().all(|g| g.entries.is_empty()) {
+        s.empty("Plus rien ici.");
     }
     let mut room = HOME_ROWS;
     for g in &view {
         let key = group_key(g, by);
-        s.band(group_band(g, &key, by));
-        let per = if g.unread > 0 { PER_GROUP } else { PER_READ_GROUP };
+        let per = match by {
+            GroupBy::Kind => HOME_ROWS,
+            GroupBy::Repo => {
+                s.band(repo_band(g));
+                if g.unread > 0 { PER_GROUP } else { PER_READ_GROUP }
+            }
+        };
         let shown = g.entries.len().min(per).min(room);
         room -= shown;
         for (item, status) in g.entries.iter().take(shown) {
-            s.row(item_row(item, *status));
+            s.row(item_row(item, *status, false));
         }
         let title = match (shown, g.entries.len() - shown) {
             (_, 0) => continue,
@@ -219,7 +275,7 @@ pub fn home(inbox: &Inbox, rules: &Rules, by: GroupBy, now: i64, can_undo: bool)
             (_, 1) => "1 autre…".to_string(),
             (_, n) => format!("{n} autres…"),
         };
-        s.row(Row::new(title).key(format!("{key}/autres")).glyph("…").open(format!("groupe/{key}")));
+        s.row(Row::new(title).key(format!("{key}/autres")).open(format!("groupe/{key}")));
     }
     s
 }
@@ -245,7 +301,7 @@ pub fn group(inbox: &Inbox, rules: &Rules, by: GroupBy, key: &str, now: i64, can
         s = s.act(mute_act(&g.title));
     }
     for (item, status) in &g.entries {
-        s.row(item_row(item, *status));
+        s.row(item_row(item, *status, by == GroupBy::Repo));
     }
     s
 }
@@ -346,6 +402,21 @@ fn mark_group_read(app: &mut App, key: &str) -> Result<Option<String>, String> {
     }))
 }
 
+/// « Tout marquer lu » sur l'onglet d'une sorte : ses non lues, en un seul geste qu'« Annuler » défait d'un coup.
+fn mark_kind_read(app: &mut App, id: &str) -> Result<Option<String>, String> {
+    let k = kind_of(id).ok_or("Cette sorte n'existe pas.")?;
+    let ids: Vec<String> = {
+        let st = app.state();
+        let view = kind_groups(&st.inbox, &st.settings.rules, GroupBy::Kind, k, now());
+        view.iter().flat_map(|g| g.entries.iter().map(|(i, _)| i.id.clone())).collect()
+    };
+    Ok(Some(match app.mark_read_many(ids) {
+        0 => "Rien à marquer".into(),
+        1 => "1 entrée marquée lue".into(),
+        n => format!("{n} entrées marquées lues"),
+    }))
+}
+
 /// Défait le dernier geste, comme Ctrl+Z sur le PC (qui le dit d'une bulle) ; dit combien d'entrées il a rétablies
 /// (toutes celles d'un « Tout marquer lu »).
 fn undo(app: &mut App) -> String {
@@ -383,7 +454,10 @@ impl Phone {
         let now = now();
         let by = st.settings.group_by;
         if path.is_empty() {
-            return Some(home(&st.inbox, &st.settings.rules, by, now, app.can_undo()));
+            return Some(home(&st.inbox, &st.settings.rules, by, now, app.can_undo(), None));
+        }
+        if let Some(id) = path.strip_prefix("sorte/") {
+            return Some(home(&st.inbox, &st.settings.rules, by, now, app.can_undo(), Some(kind_of(id)?)));
         }
         if let Some(key) = path.strip_prefix("groupe/") {
             return Some(group(&st.inbox, &st.settings.rules, by, key, now, app.can_undo()));
@@ -394,7 +468,8 @@ impl Phone {
     }
 
     /// Un geste : sur l'entrée de l'écran (`item/<id>`), sur une ligne (`lu:<id>`…), sur un groupe (`tout-lu:<clé>`,
-    /// `ignorer-depot:<dépôt>`) ou sur toute la boîte (`annuler`, `actualiser`).
+    /// `ignorer-depot:<dépôt>`), sur l'onglet d'une sorte (`tout-lu-sorte:<id>`) ou sur toute la boîte (`annuler`,
+    /// `actualiser`).
     pub fn action(
         &self,
         app: &mut App,
@@ -413,6 +488,7 @@ impl Phone {
         };
         match verb {
             "tout-lu" => return mark_group_read(app, &id),
+            "tout-lu-sorte" => return mark_kind_read(app, &id),
             "ignorer-depot" => {
                 if !app.state().inbox.items.values().any(|i| i.repo == id) {
                     return Err("Ce dépôt n'a plus d'entrée.".into());
@@ -531,31 +607,32 @@ mod tests {
             .collect()
     }
 
-    /// Comme le PC : un bandeau par dépôt, ceux qui ont des non lues d'abord, ouverts ; les autres pliés.
+    /// Les onglets d'un écran : (libellé, chemin, pastille).
+    fn tabs(s: &Screen) -> Vec<(&str, &str, &str)> {
+        s.tabs.iter().map(|t| (t.label.as_str(), t.path.as_str(), t.badge.as_str())).collect()
+    }
+
+    /// Un onglet par sorte qui a des entrées, toujours dans le même ordre, le premier à l'accueil ; ses non lues en
+    /// pastille. Groupé par dépôt comme sur le PC, l'onglet montre un intitulé par dépôt (qui ne se plie pas) ; une
+    /// entrée non lue est en gras, sans pastille ni glyphe (l'onglet dit sa sorte).
     #[test]
-    fn the_home_groups_by_repo_like_the_pc() {
+    fn the_home_has_a_tab_per_kind_and_groups_it_by_repo_like_the_pc() {
         let now = 1_800_000_000;
         let (inbox, rules) = sample(now);
-        let s = home(&inbox, &rules, GroupBy::Repo, now, true);
+        let s = home(&inbox, &rules, GroupBy::Repo, now, true, None);
         assert_eq!(s.subtitle, "3 en attente");
+        assert_eq!(tabs(&s), [("Revues", "", "2"), ("CI", "sorte/ci", "1"), ("Mentions", "sorte/mention", "")]);
         let s_bands = bands(&s);
-        let summary: Vec<(&str, Fold, &str, Option<Tone>)> =
-            s_bands.iter().map(|(k, _, f, b, t)| (k.as_str(), *f, b.as_str(), *t)).collect();
-        assert_eq!(
-            summary,
-            [
-                ("contoso/web", Fold::Open, "2 non lues", None),
-                ("contoso/api", Fold::Open, "1 non lue", Some(Tone::Danger)),
-                ("contoso/docs", Fold::Closed, "", None),
-            ]
-        );
-        // La plus récente d'abord ; ni terminée, ni dépôt ignoré.
-        assert_eq!(s.opens().len(), 4);
-        // Le titre en entier et l'auteur ; le reste est sur l'écran de l'entrée.
-        let first = rows(&s)[0];
+        let summary: Vec<(&str, Fold, Option<Tone>)> =
+            s_bands.iter().map(|(_, t, f, _, tone)| (t.as_str(), *f, *tone)).collect();
+        assert_eq!(summary, [("contoso/web", Fold::No, None)]);
+        // La plus récente d'abord ; le titre en entier et l'auteur ; le reste est sur l'écran de l'entrée.
+        let r = rows(&s);
+        assert_eq!(r.iter().map(|r| r.key.as_str()).collect::<Vec<_>>(), ["b", "a"]);
+        let first = r[0];
         assert_eq!((first.title.as_str(), first.subtitle.as_str(), first.detail.as_str()), ("PR 13", "ada", ""));
-        assert!(first.full);
-        assert_eq!((first.key.as_str(), first.badge.as_str(), first.glyph.as_str()), ("b", "non lu", "👀"));
+        assert!(first.full && first.unread);
+        assert_eq!((first.badge.as_str(), first.glyph.as_str()), ("", ""));
         let ids = s.action_ids();
         for id in [
             "actualiser",
@@ -564,47 +641,59 @@ mod tests {
             "reporter-3h:b",
             "reporter:b",
             "reporter-lundi:b",
-            "tout-lu:contoso/web",
+            "tout-lu-sorte:revue",
             "ignorer-depot:contoso/web",
-            "ignorer-depot:contoso/docs",
         ] {
             assert!(ids.contains(id), "{id} absent : {ids:?}");
         }
-        assert!(!ids.contains("tout-lu:contoso/docs"), "rien à marquer dans un groupe déjà lu");
         // Comme l'en-tête du PC : sans confirmation, « Annuler » le défait d'un coup.
         let confirm = |id: &str| s.all_acts().into_iter().find(|a| a.id == id).and_then(|a| a.confirm.clone());
-        assert_eq!((confirm("tout-lu:contoso/web"), confirm("tout-lu:contoso/api")), (None, None));
+        assert_eq!(confirm("tout-lu-sorte:revue"), None);
+        let links: Vec<&str> = first.acts.iter().filter_map(|a| a.url.as_deref()).collect();
+        assert_eq!(links, ["https://github.com/contoso/web/pull/13"], "« Ouvrir » sur le téléphone");
+
+        // L'onglet des mentions : tout lu, rien à marquer ; la CI en échec dit son alerte au dépôt.
+        let mentions = home(&inbox, &rules, GroupBy::Repo, now, true, Some(Kind::Mention));
+        assert_eq!(tabs(&mentions), tabs(&s), "mêmes onglets d'un onglet à l'autre");
+        assert!(!mentions.action_ids().iter().any(|a| a.starts_with("tout-lu")));
+        assert!(!rows(&mentions)[0].unread);
+        let ci = home(&inbox, &rules, GroupBy::Repo, now, true, Some(Kind::CiFailed));
+        assert_eq!(bands(&ci)[0].4, Some(Tone::Danger));
         // Rien à annuler : pas de bouton « Annuler ».
-        let calm = home(&inbox, &rules, GroupBy::Repo, now, false);
+        let calm = home(&inbox, &rules, GroupBy::Repo, now, false, None);
         assert!(!calm.action_ids().contains("annuler"));
         assert!(!group(&inbox, &rules, GroupBy::Repo, "contoso/web", now, false).action_ids().contains("annuler"));
         assert!(group(&inbox, &rules, GroupBy::Repo, "contoso/web", now, true).action_ids().contains("annuler"));
-        let links: Vec<&str> = first.acts.iter().filter_map(|a| a.url.as_deref()).collect();
-        assert_eq!(links, ["https://github.com/contoso/web/pull/13"], "« Ouvrir » sur le téléphone");
+        // L'écran d'un dépôt mêle les sortes : elles s'y lisent au glyphe.
+        assert_eq!(rows(&group(&inbox, &rules, GroupBy::Repo, "contoso/web", now, false))[0].glyph, "👀");
     }
 
+    /// Groupé par sorte, l'onglet est la sorte : ses entrées ensemble, sans intitulé ni « Ignorer ce dépôt ».
     #[test]
-    fn grouped_by_kind_the_bands_are_kinds_and_nothing_mutes_a_kind() {
+    fn grouped_by_kind_a_tab_is_the_kind_alone() {
         let now = 1_800_000_000;
         let (inbox, rules) = sample(now);
-        let s = home(&inbox, &rules, GroupBy::Kind, now, false);
-        let keys: Vec<(String, String)> = bands(&s).into_iter().map(|(k, t, ..)| (k, t)).collect();
-        assert_eq!(
-            keys,
-            [
-                ("revue".to_string(), "Revues demandées".to_string()),
-                ("ci".to_string(), "CI en échec".to_string()),
-                ("mention".to_string(), "Mentions".to_string()),
-            ]
-        );
-        assert_eq!(rows(&s)[0].subtitle, "ada");
+        let s = home(&inbox, &rules, GroupBy::Kind, now, false, None);
+        assert_eq!(tabs(&s).len(), 3);
+        assert!(bands(&s).is_empty());
+        assert_eq!(rows(&s).iter().map(|r| r.key.as_str()).collect::<Vec<_>>(), ["b", "a"]);
         assert!(!s.action_ids().iter().any(|a| a.starts_with("ignorer-depot:")));
+        assert!(s.action_ids().contains("tout-lu-sorte:revue"));
+        let ci = home(&inbox, &rules, GroupBy::Kind, now, false, Some(Kind::CiFailed));
+        let c = rows(&ci)[0];
+        assert_eq!((c.key.as_str(), c.tone), ("c", Some(Tone::Danger)));
         assert_eq!(group(&inbox, &rules, GroupBy::Kind, "revue", now, false).title, "Revues demandées");
+        // Un onglet vidé reste affiché tant qu'on y est.
+        let empty = home(&Inbox::default(), &rules, GroupBy::Kind, now, false, Some(Kind::Assigned));
+        assert_eq!(tabs(&empty), [("Tickets", "", "")]);
+        assert!(empty.blocks.iter().any(|b| matches!(b, Block::Empty { .. })));
+        let none = home(&Inbox::default(), &rules, GroupBy::Kind, now, false, None);
+        assert!(none.tabs.is_empty() && none.blocks.iter().any(|b| matches!(b, Block::Empty { .. })));
     }
 
-    /// Les bandeaux d'une sorte sont au pluriel ; les PR de l'utilisateur, « Pull Requests ».
+    /// Les onglets sont courts ; les PR de l'utilisateur, « Pull Requests », les tickets, « Tickets ».
     #[test]
-    fn kind_bands_are_plural_and_my_prs_are_pull_requests() {
+    fn kind_tabs_are_short_and_my_prs_are_pull_requests() {
         let now = 1_800_000_000;
         let mut inbox = Inbox::default();
         for i in [
@@ -613,9 +702,8 @@ mod tests {
         ] {
             inbox.items.insert(i.id.clone(), i);
         }
-        let s = home(&inbox, &Rules::default(), GroupBy::Kind, now, false);
-        let titles: Vec<String> = bands(&s).into_iter().map(|(_, t, ..)| t).collect();
-        assert_eq!(titles, ["Pull Requests", "Tickets assignés"]);
+        let s = home(&inbox, &Rules::default(), GroupBy::Kind, now, false, None);
+        assert_eq!(tabs(&s), [("Pull Requests", "", "1"), ("Tickets", "sorte/ticket", "1")]);
     }
 
     /// Un ticket Azure DevOps : sa sorte (« Product Backlog Item ») ne précède plus son titre ; l'écran du ticket la
@@ -628,7 +716,7 @@ mod tests {
         t.title = "Product Backlog Item : Export : les remises disparaissent".into();
         t.target =
             Target::Azure { org: "xelya".into(), project: "Ozmo".into(), repo_id: String::new(), id: 4321, pr: false };
-        assert_eq!(item_row(&t, Status::Unread).title, "Export : les remises disparaissent");
+        assert_eq!(item_row(&t, Status::Unread, false).title, "Export : les remises disparaissent");
         let s = item(&t, Status::Unread, now, false);
         let r = rows(&s);
         assert_eq!(r[0].title, "Export : les remises disparaissent");
@@ -637,7 +725,7 @@ mod tests {
         let mut pr = t.clone();
         pr.target = Target::Azure { org: "xelya".into(), project: "Ozmo".into(), repo_id: "r".into(), id: 7, pr: true };
         pr.title = "Export : corrige les remises".into();
-        assert_eq!(item_row(&pr, Status::Unread).title, "Export : corrige les remises");
+        assert_eq!(item_row(&pr, Status::Unread, false).title, "Export : corrige les remises");
         assert!(rows(&item(&pr, Status::Unread, now, false)).iter().all(|r| r.title != "Type"));
     }
 
@@ -667,7 +755,9 @@ mod tests {
         }
         let rules = Rules::default();
         for (name, screen) in [
-            ("owlery-accueil", home(&inbox, &rules, GroupBy::Kind, now, true)),
+            ("owlery-accueil", home(&inbox, &rules, GroupBy::Kind, now, true, None)),
+            ("owlery-accueil-revues", home(&inbox, &rules, GroupBy::Kind, now, true, Some(Kind::ReviewRequested))),
+            ("owlery-accueil-depots", home(&inbox, &rules, GroupBy::Repo, now, true, None)),
             ("owlery-pr", item(&pr, Status::Unread, now, true)),
             ("owlery-ticket", item(&ticket, Status::Read, now, false)),
         ] {
@@ -685,7 +775,7 @@ mod tests {
             inbox.items.insert(i.id.clone(), i);
         }
         let rules = Rules::default();
-        let s = home(&inbox, &rules, GroupBy::Repo, now, false);
+        let s = home(&inbox, &rules, GroupBy::Repo, now, false, None);
         let r = rows(&s);
         assert_eq!(r.len(), PER_GROUP + 1);
         let more = r.last().unwrap();
@@ -703,8 +793,8 @@ mod tests {
         assert!(gone.blocks.iter().any(|b| matches!(b, Block::Empty { .. })));
     }
 
-    /// Beaucoup de dépôts : un groupe tout lu (plié) montre moins d'entrées, et l'accueil entier en garde au plus
-    /// `HOME_ROWS` ; le reste est sur l'écran de chaque groupe.
+    /// Beaucoup de dépôts : un dépôt tout lu montre moins d'entrées, et l'onglet entier en garde au plus `HOME_ROWS` ;
+    /// le reste est sur l'écran de chaque dépôt.
     #[test]
     fn the_home_stays_small_with_many_repos() {
         let now = 1_800_000_000;
@@ -721,15 +811,13 @@ mod tests {
             inbox.marks.insert(i.id.clone(), Mark::new(Status::Read, &i, None));
             inbox.items.insert(i.id.clone(), i);
         }
-        let s = home(&inbox, &Rules::default(), GroupBy::Repo, now, false);
+        let s = home(&inbox, &Rules::default(), GroupBy::Repo, now, false, None);
         let r = rows(&s);
-        let entries = r.iter().filter(|r| r.glyph != "…").count();
+        let more = |r: &&&Row| r.key.ends_with("/autres");
+        let entries = r.iter().filter(|r| !more(r)).count();
         assert_eq!(entries, HOME_ROWS);
-        let more: Vec<(&str, &str)> = r
-            .iter()
-            .filter(|r| r.glyph == "…")
-            .map(|r| (r.title.as_str(), r.open.as_deref().unwrap_or_default()))
-            .collect();
+        let more: Vec<(&str, &str)> =
+            r.iter().filter(more).map(|r| (r.title.as_str(), r.open.as_deref().unwrap_or_default())).collect();
         assert_eq!(
             more,
             [
@@ -740,7 +828,7 @@ mod tests {
         );
         // Seul, le groupe tout lu montre ses cinq plus récentes.
         inbox.items.retain(|id, _| id.starts_with("lue"));
-        let s = home(&inbox, &Rules::default(), GroupBy::Repo, now, false);
+        let s = home(&inbox, &Rules::default(), GroupBy::Repo, now, false, None);
         let titles: Vec<&str> = rows(&s).iter().map(|r| r.title.as_str()).collect();
         assert_eq!(titles, ["PR 0", "PR 1", "PR 2", "PR 3", "PR 4", "3 autres…"]);
     }
@@ -838,8 +926,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Groupé par sorte, « Tout marquer lu » vise la sorte (`revue`) ; sur l'écran d'une entrée, un report vise
-    /// l'entrée de l'écran.
+    /// « Tout marquer lu » d'un onglet vise sa sorte (`revue`), groupée par dépôt ou non ; sur l'écran d'une entrée,
+    /// un report vise l'entrée de l'écran.
     #[test]
     fn grouped_by_kind_a_whole_kind_is_read_and_an_item_snoozes_from_its_screen() {
         let now = now();
@@ -848,8 +936,10 @@ mod tests {
         let ctx = suite_sdk::egui::Context::default();
         let (tx, _rx) = mpsc::channel();
         let phone = Phone::new(tx);
-        assert!(phone.screen(&app, "").unwrap().action_ids().contains("tout-lu:revue"));
-        assert_eq!(phone.action(&mut app, &ctx, "", "tout-lu:revue"), Ok(Some("2 entrées marquées lues".into())));
+        assert!(phone.screen(&app, "").unwrap().action_ids().contains("tout-lu-sorte:revue"));
+        assert_eq!(phone.screen(&app, "sorte/ci").unwrap().tabs.len(), 3);
+        assert!(phone.screen(&app, "sorte/inconnue").is_none());
+        assert_eq!(phone.action(&mut app, &ctx, "", "tout-lu-sorte:revue"), Ok(Some("2 entrées marquées lues".into())));
         assert_eq!((status(&app, "a", now), status(&app, "b", now)), (Status::Read, Status::Read));
         assert_eq!(status(&app, "c", now), Status::Unread, "une autre sorte");
 
