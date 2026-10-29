@@ -144,15 +144,22 @@ pub enum Paste {
 const PREVIEW_LINES: usize = 4;
 const PREVIEW_CHARS: usize = 48;
 
-/// Un caractère de contrôle tel que la question le montre : son symbole (␛ pour Échap, ␡ pour Effacer), ou � pour
-/// ceux qui n'en ont pas.
-fn shown(c: char) -> char {
-    match c {
-        '\u{0}'..='\u{1f}' => char::from_u32(0x2400 + c as u32).unwrap_or('\u{fffd}'),
-        '\u{7f}' => '\u{2421}',
-        c if c.is_control() => '\u{fffd}',
-        c => c,
+/// Une ligne telle que la question la montre : ses caractères de contrôle nommés (‹Échap›, ‹Ctrl+O›, ‹Effacer›), que le
+/// texte ne dessinerait pas (les symboles d'Unicode, ␛…, manquent aux polices courantes).
+fn shown(line: &str) -> String {
+    let mut s = String::with_capacity(line.len());
+    for c in line.chars() {
+        match c {
+            '\u{1b}' => s.push_str("‹Échap›"),
+            '\r' => s.push_str("‹Entrée›"),
+            '\u{7f}' => s.push_str("‹Effacer›"),
+            '\t' => s.push(c),
+            '\u{0}'..='\u{1f}' => s.push_str(&format!("‹Ctrl+{}›", char::from(c as u8 + 0x40))),
+            c if c.is_control() => s.push_str(&format!("‹U+{:04X}›", c as u32)),
+            c => s.push(c),
+        }
     }
+    s
 }
 
 pub fn paste(clip: &str) -> Paste {
@@ -180,7 +187,7 @@ pub fn paste(clip: &str) -> Paste {
         .iter()
         .take(PREVIEW_LINES)
         .map(|l| {
-            let l: String = l.chars().map(shown).collect();
+            let l = shown(l);
             let l = l.trim_end();
             if l.chars().count() > PREVIEW_CHARS {
                 format!("{}…", l.chars().take(PREVIEW_CHARS - 1).collect::<String>())
@@ -275,13 +282,13 @@ mod tests {
         let Paste::Ask { text, question } = paste(clip) else { panic!("demande attendue") };
         assert_eq!(text, clip, "confirmé, le collage part tel quel");
         assert!(question.starts_with("Ce texte contient des caractères de contrôle"), "{question}");
-        assert!(question.ends_with("ls␛[13;28;13;1;0;1_whoami"), "{question}");
-        let Paste::Ask { question, .. } = paste("a\u{f}b\u{7f}c\u{9b}d") else { panic!("demande attendue") };
-        assert!(question.ends_with("a␏b␡c�d"), "{question}");
+        assert!(question.ends_with("ls‹Échap›[13;28;13;1;0;1_whoami"), "{question}");
+        let Paste::Ask { question, .. } = paste("a\u{f}b\u{7f}c\u{9b}d\u{0}e\rf") else { panic!("demande attendue") };
+        assert!(question.ends_with("a‹Ctrl+O›b‹Effacer›c‹U+009B›d‹Ctrl+@›e‹Entrée›f"), "{question}");
         // Avec des retours aussi : c'est la question des caractères de contrôle, sur chaque ligne.
         let Paste::Ask { question, .. } = paste("git status\u{1b}\nls\n") else { panic!("demande attendue") };
         assert!(question.starts_with("Ce texte contient des caractères de contrôle"), "{question}");
-        assert!(question.ends_with("git status␛\nls"), "{question}");
+        assert!(question.ends_with("git status‹Échap›\nls"), "{question}");
         // Une tabulation n'est pas une touche à craindre.
         assert_eq!(paste("a\tb"), Paste::Now("a\tb".into()));
     }
