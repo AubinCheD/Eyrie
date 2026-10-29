@@ -58,16 +58,21 @@ fn managed_tree(spec: &ManagedSpec, snap: &Snapshot) -> Option<HashSet<u32>> {
     alive.then(|| menagerie::ports::descendants(r.pid, r.created, &snap.tree).into_iter().map(|(p, _)| p).collect())
 }
 
+/// Les actions d'un conteneur : arrêter ou redémarrer arrête ce qui y tourne, et le demande d'abord, comme « Arrêter
+/// tout » un projet.
 fn container_acts(c: &Container) -> Vec<Act> {
     let verbs: &[&str] = if c.running() { &["stop", "restart"] } else { &["start"] };
+    let name = &c.name;
     verbs
         .iter()
         .filter_map(|v| {
             let label = verb_label(v)?;
             let act = Act::new(format!("docker:{v}:{}", c.id), label);
             Some(match *v {
-                "stop" => act.glyph("⏹️").danger(),
-                "restart" => act.glyph("🔄"),
+                "stop" => act.glyph("⏹️").danger().confirm(format!("Arrêter {name} ?")),
+                "restart" => {
+                    act.glyph("🔄").confirm(format!("Redémarrer {name} ? Ce qui y tourne s'arrête, puis repart."))
+                }
                 _ => act.glyph("▶️").primary(),
             })
         })
@@ -131,7 +136,9 @@ pub struct Live {
 fn service_acts(id: u64, name: &str, live: Option<&Live>) -> Vec<Act> {
     if live.is_some_and(|l| l.active) {
         vec![
-            Act::new(format!("service:relancer:{id}"), "Relancer").glyph("🔄"),
+            Act::new(format!("service:relancer:{id}"), "Relancer")
+                .glyph("🔄")
+                .confirm(format!("Relancer {name} ? Il s'arrête, puis repart.")),
             Act::new(format!("service:arreter:{id}"), "Arrêter")
                 .glyph("⏹️")
                 .danger()
@@ -778,6 +785,22 @@ mod tests {
         let s = service(&spec, Some(&crashed), "");
         assert_eq!(s.action_ids().into_iter().collect::<Vec<_>>(), ["service:demarrer:7"]);
         assert!(s.blocks.iter().any(|b| matches!(b, Block::Note { tone: Tone::Danger, .. })));
+    }
+
+    /// Arrêter ou redémarrer un conteneur, relancer un service : ce qui y tourne s'arrête, d'un toucher sur une ligne.
+    /// Confirmé d'abord, comme « Arrêter » un service ou « Arrêter tout » un projet ; démarrer part d'un toucher.
+    #[test]
+    fn stopping_or_restarting_one_thing_asks_first() {
+        let confirm = |acts: Vec<Act>, id: &str| acts.into_iter().find(|a| a.id == id).map(|a| a.confirm);
+        let db = container("abc", "db", "running");
+        assert_eq!(confirm(container_acts(&db), "docker:stop:abc"), Some(Some("Arrêter db ?".into())));
+        let restart = "Redémarrer db ? Ce qui y tourne s'arrête, puis repart.";
+        assert_eq!(confirm(container_acts(&db), "docker:restart:abc"), Some(Some(restart.into())));
+        assert_eq!(confirm(container_acts(&container("def", "cache", "exited")), "docker:start:def"), Some(None));
+        let running = Live { label: "en cours".into(), active: true, failure: false };
+        let again = "Relancer web ? Il s'arrête, puis repart.";
+        assert_eq!(confirm(service_acts(7, "web", Some(&running)), "service:relancer:7"), Some(Some(again.into())));
+        assert_eq!(confirm(service_acts(7, "web", None), "service:demarrer:7"), Some(None));
     }
 
     #[test]

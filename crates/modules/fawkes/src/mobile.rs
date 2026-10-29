@@ -174,17 +174,30 @@ fn term_acts(t: &TermSpec, s: &Seen) -> Vec<Act> {
     if remote_possible(s) {
         acts.push(Act::new(format!("remote:{id}"), "Activer Remote Control").glyph("📡").terminal());
     }
-    acts.push(Act::new(format!("redemarrer:{id}"), "Redémarrer").glyph("🔄"));
+    // Redémarrer arrête ce qui tourne (une session Claude au travail…), et un terminal en veille repart sans l'écran
+    // gardé (`App::restart`) : demandé d'abord, comme « Tout redémarrer ». Fini, en échec ou pas encore lancé, rien n'y
+    // tourne.
+    let title = t.display_title();
+    let restart = Act::new(format!("redemarrer:{id}"), "Redémarrer").glyph("🔄");
+    acts.push(match s.state {
+        State::Asleep => {
+            restart.confirm(format!("Relancer « {title} » sans son ancien écran ? « Réveiller » le garde."))
+        }
+        State::Ended | State::Failed | State::Starting => restart,
+        _ => restart.confirm(format!("Redémarrer « {title} » ? Ce qui y tourne s'arrête, puis repart.")),
+    });
     acts.push(if s.live {
         Act::new(format!("veille:{id}"), "Mettre en veille").glyph("🌙")
     } else {
         Act::new(format!("reveiller:{id}"), "Réveiller").glyph("☀️")
     });
     acts.push(Act::new(format!("montrer:{id}"), "Montrer sur le PC").glyph("🖥️"));
-    acts.push(Act::new(format!("fermer:{id}"), "Fermer").glyph("✖️").danger().confirm(format!(
-        "Fermer « {} » ? Ce qui y tourne s'arrête ; il reste rouvrable sur le PC.",
-        t.display_title()
-    )));
+    acts.push(
+        Act::new(format!("fermer:{id}"), "Fermer")
+            .glyph("✖️")
+            .danger()
+            .confirm(format!("Fermer « {title} » ? Ce qui y tourne s'arrête ; il reste rouvrable sur le PC.")),
+    );
     acts
 }
 
@@ -1250,6 +1263,26 @@ mod tests {
             "rien ne tourne : en échec, ou en veille"
         );
         assert_eq!(ask(Tally { terms: 1, failed: 1, ..Default::default() }), "Relancer le terminal de « Ozmo » ?");
+    }
+
+    /// Redémarrer un terminal arrête ce qui y tourne (une session Claude au travail…) : confirmé, comme pour tout un
+    /// groupe ; en veille, il repart sans son ancien écran, ce que dit la question. Fini ou en échec, rien n'y tourne :
+    /// « Relancer » part d'un toucher.
+    #[test]
+    fn restarting_a_terminal_asks_first_when_something_runs() {
+        let t = term(1, 5);
+        let restart = |s: Seen| term_acts(&t, &s).into_iter().find(|a| a.id == "redemarrer:1").map(|a| a.confirm);
+        let running_question = Some(Some("Redémarrer « t1 » ? Ce qui y tourne s'arrête, puis repart.".to_string()));
+        for s in [claude(State::Working), claude(State::Waiting), claude(State::Ready), running(State::Running)] {
+            assert_eq!(restart(s.clone()), running_question, "{s:?}");
+        }
+        let asleep = Some(Some("Relancer « t1 » sans son ancien écran ? « Réveiller » le garde.".to_string()));
+        assert_eq!(restart(running(State::Asleep)), asleep);
+        for s in [running(State::Ended), running(State::Failed), running(State::Starting)] {
+            assert_eq!(restart(s.clone()), Some(None), "{s:?}");
+        }
+        let failed = term_row(&t, &group(5, "Eyrie", &[1]), &running(State::Failed));
+        assert!(failed.trailing.iter().all(|a| a.confirm.is_none()), "{failed:?}");
     }
 
     /// Chaque action que proposent l'accueil et les écrans « nouveau terminal » est comprise, tout redémarrer un groupe
