@@ -218,6 +218,8 @@ func run(args []string) int {
 		if err != nil {
 			return failed("tube de contrôle : " + err.Error())
 		}
+		// Le veilleur sorti, son tube n'est plus à chercher (avant de lâcher le verrou : le suivant écrit le sien).
+		defer os.Remove(filepath.Join(*dir, pipeFile))
 		allowed := []string{filepath.Join(here, "eyrie.exe"), filepath.Join(here, "eyrie-tailnet.exe")}
 		// Les lignes d'état ne vont plus qu'à l'Eyrie rattachée.
 		status.detach(os.Stdout)

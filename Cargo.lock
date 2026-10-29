@@ -1931,7 +1931,6 @@ dependencies = [
 name = "eyrie"
 version = "0.1.0"
 dependencies = [
- "blake2",
  "dirs",
  "dragontree-app",
  "dragontree-forges",

@@ -16,7 +16,6 @@ use std::ffi::OsString;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
-use blake2::{Blake2s256, Digest};
 use serde::{Deserialize, Serialize};
 use suite_sdk::instance::dir_key;
 
@@ -31,6 +30,9 @@ const APPROVED_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\
 pub const CONFIG: &str = "veille.dpapi";
 /// Pourquoi le veilleur n'a pas démarré la dernière fois, dans le dossier du nœud (écrit par lui).
 pub const FAILURE: &str = "veille-echec.json";
+/// Le nom du tube du veilleur qui tient le nœud, dans le dossier du nœud (écrit par lui : `pipeFile` de
+/// `compagnon/tube.go`).
+pub const PIPE_FILE: &str = "tube.txt";
 /// Entropie DPAPI de `veille.dpapi` (la même dans `compagnon/veille.go`).
 pub const ENTROPY: &[u8] = b"eyrie/veille";
 
@@ -40,11 +42,15 @@ pub fn lock_name(node: &Path) -> String {
     format!("Local\\EyrieTailnet:{}", dir_key(node))
 }
 
-/// Le tube du veilleur du nœud `node` : `\\.\pipe\eyrie-tailnet-` suivi des 8 premiers octets (en hexadécimal) du
-/// BLAKE2s-256 de son `dir_key` (`pipeName` de `compagnon/tube.go`).
-pub fn pipe_name(node: &Path) -> String {
-    let sum = Blake2s256::digest(dir_key(node).as_bytes());
-    format!(r"\\.\pipe\eyrie-tailnet-{}", crate::mobile::store::hex(&sum[..8]))
+/// Le tube du veilleur du nœud `node`, lu dans [`PIPE_FILE`] : `\\.\pipe\eyrie-tailnet-` suivi de 32 chiffres
+/// hexadécimaux, tirés au hasard à chaque démarrage du veilleur (les tubes sont communs à tout le poste : un nom
+/// qu'un autre compte devinerait, il le prendrait avant lui). Rien d'autre n'est ouvert : ni un tube d'un autre
+/// poste, ni un fichier.
+pub fn standby_pipe(node: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(node.join(PIPE_FILE)).ok()?;
+    let name = raw.trim();
+    let suffix = name.strip_prefix(r"\\.\pipe\eyrie-tailnet-")?;
+    (suffix.len() == 32 && suffix.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))).then(|| name.to_string())
 }
 
 /// Le verrou d'instance d'Eyrie sur le dossier `dir`, tenu tant qu'elle est ouverte (le veilleur le teste).
@@ -360,9 +366,10 @@ pub trait Os: Send + Sync {
     fn eyrie(&self) -> Option<PathBuf>;
     /// Un compagnon (lancé par Eyrie ou veilleur) tient-il le nœud de ce verrou ?
     fn node_held(&self, lock: &str) -> bool;
-    /// Ouvre le tube `pipe` en se laissant identifier (le veilleur vérifie qui l'ouvre), et vérifie qui le tient :
-    /// le même compte Windows, l'exécutable `companion`.
-    fn attach(&self, pipe: &str, companion: &Path) -> Result<Pipe, Attach>;
+    /// Ouvre le tube du veilleur du nœud `node` ([`standby_pipe`], relu à chaque fois : le veilleur l'écrit une fois
+    /// son tube ouvert) en se laissant identifier (le veilleur vérifie qui l'ouvre), et vérifie qui le tient : le même
+    /// compte Windows, l'exécutable `companion`.
+    fn attach(&self, node: &Path, companion: &Path) -> Result<Pipe, Attach>;
     /// Lance le compagnon d'Eyrie, sans fenêtre, entrée et sortie par des tubes.
     fn spawn_companion(&self, exe: &Path, args: &[OsString]) -> io::Result<Spawned>;
     /// Lance le veilleur, détaché d'Eyrie : il lui survit, piloté par son tube.
@@ -427,36 +434,13 @@ impl Os for System {
     }
 
     #[cfg(windows)]
-    fn attach(&self, pipe: &str, companion: &Path) -> Result<Pipe, Attach> {
-        use std::os::windows::fs::OpenOptionsExt;
-        use std::sync::Arc;
-        use std::sync::atomic::AtomicBool;
-        use windows_sys::Win32::Foundation::ERROR_PIPE_BUSY;
-        use windows_sys::Win32::Storage::FileSystem::SECURITY_IDENTIFICATION;
-        // `security_qos_flags` ajoute SECURITY_SQOS_PRESENT : au niveau identification, le veilleur lit notre compte
-        // sur le tube, même pour une Eyrie lancée en administrateur.
-        let file = match std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .security_qos_flags(SECURITY_IDENTIFICATION)
-            .open(pipe)
-        {
-            Ok(f) => f,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(Attach::Absent),
-            Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => return Err(Attach::Absent),
-            Err(e) => return Err(Attach::Refused(format!("tube du veilleur : {e}"))),
-        };
-        win::check_server(&file, companion).map_err(Attach::Refused)?;
-        let reader = file.try_clone().map_err(|e| Attach::Refused(format!("tube du veilleur : {e}")))?;
-        let closed = Arc::new(AtomicBool::new(false));
-        Ok(Pipe {
-            reader: Box::new(win::PeekReader { file: reader, closed: closed.clone() }),
-            writer: Box::new(win::PipeWriter { file, closed }),
-        })
+    fn attach(&self, node: &Path, companion: &Path) -> Result<Pipe, Attach> {
+        // Pas encore de nom (un veilleur qui démarre) : comme pas de tube.
+        win::open_pipe(&standby_pipe(node).ok_or(Attach::Absent)?, companion)
     }
 
     #[cfg(not(windows))]
-    fn attach(&self, _pipe: &str, _companion: &Path) -> Result<Pipe, Attach> {
+    fn attach(&self, _node: &Path, _companion: &Path) -> Result<Pipe, Attach> {
         Err(Attach::Absent)
     }
 
@@ -561,10 +545,37 @@ mod win {
         QueryFullProcessImageNameW,
     };
 
-    use super::{APPROVED_KEY, RUN_KEY, RUN_VALUE};
+    use super::{APPROVED_KEY, Attach, Pipe, RUN_KEY, RUN_VALUE};
 
     fn wide(s: &str) -> Vec<u16> {
         s.encode_utf16().chain([0]).collect()
+    }
+
+    /// Ouvre le tube `pipe` en se laissant identifier, et vérifie qui le tient (voir [`super::Os::attach`]).
+    pub fn open_pipe(pipe: &str, companion: &Path) -> Result<Pipe, Attach> {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Foundation::ERROR_PIPE_BUSY;
+        use windows_sys::Win32::Storage::FileSystem::SECURITY_IDENTIFICATION;
+        // `security_qos_flags` ajoute SECURITY_SQOS_PRESENT : au niveau identification, le veilleur lit notre compte
+        // sur le tube, même pour une Eyrie lancée en administrateur.
+        let file = match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .security_qos_flags(SECURITY_IDENTIFICATION)
+            .open(pipe)
+        {
+            Ok(f) => f,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(Attach::Absent),
+            Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => return Err(Attach::Absent),
+            Err(e) => return Err(Attach::Refused(format!("tube du veilleur : {e}"))),
+        };
+        check_server(&file, companion).map_err(Attach::Refused)?;
+        let reader = file.try_clone().map_err(|e| Attach::Refused(format!("tube du veilleur : {e}")))?;
+        let closed = Arc::new(AtomicBool::new(false));
+        Ok(Pipe {
+            reader: Box::new(PeekReader { file: reader, closed: closed.clone() }),
+            writer: Box::new(PipeWriter { file, closed }),
+        })
     }
 
     /// Le compte (TOKEN_USER) d'un processus, dans un tampon aligné.
@@ -961,7 +972,7 @@ pub mod fake {
             *self.held.lock().unwrap()
         }
 
-        fn attach(&self, _pipe: &str, _companion: &Path) -> Result<Pipe, Attach> {
+        fn attach(&self, _node: &Path, _companion: &Path) -> Result<Pipe, Attach> {
             if let Some(e) = self.foreign.lock().unwrap().clone() {
                 return Err(Attach::Refused(e));
             }
@@ -1081,7 +1092,7 @@ mod system_tests {
         let name = format!(r"\\.\pipe\{}", unique("tube"));
         let server = listen(&name);
         let me = std::env::current_exe().unwrap();
-        let Pipe { reader, mut writer } = System.attach(&name, &me).expect("ce processus tient le tube");
+        let Pipe { reader, mut writer } = win::open_pipe(&name, &me).expect("ce processus tient le tube");
         let serving = std::thread::spawn(move || {
             let mut r = BufReader::new(server.try_clone().unwrap());
             let mut w = server;
@@ -1114,12 +1125,30 @@ mod system_tests {
         let dir = tempfile::tempdir().unwrap();
         let other = dir.path().join(crate::tailnet::COMPANION);
         std::fs::write(&other, b"").unwrap();
-        match System.attach(&name, &other) {
+        match win::open_pipe(&name, &other) {
             Err(Attach::Refused(e)) => assert!(e.contains("pas par"), "{e}"),
             r => panic!("attendu un refus : {:?}", r.err()),
         }
         let missing = format!(r"\\.\pipe\{}", unique("absent"));
-        assert_eq!(System.attach(&missing, &other).err(), Some(Attach::Absent));
+        assert_eq!(win::open_pipe(&missing, &other).err(), Some(Attach::Absent));
+    }
+
+    /// Eyrie ouvre le tube que le veilleur a nommé dans le dossier du nœud ; sans nom, ou avec le nom d'un autre tube
+    /// (même servi), rien n'est ouvert : absent.
+    #[test]
+    fn the_pipe_named_in_the_node_folder_is_the_one_opened() {
+        let node = tempfile::tempdir().unwrap();
+        let me = std::env::current_exe().unwrap();
+        assert_eq!(System.attach(node.path(), &me).err(), Some(Attach::Absent));
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let name = format!(r"\\.\pipe\eyrie-tailnet-{:032x}", nanos ^ (u128::from(std::process::id()) << 96));
+        let _server = listen(&name);
+        std::fs::write(node.path().join(PIPE_FILE), format!("{name}\n")).unwrap();
+        assert!(System.attach(node.path(), &me).is_ok(), "tube nommé par le veilleur");
+        let other = format!(r"\\.\pipe\{}", unique("nomme"));
+        let _other_server = listen(&other);
+        std::fs::write(node.path().join(PIPE_FILE), &other).unwrap();
+        assert_eq!(System.attach(node.path(), &me).err(), Some(Attach::Absent));
     }
 
     #[test]
@@ -1137,22 +1166,34 @@ mod system_tests {
 mod tests {
     use super::*;
 
-    /// Mêmes vecteurs que `compagnon/tube_test.go` et `verrou_test.go` : Eyrie et le veilleur se trouvent.
+    /// Mêmes noms que `compagnon/verrou_test.go` : Eyrie et le veilleur se trouvent.
     #[test]
-    fn the_lock_and_pipe_names_match_the_companion() {
-        let node = Path::new(r"C:\Users\Exemple\AppData\Local\EyrieSuite\Eyrie\tailnet");
-        assert_eq!(pipe_name(node), r"\\.\pipe\eyrie-tailnet-3590a409a3e09356");
-        assert_eq!(pipe_name(Path::new(r"c:/users/exemple/appdata/local/eyriesuite/eyrie/tailnet/")), pipe_name(node));
-        assert_eq!(
-            pipe_name(Path::new(r"C:\Users\ΝΙΚΟΣ\AppData\Local\EyrieSuite\Eyrie\tailnet")),
-            r"\\.\pipe\eyrie-tailnet-c18cd2cf7b942306"
-        );
-        assert_eq!(
-            pipe_name(Path::new(r"C:\Users\İrem\AppData\Local\EyrieSuite\Eyrie\tailnet\")),
-            r"\\.\pipe\eyrie-tailnet-cddb792376a64c8a"
-        );
+    fn the_lock_names_match_the_companion() {
         assert_eq!(lock_name(Path::new(r"C:\X\Tailnet")), r"Local\EyrieTailnet:c:/x/tailnet");
         assert_eq!(instance_lock(Path::new(r"C:\Essai\")), r"Local\Eyrie-instance:c:/essai");
+    }
+
+    /// Le nom du tube du veilleur se lit dans le dossier du nœud, tel qu'il l'écrit (`compagnon/tube_test.go`) ; rien
+    /// d'autre qu'un nom de tube de veilleur de ce poste n'est rendu.
+    #[test]
+    fn the_standby_pipe_is_read_from_its_file() {
+        let node = tempfile::tempdir().unwrap();
+        assert_eq!(standby_pipe(node.path()), None);
+        let suffix = "0123456789abcdef".repeat(2);
+        let name = format!(r"\\.\pipe\eyrie-tailnet-{suffix}");
+        std::fs::write(node.path().join(PIPE_FILE), format!("{name}\n")).unwrap();
+        assert_eq!(standby_pipe(node.path()), Some(name));
+        for bad in [
+            format!(r"\\serveur\pipe\eyrie-tailnet-{suffix}"),
+            format!(r"\\.\pipe\autre-{suffix}"),
+            format!(r"\\.\pipe\eyrie-tailnet-{}", suffix.to_uppercase()),
+            format!(r"\\.\pipe\eyrie-tailnet-{}", &suffix[..16]),
+            format!(r"\\.\pipe\eyrie-tailnet-{suffix}\..\autre"),
+            String::new(),
+        ] {
+            std::fs::write(node.path().join(PIPE_FILE), &bad).unwrap();
+            assert_eq!(standby_pipe(node.path()), None, "{bad}");
+        }
     }
 
     #[test]

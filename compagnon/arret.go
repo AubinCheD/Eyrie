@@ -19,9 +19,9 @@ import (
 // Le temps laissé à un veilleur pour sortir (fermer son nœud) une fois l'arrêt accepté.
 const stopWait = 15 * time.Second
 
-// stopStandby arrête le veilleur du nœud `dir`, ou, sans dossier, tous les veilleurs de l'utilisateur qui tournent
-// depuis cet exécutable, et attend qu'ils soient sortis. Rend 0 si tous sont arrêtés (ou s'il n'y en a pas), 1 sinon ;
-// les tubes non reconnus sont signalés sur la sortie d'erreur, sans échec.
+// stopStandby arrête le veilleur du nœud `dir` (celui du tube nommé dans son pipeFile), ou, sans dossier, tous les
+// veilleurs de l'utilisateur qui tournent depuis cet exécutable, et attend qu'ils soient sortis. Rend 0 si tous sont
+// arrêtés (ou s'il n'y en a pas), 1 sinon ; les tubes non reconnus sont signalés sur la sortie d'erreur, sans échec.
 func stopStandby(dir string) int {
 	self, err := os.Executable()
 	if err != nil {
@@ -30,7 +30,10 @@ func stopStandby(dir string) int {
 	}
 	names := standbyPipes()
 	if dir != "" {
-		names = []string{pipeName(dir)}
+		names = nil
+		if name := controlPipe(dir); name != "" {
+			names = []string{name}
+		}
 	}
 	code := exitOK
 	for _, name := range names {

@@ -3,41 +3,79 @@
 package main
 
 // Le veilleur (`--veille`) garde le nœud d'Eyrie sur le tailnet quand elle est fermée. Eyrie ne le lance pas : elle
-// s'y rattache, par un tube nommé au nom du dossier du nœud, réservé au compte de l'utilisateur. Le tube parle comme
+// s'y rattache, par un tube nommé réservé au compte de l'utilisateur. Les tubes sont communs à tout le poste : un nom
+// qu'un autre compte devine (tiré du dossier du nœud), il le prendrait avant le veilleur, qui ne démarrerait plus.
+// Le nom est donc tiré au hasard à chaque démarrage et écrit dans le dossier du nœud (pipeFile), qu'Eyrie lit et que
+// les autres comptes ne lisent pas (%LOCALAPPDATA%). Le tube parle comme
 // l'entrée et la sortie du compagnon lancé par Eyrie : consignes de relais et {"arret":true} dans un sens, lignes
 // d'état dans l'autre. Son client est vérifié (même compte Windows ; l'exécutable d'Eyrie ou du compagnon, rangé à
 // côté du veilleur) ; un seul à la fois. Eyrie ouvre le tube au niveau SECURITY_IDENTIFICATION, sans quoi, lancée en
 // administrateur, elle ne serait pas reconnue. Le client parti (Eyrie fermée, arrêtée ou plantée), plus aucune
 // connexion n'est relayée (celles en cours vont jusqu'au bout, qu'Eyrie ferme), et le nœud reste sur le tailnet.
 //
-// Le veilleur prend le verrou du nœud (`verrou.go`) avant d'ouvrir son tube : un instant, le verrou est pris sans
-// tube. Eyrie qui trouve le verrou pris sans pouvoir ouvrir le tube réessaie donc quelques secondes avant de conclure
-// qu'un autre compagnon tient le nœud.
+// Le veilleur prend le verrou du nœud (`verrou.go`) avant d'ouvrir son tube et d'en écrire le nom : un instant, le
+// verrou est pris sans tube (ou avec le nom du tube d'un veilleur précédent, fermé). Eyrie qui trouve le verrou pris
+// sans pouvoir ouvrir le tube réessaie donc quelques secondes, en relisant le nom, avant de conclure qu'un autre
+// compagnon tient le nœud.
 
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/tailscale/go-winio"
-	"golang.org/x/crypto/blake2s"
 	"golang.org/x/sys/windows"
 )
 
-// pipeName : le tube du veilleur du nœud `dir`, `\\.\pipe\eyrie-tailnet-` suivi des 8 premiers octets (en
-// hexadécimal) du BLAKE2s-256 de son dir_key.
-func pipeName(dir string) string {
-	sum := blake2s.Sum256([]byte(dirKey(dir)))
-	return `\\.\pipe\eyrie-tailnet-` + hex.EncodeToString(sum[:8])
+// Le début du nom du tube d'un veilleur ; la suite est tirée au hasard (newPipeName).
+const pipePrefix = `\\.\pipe\eyrie-tailnet-`
+
+// pipeFile : dans le dossier du nœud, le nom du tube du veilleur qui le tient, sur une ligne (PIPE_FILE de
+// crates/eyrie/src/veille.rs).
+const pipeFile = "tube.txt"
+
+// newPipeName : un nom de tube neuf, pipePrefix suivi de 16 octets au hasard en hexadécimal.
+var newPipeName = func() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return pipePrefix + hex.EncodeToString(b), nil
+}
+
+// controlPipe : le tube du veilleur du nœud `dir`, lu dans pipeFile ; "" sans fichier, ou si ce n'est pas un nom que
+// tire newPipeName (ni un tube d'un autre poste, ni autre chose).
+func controlPipe(dir string) string {
+	raw, err := os.ReadFile(filepath.Join(dir, pipeFile))
+	if err != nil {
+		return ""
+	}
+	name := strings.TrimSpace(string(raw))
+	if suffix, ok := strings.CutPrefix(name, pipePrefix); !ok || !lowerHex(suffix, 32) {
+		return ""
+	}
+	return name
+}
+
+// writePipeFile écrit le nom `name` dans pipeFile, d'un coup (fichier temporaire renommé par-dessus) : Eyrie ne lit
+// jamais un nom à moitié écrit.
+func writePipeFile(dir, name string) error {
+	tmp := filepath.Join(dir, pipeFile+".tmp")
+	if err := os.WriteFile(tmp, []byte(name+"\n"), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(dir, pipeFile))
 }
 
 // userSID : le compte Windows du processus.
@@ -49,20 +87,39 @@ func userSID() (*windows.SID, error) {
 	return u.User.Sid, nil
 }
 
-// listenControl ouvre le tube du nœud `dir` : réservé au compte de l'utilisateur (liste de contrôle protégée, sans
-// héritage), fermé aux clients d'un autre poste. Échoue si le tube existe déjà : personne ne peut le créer avant le
-// veilleur pour se faire passer pour lui.
+// listenControl ouvre le tube du nœud `dir` sous un nom neuf, réservé au compte de l'utilisateur (liste de contrôle
+// protégée, sans héritage) et fermé aux clients d'un autre poste, puis en écrit le nom dans pipeFile. Un tube déjà
+// ouvert sous ce nom (personne ne peut le créer avant le veilleur pour se faire passer pour lui) : un autre nom, trois
+// essais au plus.
 func listenControl(dir string) (net.Listener, error) {
 	me, err := userSID()
 	if err != nil {
 		return nil, err
 	}
-	return winio.ListenPipe(pipeName(dir), &winio.PipeConfig{
+	cfg := &winio.PipeConfig{
 		SecurityDescriptor: "D:P(A;;GA;;;" + me.String() + ")",
 		// Sans tampon, chaque ligne d'état attendrait qu'Eyrie la lise.
 		InputBufferSize:  pipeBuffer,
 		OutputBufferSize: pipeBuffer,
-	})
+	}
+	var last error
+	for range 3 {
+		name, err := newPipeName()
+		if err != nil {
+			return nil, err
+		}
+		ln, err := winio.ListenPipe(name, cfg)
+		if err != nil {
+			last = err
+			continue
+		}
+		if err := writePipeFile(dir, name); err != nil {
+			ln.Close()
+			return nil, fmt.Errorf("%s : %w", pipeFile, err)
+		}
+		return ln, nil
+	}
+	return nil, last
 }
 
 // pipeHandle : le handle d'une connexion par tube.

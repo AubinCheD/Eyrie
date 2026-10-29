@@ -5,35 +5,110 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/tailscale/go-winio"
+	"golang.org/x/crypto/blake2s"
 	"golang.org/x/sys/windows"
 )
 
-// Le nom du tube ne dépend que du dir_key du dossier du nœud : Eyrie le retrouve (même vecteur côté Rust).
-func TestThePipeIsNamedFromTheNodeKey(t *testing.T) {
-	name := pipeName(`C:\Users\Exemple\AppData\Local\EyrieSuite\Eyrie\tailnet`)
-	if name != `\\.\pipe\eyrie-tailnet-3590a409a3e09356` {
-		t.Fatalf("nom : %s", name)
-	}
-	if pipeName(`c:/users/exemple/appdata/local/eyriesuite/eyrie/tailnet/`) != name {
-		t.Fatal("le nom dépend de la casse ou de la barre finale")
-	}
-	// Hors ASCII aussi (dir_key de Rust, puis BLAKE2s).
-	for dir, want := range map[string]string{
-		`C:\Users\ΝΙΚΟΣ\AppData\Local\EyrieSuite\Eyrie\tailnet`: `\\.\pipe\eyrie-tailnet-c18cd2cf7b942306`,
-		`C:\Users\İrem\AppData\Local\EyrieSuite\Eyrie\tailnet\`: `\\.\pipe\eyrie-tailnet-cddb792376a64c8a`,
-	} {
-		if got := pipeName(dir); got != want {
-			t.Errorf("%s : %s, attendu %s", dir, got, want)
+// Le nom du tube est tiré au hasard à chaque démarrage, et écrit dans le dossier du nœud, où Eyrie le lit.
+func TestThePipeNameIsDrawnAtEachStartAndWrittenForEyrie(t *testing.T) {
+	dir := t.TempDir()
+	var names []string
+	for range 2 {
+		ln, err := listenControl(dir)
+		if err != nil {
+			t.Fatal(err)
 		}
+		name := controlPipe(dir)
+		raw, _ := os.ReadFile(filepath.Join(dir, pipeFile))
+		if !strings.HasPrefix(name, `\\.\pipe\eyrie-tailnet-`) || len(name) != len(`\\.\pipe\eyrie-tailnet-`)+32 ||
+			string(raw) != name+"\n" {
+			t.Fatalf("nom : %q, %s : %q", name, pipeFile, raw)
+		}
+		go func() {
+			if c, err := ln.Accept(); err == nil {
+				c.Close()
+			}
+		}()
+		timeout := 5 * time.Second
+		c, err := winio.DialPipe(name, &timeout)
+		if err != nil {
+			t.Fatalf("tube %s : %v", name, err)
+		}
+		c.Close()
+		ln.Close()
+		names = append(names, name)
+	}
+	if names[0] == names[1] {
+		t.Fatalf("même nom deux fois : %s", names[0])
+	}
+	// Seul un nom de tube de veilleur est lu (ni un tube d'un autre poste, ni autre chose).
+	suffix := strings.Repeat("0123456789abcdef", 2)
+	for _, bad := range []string{`\\serveur\pipe\eyrie-tailnet-` + suffix, `\\.\pipe\autre-` + suffix,
+		`\\.\pipe\eyrie-tailnet-` + strings.ToUpper(suffix), `\\.\pipe\eyrie-tailnet-` + suffix[:16], ""} {
+		if err := os.WriteFile(filepath.Join(dir, pipeFile), []byte(bad+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := controlPipe(dir); got != "" {
+			t.Errorf("%q lu : %q", bad, got)
+		}
+	}
+	os.Remove(filepath.Join(dir, pipeFile))
+	if got := controlPipe(dir); got != "" {
+		t.Errorf("sans fichier : %q", got)
+	}
+}
+
+// Les tubes sont communs à tout le poste : un autre compte qui prend le premier le nom qu'il devine (celui que tirait
+// le veilleur du dossier du nœud) n'empêche plus le veilleur de démarrer ; un nom tiré déjà pris, il en tire un autre.
+func TestAnotherAccountCannotTakeThePipeFirst(t *testing.T) {
+	dir := t.TempDir()
+	sum := blake2s.Sum256([]byte(dirKey(dir)))
+	guessed := `\\.\pipe\eyrie-tailnet-` + hex.EncodeToString(sum[:8])
+	squat, err := winio.ListenPipe(guessed, &winio.PipeConfig{SecurityDescriptor: "D:P(A;;GA;;;SY)"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer squat.Close()
+	ln, err := listenControl(dir)
+	if err != nil {
+		t.Fatalf("nom deviné pris : %v", err)
+	}
+	ln.Close()
+
+	taken := `\\.\pipe\eyrie-tailnet-` + strings.Repeat("ab", 16)
+	squat2, err := winio.ListenPipe(taken, &winio.PipeConfig{SecurityDescriptor: "D:P(A;;GA;;;SY)"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer squat2.Close()
+	draw := newPipeName
+	t.Cleanup(func() { newPipeName = draw })
+	drawn := 0
+	newPipeName = func() (string, error) {
+		drawn++
+		if drawn == 1 {
+			return taken, nil
+		}
+		return draw()
+	}
+	ln, err = listenControl(dir)
+	if err != nil {
+		t.Fatalf("nom tiré pris : %v", err)
+	}
+	defer ln.Close()
+	if name := controlPipe(dir); drawn != 2 || name == taken || name == "" {
+		t.Fatalf("%d tirages, nom %q", drawn, name)
 	}
 }
 
@@ -80,7 +155,7 @@ type pipeClient struct {
 func (f *standbyFixture) dial() *pipeClient {
 	f.t.Helper()
 	timeout := 5 * time.Second
-	c, err := winio.DialPipe(pipeName(f.dir), &timeout)
+	c, err := winio.DialPipe(controlPipe(f.dir), &timeout)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -242,7 +317,7 @@ func TestAnotherProgramIsRefused(t *testing.T) {
 	}
 }
 
-// Le tube n'est ouvert qu'au compte de l'utilisateur, et un second veilleur ne peut pas le reprendre.
+// Le tube n'est ouvert qu'au compte de l'utilisateur, et un second serveur ne peut pas le reprendre.
 func TestThePipeIsTheUsersAlone(t *testing.T) {
 	f := newStandby(t, self(t))
 	c := f.dial()
@@ -262,9 +337,9 @@ func TestThePipeIsTheUsersAlone(t *testing.T) {
 	if !strings.HasPrefix(sddl, "D:P(") || strings.Count(sddl, "(") != 1 || !strings.Contains(sddl, me.String()) {
 		t.Fatalf("droits du tube : %s", sddl)
 	}
-	if ln, err := listenControl(f.dir); err == nil {
+	if ln, err := winio.ListenPipe(controlPipe(f.dir), nil); err == nil {
 		ln.Close()
-		t.Fatal("un second veilleur a repris le tube")
+		t.Fatal("un second serveur a repris le tube")
 	}
 }
 
@@ -310,7 +385,7 @@ func TestTheClientIsIdentifiedOnThePipe(t *testing.T) {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			c, err := winio.DialPipeAccessImpLevel(ctx, pipeName(dir), windows.GENERIC_READ|windows.GENERIC_WRITE, level)
+			c, err := winio.DialPipeAccessImpLevel(ctx, controlPipe(dir), windows.GENERIC_READ|windows.GENERIC_WRITE, level)
 			if err != nil {
 				t.Error(err)
 			}
@@ -348,7 +423,7 @@ func TestEyrieAttachesHoweverItOpensThePipe(t *testing.T) {
 			t.Fatalf("%s : %q %v", how, line, err)
 		}
 	}
-	c, err := dialControl(pipeName(f.dir), 5*time.Second)
+	c, err := dialControl(controlPipe(f.dir), 5*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,7 +432,7 @@ func TestEyrieAttachesHoweverItOpensThePipe(t *testing.T) {
 	eventually(t, "le veilleur garde le client précédent", free)
 	attach("anonyme", f.dial().Conn)
 	eventually(t, "le veilleur garde le client précédent", free)
-	name, _ := windows.UTF16PtrFromString(pipeName(f.dir))
+	name, _ := windows.UTF16PtrFromString(controlPipe(f.dir))
 	var h windows.Handle
 	eventually(t, "tube injoignable par CreateFile", func() bool {
 		h, err = windows.CreateFile(name, windows.GENERIC_READ|windows.GENERIC_WRITE, 0, nil, windows.OPEN_EXISTING, 0, 0)

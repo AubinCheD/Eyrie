@@ -87,7 +87,7 @@ func startStandby(t *testing.T, exe, dir string) (wait func() int, closeIn func(
 func TestStopEndsAStandbyFromTheSameExecutable(t *testing.T) {
 	dir := t.TempDir()
 	wait, _ := startStandby(t, self(t), dir)
-	if !slices.Contains(standbyPipes(), pipeName(dir)) {
+	if !slices.Contains(standbyPipes(), controlPipe(dir)) {
 		t.Fatalf("tube du veilleur absent : %v", standbyPipes())
 	}
 	if code := stopStandby(dir); code != exitOK {
@@ -112,12 +112,19 @@ func TestStopEndsAStandbyFromTheSameExecutable(t *testing.T) {
 // --arreter, et donc tools\compagnon.ps1, n'échouent pas pour lui.
 func TestStopIgnoresAPipeItCannotOpen(t *testing.T) {
 	dir := t.TempDir()
-	ln, err := winio.ListenPipe(pipeName(dir), &winio.PipeConfig{SecurityDescriptor: "D:P(A;;GA;;;SY)"})
+	name, err := newPipeName()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := winio.ListenPipe(name, &winio.PipeConfig{SecurityDescriptor: "D:P(A;;GA;;;SY)"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ln.Close()
-	if stopped, err := stopOne(pipeName(dir), self(t), time.Second); stopped || !errors.Is(err, errForeign) {
+	if err := writePipeFile(dir, name); err != nil {
+		t.Fatal(err)
+	}
+	if stopped, err := stopOne(name, self(t), time.Second); stopped || !errors.Is(err, errForeign) {
 		t.Fatalf("tube fermé : %v %v", stopped, err)
 	}
 	if code := stopStandby(dir); code != exitOK {
@@ -137,7 +144,7 @@ func TestStopLeavesAStandbyFromElsewhere(t *testing.T) {
 	}
 	dir := t.TempDir()
 	wait, closeIn := startStandby(t, other, dir)
-	if stopped, err := stopOne(pipeName(dir), self(t), time.Second); stopped || err != nil {
+	if stopped, err := stopOne(controlPipe(dir), self(t), time.Second); stopped || err != nil {
 		t.Fatalf("arrêté : %v %v", stopped, err)
 	}
 	closeIn()

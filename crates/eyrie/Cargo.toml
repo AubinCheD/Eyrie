@@ -32,9 +32,7 @@ suite-titlebar.workspace = true
 suite-mobile.workspace = true
 rmp-serde = "1.3"
 qrcode = { version = "0.14", default-features = false }
-# Le nom du tube du veilleur (BLAKE2s, comme le compagnon) ; l'emplacement de l'exécutable inscrit au démarrage de
-# Windows (`fawkes::exeplace`).
-blake2 = "0.10"
+# L'emplacement de l'exécutable inscrit au démarrage de Windows (`fawkes::exeplace`).
 fawkes.workspace = true
 
 [dev-dependencies]

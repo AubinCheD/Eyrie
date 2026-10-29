@@ -9,7 +9,8 @@
 //!
 //! Un seul compagnon par nœud (son verrou, [`veille::lock_name`]). Quand le verrou est pris, c'est d'ordinaire le
 //! veilleur (`--veille`, « Démarrer Eyrie depuis le téléphone », voir [`crate::veille`]) : Eyrie ne lance rien, elle
-//! s'y rattache par son tube, qui parle comme l'entrée et la sortie du compagnon, et le quitte avec `{"relais":""}`
+//! s'y rattache par son tube (son nom, tiré au hasard par le veilleur, est dans le dossier du nœud :
+//! [`veille::standby_pipe`]), qui parle comme l'entrée et la sortie du compagnon, et le quitte avec `{"relais":""}`
 //! (le nœud reste sur le tailnet). `{"arret":true}` l'arrête : réglage coupé, Tailscale coupé, autre nom de nœud.
 //! Verrou pris sans tube : un veilleur démarre ou s'arrête, Eyrie réessaie quelques secondes ; au-delà, un autre
 //! compagnon tient le nœud, et Eyrie ne lance pas celui de Fawkes à côté. Tout cela se décide dans un fil, jamais
@@ -203,7 +204,7 @@ struct Plan {
 
 impl Plan {
     fn run(self, link: Arc<Link>) {
-        let (lock_name, pipe) = (veille::lock_name(&self.node), veille::pipe_name(&self.node));
+        let lock_name = veille::lock_name(&self.node);
         let Some(exe) = self.exe.clone() else {
             if !self.halt_only {
                 link.fail_end(format!("{COMPANION} introuvable : compilez-le avec tools\\compagnon.ps1."));
@@ -219,7 +220,7 @@ impl Plan {
                 return link.end();
             }
             if self.os.node_held(&lock_name) {
-                match self.os.attach(&pipe, &exe) {
+                match self.os.attach(&self.node, &exe) {
                     Ok(mut p) if self.halt_only => {
                         send(&mut *p.writer, &serde_json::json!({ "arret": true }).to_string());
                         return link.end();

@@ -133,8 +133,10 @@ sur le même réseau local), session fermée.
   d'Eyrie sur le tailnet quand elle est fermée. Eyrie s'y rattache par un tube nommé au lieu de lancer un compagnon.
 - Un seul processus par nœud : mutex `Local\EyrieTailnet:<dir_key(dossier du nœud)>` (`dir_key` de
   `suite-sdk/src/instance.rs` : `\` → `/`, sans `/` final, minuscules).
-- Tube : `\\.\pipe\eyrie-tailnet-<16 hex du BLAKE2s du dir_key>`, réservé à l'utilisateur, client vérifié (même
-  utilisateur, image `<dossier du compagnon>\eyrie.exe`), un client à la fois. Lignes JSON : Eyrie → veilleur
+- Tube : `\\.\pipe\eyrie-tailnet-<32 hex tirés au hasard à chaque démarrage du veilleur>` (un nom tiré du dossier
+  du nœud, un autre compte du poste le prendrait le premier et le veilleur ne démarrerait plus), écrit dans
+  `<dossier du nœud>\tube.txt` où Eyrie le lit ; réservé à l'utilisateur, client vérifié (même utilisateur, image
+  `<dossier du compagnon>\eyrie.exe`), un client à la fois. Lignes JSON : Eyrie → veilleur
   `{"relais":"127.0.0.1:port","jeton":"…"}` (comme l'entrée standard aujourd'hui), `{"relais":""}`, `{"arret":true}` ;
   veilleur → Eyrie : les lignes d'état actuelles. Tube fermé : relais coupé, le nœud reste.
 - Port **4748** du tailnet : défi-réponse de `suite-mobile/src/veille.rs`. Le veilleur relit à chaque demande
@@ -142,7 +144,8 @@ sur le même réseau local), session fermée.
   "instance":"Local\\Eyrie-instance:<dir_key>","reduite":true}`) et `mobile\appareils.json` (le compte Tailscale de
   la connexion doit être celui d'un appareil appairé ; `appareil` = son `id` ; secret = `device_secret(cle, clé
   publique)`). Limites : 5 preuves fausses → 15 min de blocage ; un démarrage par 30 s, 6 par heure ; Eyrie déjà
-  ouverte ou en démarrage → rien.
+  ouverte ou en démarrage → rien ; une connexion par adresse du tailnet (la nouvelle remplace la précédente), huit
+  adresses à la fois.
 - Lancement : seulement `<dossier du compagnon>\eyrie.exe`, après le contrôle d'emplacement ; environnement de
   l'utilisateur à jour ; `--reduite` ; `EYRIE_DEMARRE_PAR=<nom de l'appareil>` ; ligne `veille` au journal du pont.
   **(choix)** Eyrie démarrée à distance s'ouvre réduite.

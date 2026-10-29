@@ -607,10 +607,15 @@ func waitText(d time.Duration) string {
 // deviceIDShape : `id` a-t-il la forme d'un identifiant d'appareil d'Eyrie (12 chiffres hexadécimaux en minuscules,
 // Store::add de crates/eyrie/src/mobile/store.rs) ?
 func deviceIDShape(id string) bool {
-	if len(id) != 12 {
+	return lowerHex(id, 12)
+}
+
+// lowerHex : `s` est-il fait de `n` chiffres hexadécimaux en minuscules ?
+func lowerHex(s string, n int) bool {
+	if len(s) != n {
 		return false
 	}
-	for _, c := range []byte(id) {
+	for _, c := range []byte(s) {
 		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			return false
 		}
