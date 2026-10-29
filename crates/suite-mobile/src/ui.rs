@@ -111,6 +111,10 @@ pub struct Act {
     /// Le module fait déjà ce que fait cette action (son opération tourne) : le bouton est grisé, avec un indicateur.
     #[serde(default)]
     pub busy: bool,
+    /// L'action ouvre un terminal sur le PC (un shell, une session Claude) : le pont ne l'accepte que d'un téléphone qui
+    /// a le droit « Terminaux ».
+    #[serde(default)]
+    pub terminal: bool,
 }
 
 impl Act {
@@ -183,6 +187,12 @@ impl Act {
 
     pub fn busy(mut self, yes: bool) -> Self {
         self.busy = yes;
+        self
+    }
+
+    /// L'action ouvre un terminal sur le PC : réservée aux téléphones qui ont le droit « Terminaux ».
+    pub fn terminal(mut self) -> Self {
+        self.terminal = true;
         self
     }
 
@@ -831,6 +841,22 @@ mod tests {
         assert!(matches!(&s.blocks[1], Block::Row(r) if r.title == "Eyrie" && r.graph.is_none()));
         assert!(matches!(&s.blocks[2], Block::Note { progress: None, .. }));
         assert!(s.tabs.is_empty() && s.search.is_empty());
+    }
+
+    /// Une action qui ouvre un terminal le dit ; écrite par un PC plus ancien (sans ce champ), elle n'en ouvre pas.
+    #[test]
+    fn an_act_that_opens_a_terminal_says_so() {
+        #[derive(Serialize)]
+        struct OldAct {
+            id: String,
+            label: String,
+        }
+        let old = rmp_serde::to_vec_named(&OldAct { id: "shell:1".into(), label: "Ouvrir un shell".into() }).unwrap();
+        let read: Act = rmp_serde::from_slice(&old).unwrap();
+        assert!(!read.terminal);
+        let act = Act::new("shell:1", "Ouvrir un shell").terminal();
+        let back: Act = rmp_serde::from_slice(&rmp_serde::to_vec_named(&act).unwrap()).unwrap();
+        assert!(back.terminal && back.reaches_pc());
     }
 
     #[test]

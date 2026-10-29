@@ -285,7 +285,8 @@ pub fn item(i: &Item, status: Status, now: i64, claude: bool) -> Screen {
     let mut acts = Vec::new();
     if claude {
         let label = if i.ci == Some(Ci::Failure) { "Corriger avec Claude" } else { "Ouvrir avec Claude" };
-        acts.push(Act::new("claude", label).glyph("✳️").primary());
+        // La session s'ouvre dans un terminal de Fawkes : seulement avec le droit « Terminaux ».
+        acts.push(Act::new("claude", label).glyph("✳️").primary().terminal());
     }
     if owlery::actions::is_safe_url(&i.url) {
         let link = Act::link("Ouvrir", &i.url);
@@ -649,7 +650,10 @@ mod tests {
             s.action_ids().into_iter().collect::<Vec<_>>(),
             ["fait", "ignorer", "lu", "pc", "reporter", "reporter-3h", "reporter-lundi"]
         );
-        assert!(item(&i, Status::Unread, now, true).action_ids().contains("claude"), "dossier local connu");
+        let with_claude = item(&i, Status::Unread, now, true);
+        let claude = with_claude.all_acts().into_iter().find(|a| a.id == "claude").cloned();
+        assert!(claude.is_some_and(|a| a.terminal), "dossier local connu ; ouvre un terminal de Fawkes");
+        assert!(s.all_acts().iter().all(|a| !a.terminal), "rien d'autre n'ouvre de terminal");
         let links: Vec<&str> = s.all_acts().into_iter().filter_map(|a| a.url.as_deref()).collect();
         assert_eq!(links, ["https://ci.example/1", "https://github.com/contoso/api/pull/7"]);
         i.url = "javascript:alert(1)".into();

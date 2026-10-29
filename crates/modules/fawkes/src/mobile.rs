@@ -273,8 +273,8 @@ fn group_acts(g: &Group, n: &Tally) -> Vec<Act> {
     let mut acts = Vec::new();
     if let Some(repo) = &g.repo {
         let name = dir_name(repo);
-        acts.push(Act::new(format!("shell:g{gid}"), format!("Shell dans {name}")).glyph("›_"));
-        acts.push(Act::new(format!("claude:g{gid}"), format!("Claude dans {name}")).glyph("✳️"));
+        acts.push(Act::new(format!("shell:g{gid}"), format!("Shell dans {name}")).glyph("›_").terminal());
+        acts.push(Act::new(format!("claude:g{gid}"), format!("Claude dans {name}")).glyph("✳️").terminal());
     }
     acts.push(Act::screen("Nouveau terminal dans ce groupe…", format!("nouveau/g/{gid}")).glyph("➕"));
     if n.without_remote > 0 {
@@ -479,9 +479,9 @@ fn new_terminal(st: &AppState, group: Option<&Group>) -> Screen {
                 .key(key.clone())
                 .subtitle(d.clone())
                 .glyph("📁")
-                .tap(Act::new(format!("shell:{key}"), "Ouvrir un shell").glyph("›_"))
-                .act(Act::new(format!("shell:{key}"), "Ouvrir un shell").glyph("›_"))
-                .act(Act::new(format!("claude:{key}"), "Ouvrir Claude ici").glyph("✳️")),
+                .tap(Act::new(format!("shell:{key}"), "Ouvrir un shell").glyph("›_").terminal())
+                .act(Act::new(format!("shell:{key}"), "Ouvrir un shell").glyph("›_").terminal())
+                .act(Act::new(format!("claude:{key}"), "Ouvrir Claude ici").glyph("✳️").terminal()),
         );
     }
     // Le sélecteur de dossiers du PC, ouvert dans le dépôt du groupe s'il y en a un, avec les dossiers que Fawkes
@@ -494,7 +494,10 @@ fn new_terminal(st: &AppState, group: Option<&Group>) -> Screen {
         ..Default::default()
     };
     let pick = |id: &str, label: &str| {
-        Act::new(id, label).input("Dossier sur le PC", r"C:\Users\…\projet").folder("Dossier sur le PC", spec.clone())
+        Act::new(id, label)
+            .input("Dossier sur le PC", r"C:\Users\…\projet")
+            .folder("Dossier sur le PC", spec.clone())
+            .terminal()
     };
     s.section("Ailleurs", "");
     s.row(
@@ -1297,6 +1300,30 @@ mod tests {
         assert!(
             plain.blocks.iter().all(|b| !matches!(b, Block::Section { title, .. } if title == "Dossiers du groupe"))
         );
+    }
+
+    /// Ouvrir un shell ou Claude (`shell:…`, `claude:…` : dans un dossier, dans le dépôt d'un groupe, dans un autre
+    /// dossier) ouvre un terminal : le pont le refuse à un téléphone sans le droit « Terminaux ». Rien d'autre ne l'est.
+    #[test]
+    fn opening_a_shell_or_claude_is_marked_as_opening_a_terminal() {
+        let (mut st, seen) = three_groups();
+        st.groups[1].repo = Some(r"C:\DEV\Eyrie".into());
+        st.recent_dirs = vec![r"C:\DEV\Ozmo".into()];
+        let mut opening = std::collections::BTreeSet::new();
+        for s in [home(&st, &seen), new_terminal(&st, None), new_terminal(&st, st.group(5))] {
+            for a in s.all_acts().into_iter().filter(|a| a.reaches_pc()) {
+                let new = a.id.starts_with("shell:") || a.id.starts_with("claude:");
+                assert_eq!(a.terminal, new, "{}", a.id);
+                if new {
+                    opening.insert(a.id.clone());
+                }
+            }
+        }
+        let ozmo = dir_key(r"C:\DEV\Ozmo");
+        for id in ["shell:g5".to_string(), "claude:g5".into(), format!("shell:{ozmo}"), format!("claude:{ozmo}")] {
+            assert!(opening.contains(&id), "{id} : {opening:?}");
+        }
+        assert!(opening.contains("shell:saisi") && opening.contains("claude:saisi"), "{opening:?}");
     }
 
     /// « Autre dossier… » ouvre le sélecteur de dossiers du PC (n'importe quel dossier), dans le dépôt du groupe s'il y

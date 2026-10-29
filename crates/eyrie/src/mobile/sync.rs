@@ -7,9 +7,9 @@
 //! - toutes les 50 ms : le terminal suivi, en différences.
 //!
 //! Une action n'est exécutée que si l'appareil a le droit d'agir et si le dernier écran envoyé la proposait (même
-//! module, même chemin, même identifiant). Les actions qui commencent par `@` sont celles de l'hôte (« Montrer sur le
-//! PC », « Relancer » un module arrêté), comme celles des écrans génériques (`cmd:<id>` : une commande de la palette du
-//! module).
+//! module, même chemin, même identifiant) ; celle qui ouvre un terminal (`Act::terminal`) demande aussi le droit
+//! « Terminaux ». Les actions qui commencent par `@` sont celles de l'hôte (« Montrer sur le PC », « Relancer » un
+//! module arrêté), comme celles des écrans génériques (`cmd:<id>` : une commande de la palette du module).
 //!
 //! Une action qui demande un dossier du PC (`input.folder`) garde sa saisie avec la liste blanche : le téléphone ne
 //! parcourt les dossiers ([`ToPc::Browse`], lu dans un fil par [`browse`]) que pour elle, avec le droit « Dossiers du
@@ -53,6 +53,8 @@ struct Followed {
     allowed: BTreeMap<String, String>,
     /// Celles de ces actions qui demandent un dossier du PC, et ce qu'elles en attendent.
     folders: BTreeMap<String, FolderInput>,
+    /// Celles qui ouvrent un terminal sur le PC : seulement avec le droit « Terminaux ».
+    terminals: BTreeSet<String>,
     /// Les sélecteurs de dossiers ouverts sur cet écran : une ligne au journal pour chacun, pas une par lecture.
     browsed: BTreeSet<String>,
     /// Écran fait par l'hôte (module sans écran mobile, ou arrêté) : ses actions sont celles de l'hôte.
@@ -348,6 +350,7 @@ fn message(
                     hash: 0,
                     allowed: BTreeMap::new(),
                     folders: BTreeMap::new(),
+                    terminals: BTreeSet::new(),
                     browsed: BTreeSet::new(),
                     generic: false,
                     due: now,
@@ -366,13 +369,22 @@ fn message(
             }
             let offered = s.screen.as_ref().and_then(|f| {
                 let folder = f.folders.get(&action).cloned();
-                (f.module == module && f.path == path).then(|| (f.allowed.get(&action).cloned(), f.generic, folder))
+                let terminal = f.terminals.contains(&action);
+                (f.module == module && f.path == path)
+                    .then(|| (f.allowed.get(&action).cloned(), f.generic, folder, terminal))
             });
-            let Some((Some(label), generic, folder)) = offered else {
+            let Some((Some(label), generic, folder, terminal)) = offered else {
                 reply(core, id, req, Err("Cet écran a changé entre-temps : réessayez.".into()));
                 return;
             };
             let mut text = format!("{} › {label}", module_name(core, &module));
+            // Ouvrir un terminal (un shell, une session Claude) fait partie du droit « Terminaux », comme y écrire.
+            if terminal && !rights.terminals {
+                let e = "Ce téléphone n'a pas le droit d'ouvrir de terminal (réglage du PC).";
+                core.mobile.store.journal(&name, "refus", format!("{text} : {e}"));
+                reply(core, id, req, Err(e.into()));
+                return;
+            }
             // Un dossier du PC (choisi dans le sélecteur, ou saisi sur une application plus ancienne) : revérifié ici,
             // avant le module, qui reçoit le chemin résolu ; écrit en clair au journal avec l'action, et gardé parmi les
             // récents du sélecteur si l'action réussit.
@@ -716,6 +728,12 @@ fn folders_of(screen: &Screen) -> BTreeMap<String, FolderInput> {
     out
 }
 
+/// Les actions d'un écran qui ouvrent un terminal sur le PC (`Act::terminal`) : un identifiant proposé plusieurs fois
+/// en est dès qu'une de ses actions l'est.
+fn terminals_of(screen: &Screen) -> BTreeSet<String> {
+    screen.all_acts().into_iter().filter(|a| a.reaches_pc() && a.terminal).map(|a| a.id.clone()).collect()
+}
+
 /// Pourquoi ce téléphone ne parcourt pas les dossiers du PC (droits « Agir » et « Dossiers du PC ») ; `None` : il le
 /// peut.
 fn cannot_browse(rights: Rights) -> Option<&'static str> {
@@ -799,6 +817,7 @@ fn push_screens(core: &mut Core, frame: &mut eframe::Frame, ctx: &egui::Context)
                         .map(|a| (a.id.clone(), a.label.clone()))
                         .collect();
                     f.folders = folders_of(&screen);
+                    f.terminals = terminals_of(&screen);
                     s.send(ToPhone::Screen { module, path, screen });
                 }
             }
@@ -807,6 +826,7 @@ fn push_screens(core: &mut Core, frame: &mut eframe::Frame, ctx: &egui::Context)
                     f.hash = 1;
                     f.allowed.clear();
                     f.folders.clear();
+                    f.terminals.clear();
                     s.send(ToPhone::NoScreen { module, path, reason: "Cet écran n'existe plus sur le PC.".into() });
                 }
             }

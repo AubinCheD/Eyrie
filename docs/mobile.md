@@ -86,7 +86,8 @@ Les sept prérequis de l'audit, et comment ils sont tenus :
    (`Module::mobile_action`, `mobile_term_input`), toujours dans le bac à sable de l'hôte.
 2. **Actions typées en liste blanche** : le protocole est un `enum` fermé. Une action de module n'est acceptée que si
    le PC l'a lui-même proposée dans le dernier écran envoyé à cet appareil (même chemin, même identifiant) ; une saisie
-   de terminal, seulement pour le terminal que le téléphone suit.
+   de terminal, seulement pour le terminal que le téléphone suit. Une action qui ouvre un terminal (`Act::terminal` :
+   un shell ou Claude dans Fawkes, « Corriger avec Claude » d'Owlery) demande aussi le droit *terminaux*.
 3. **Appairage par appareil en plus de WhoIs** : chaque téléphone a sa clé (X25519) ; le canal est Noise
    `XX_25519_ChaChaPoly_BLAKE2s`, prologue `eyrie-mobile/1`. Le PC ne parle qu'aux clés appairées ; le téléphone ne
    parle qu'à la clé du PC appairée. Le compte Tailscale noté à l'appairage doit être le même à chaque connexion.

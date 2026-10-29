@@ -26,6 +26,8 @@ static DONE: AtomicU32 = AtomicU32::new(0);
 static TYPED: Mutex<Vec<TermInput>> = Mutex::new(Vec::new());
 /// Les dossiers reçus par l'action « choisir ».
 static CHOSEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// Les terminaux ouverts par l'action « shell ».
+static OPENED: AtomicU32 = AtomicU32::new(0);
 
 struct Factice {
     info: ModuleInfo,
@@ -87,7 +89,8 @@ impl Module for Factice {
                             Act::new("choisir", "Choisir un dépôt")
                                 .folder("Dépôt", FolderInput { want: FOLDER_REPO, ..Default::default() }),
                         ),
-                    );
+                    )
+                    .row(Row::new("Un shell").tap(Act::new("shell", "Ouvrir un shell").terminal()));
                 Some(s)
             }
             "detail" => Some(Screen::new("Détail")),
@@ -110,6 +113,10 @@ impl Module for Factice {
             "choisir" => {
                 CHOSEN.lock().unwrap().push(input.unwrap_or_default().to_string());
                 Ok(None)
+            }
+            "shell" => {
+                OPENED.fetch_add(1, Ordering::Relaxed);
+                Ok(Some("ouvert".into()))
             }
             _ => Err("inconnue".into()),
         }
@@ -454,6 +461,40 @@ fn without_the_folders_right_the_phone_cannot_browse() {
     let journal = h.state().core.mobile.store.read_journal(50);
     assert!(journal.iter().any(|l| l.kind == "acces" && l.text.ends_with("dossiers non")), "{journal:?}");
     assert!(!journal.iter().any(|l| l.kind == "dossiers"));
+}
+
+/// Une action qui ouvre un terminal sur le PC (`Act::terminal` : un shell, une session Claude) demande le droit
+/// « Terminaux », comme la saisie : sans lui, elle est refusée avant le module et notée au journal ; avec lui, faite.
+#[test]
+fn opening_a_terminal_needs_the_terminals_right() {
+    let mut h = suite();
+    let refused = with_phone(
+        &mut h,
+        |s| {
+            let id = s.core.mobile.store.devices[0].id.clone();
+            s.core.mobile.set_rights(&id, suite_mobile::msg::Rights { terminals: false, ..Default::default() });
+        },
+        |c| {
+            follow_home(c);
+            act(c, 1, "shell", "")
+        },
+    );
+    assert!(!refused.0 && refused.1.contains("pas le droit d'ouvrir de terminal"), "{refused:?}");
+    assert_eq!(OPENED.load(Ordering::Relaxed), 0, "le module n'est pas appelé");
+    let journal = h.state().core.mobile.store.read_journal(50);
+    let refusal = journal.iter().find(|l| l.kind == "refus").map(|l| l.text.as_str()).unwrap_or_default();
+    assert!(refusal.starts_with("Factice › Ouvrir un shell : "), "{journal:?}");
+    // Un autre téléphone, avec les droits accordés à l'appairage (tous).
+    let done = with_phone(
+        &mut h,
+        |_| {},
+        |c| {
+            follow_home(c);
+            act(c, 1, "shell", "")
+        },
+    );
+    assert_eq!(done, (true, "ouvert".to_string()));
+    assert_eq!(OPENED.load(Ordering::Relaxed), 1);
 }
 
 /// Une liste de dossiers qui attend son tour (une lecture en cours) quand le droit « Dossiers du PC » est retiré n'est
