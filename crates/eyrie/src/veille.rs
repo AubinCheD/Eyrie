@@ -1151,6 +1151,28 @@ mod system_tests {
         assert_eq!(System.attach(node.path(), &me).err(), Some(Attach::Absent));
     }
 
+    /// Contrôle à la main de la vraie Eyrie, en lecture seule (droits et propriétaires : rien n'est lancé ni écrit) :
+    /// `EYRIE_PLACE_REELLE` nomme les exécutables, séparés par « ; ». Le même côté veilleur :
+    /// `TestTheRealEyrieIsInASafePlace` (`compagnon/exeplace_test.go`).
+    ///
+    /// `$env:EYRIE_PLACE_REELLE = "C:\…\eyrie.exe;C:\…\eyrie-tailnet.exe"`, puis
+    /// `cargo test -p eyrie real_place -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "à la main : EYRIE_PLACE_REELLE nomme les exécutables à contrôler"]
+    fn real_place_of_eyrie_is_safe() {
+        let Some(list) = std::env::var_os("EYRIE_PLACE_REELLE") else {
+            eprintln!("EYRIE_PLACE_REELLE absent : rien à contrôler");
+            return;
+        };
+        let mut refused = Vec::new();
+        for exe in std::env::split_paths(&list) {
+            let checked = System.place_safe(&exe);
+            eprintln!("{} : {checked:?}", exe.display());
+            refused.extend(checked.err());
+        }
+        assert!(refused.is_empty(), "{refused:#?}");
+    }
+
     #[test]
     fn the_node_lock_is_seen_while_held() {
         let name = format!("Local\\{}", unique("verrou"));

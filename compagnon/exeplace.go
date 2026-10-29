@@ -67,33 +67,38 @@ func exePlaceCheck(exe string) error {
 	if _, err := os.Stat(exe); errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("%s introuvable : %w", exe, fs.ErrNotExist)
 	}
-	dir := filepath.Dir(exe)
-	check := func(path string, rights uint32) error {
-		who, err := writableByOthers(path, rights)
+	for _, l := range placeLevels(exe) {
+		who, err := writableByOthers(l.path, l.rights)
 		if err != nil {
 			return err
 		}
 		if who != "" {
-			return &unsafePlace{path: path, who: who}
-		}
-		return nil
-	}
-	for _, path := range []string{exe, dir} {
-		if err := check(path, writeRights); err != nil {
-			return err
+			return &unsafePlace{path: l.path, who: who}
 		}
 	}
+	return nil
+}
+
+// placeLevel : un chemin contrôlé et les droits qu'aucun autre compte ne doit y avoir.
+type placeLevel struct {
+	path   string
+	rights uint32
+}
+
+// placeLevels : l'exécutable `exe` et son dossier (writeRights), puis chaque dossier au-dessus jusqu'à la racine du
+// disque (aboveRights, sans le droit de supprimer à la racine).
+func placeLevels(exe string) []placeLevel {
+	dir := filepath.Dir(exe)
+	levels := []placeLevel{{exe, writeRights}, {dir, writeRights}}
 	for path := dir; filepath.Dir(path) != path; {
 		path = filepath.Dir(path)
 		rights := uint32(aboveRights)
 		if filepath.Dir(path) == path {
 			rights &^= deleteRight
 		}
-		if err := check(path, rights); err != nil {
-			return err
-		}
+		levels = append(levels, placeLevel{path, rights})
 	}
-	return nil
+	return levels
 }
 
 // writableByOthers : le propriétaire de `path`, s'il n'est ni l'utilisateur ni le système (« propriétaire <SID> »),

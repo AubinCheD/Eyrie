@@ -141,6 +141,36 @@ func TestAConditionalGrantCounts(t *testing.T) {
 	}
 }
 
+// Contrôle à la main de la vraie Eyrie, en lecture seule (droits et propriétaires : rien n'est lancé ni écrit).
+// EYRIE_PLACE_REELLE nomme les exécutables, séparés par « ; ». Pour chacun, chaque chemin contrôlé, du fichier à la
+// racine du disque : ses droits (SDDL, propriétaire compris), ceux qu'un autre compte ne doit pas avoir, et lequel
+// les a. Le même contrôle côté Eyrie : `real_place_of_eyrie_is_safe` (crates/eyrie/src/veille.rs).
+//
+//	$env:EYRIE_PLACE_REELLE = "C:\…\eyrie.exe;C:\…\eyrie-tailnet.exe"; go test -run TestTheRealEyrieIsInASafePlace -v
+func TestTheRealEyrieIsInASafePlace(t *testing.T) {
+	list := os.Getenv("EYRIE_PLACE_REELLE")
+	if list == "" {
+		t.Skip("contrôle à la main : EYRIE_PLACE_REELLE nomme les exécutables à contrôler")
+	}
+	for _, exe := range filepath.SplitList(list) {
+		for _, l := range placeLevels(exe) {
+			sd, err := windows.GetNamedSecurityInfo(l.path, windows.SE_FILE_OBJECT,
+				windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
+			if err != nil {
+				t.Errorf("%s : %v", l.path, err)
+				continue
+			}
+			who, err := writableByOthers(l.path, l.rights)
+			t.Logf("%s\n\t%s\n\tdroits %#x : autre compte %q %v", l.path, sd, l.rights, who, err)
+		}
+		if err := exePlaceCheck(exe); err != nil {
+			t.Errorf("%s refusé : %v", exe, err)
+		} else {
+			t.Logf("%s : à l'abri", exe)
+		}
+	}
+}
+
 // Un eyrie.exe absent est refusé, mais n'est pas dit modifiable par un autre compte.
 func TestAMissingEyrieIsNotCalledUnsafe(t *testing.T) {
 	err := exePlaceCheck(filepath.Join(t.TempDir(), "eyrie.exe"))
