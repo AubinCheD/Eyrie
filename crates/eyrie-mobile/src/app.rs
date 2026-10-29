@@ -2636,6 +2636,17 @@ impl Controller {
 
     /// Démonstration : la liaison à ce PC dans cet état (0 connexion en cours, 2 hors ligne, 3 refusée), avant toute
     /// donnée.
+    /// Démonstration : une reconnaissance vocale (le bureau n'en a pas), pour montrer le micro.
+    pub(crate) fn demo_recognizer(&mut self, recognizer: Recognizer) {
+        self.recognizer = recognizer;
+        self.refresh_recognizer();
+    }
+
+    /// Démonstration : ce qu'entendrait la reconnaissance pour l'écoute en cours.
+    pub(crate) fn demo_heard(&mut self, heard: Heard) {
+        self.on_heard(self.dictation.seq(), heard);
+    }
+
     pub(crate) fn demo_link(&mut self, pc: &str, state: i32, text: &str) {
         self.online = false;
         self.pc_name = pc.to_string();

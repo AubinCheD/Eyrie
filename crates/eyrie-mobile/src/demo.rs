@@ -15,8 +15,10 @@
 //! plusieurs lignes à confirmer), `terminal-coller-echap` (un collage qui cache Échap, à confirmer),
 //! `terminal-ctrl-coller` (Ctrl collé, puis Coller : relâché), `terminal-saisie` (sur plusieurs lignes),
 //! `terminal-masque` (un mot de passe demandé : la saisie se masque), `terminal-zoom`, `terminal-suivi` (le bas
-//! reste en vue quand la liste rapetisse), `terminal-remonte` (la sortie qui arrive ne ramène pas en bas). Suffixe
-//! `+clair` ou `+sombre` : le thème (sinon celui du système).
+//! reste en vue quand la liste rapetisse), `terminal-remonte` (la sortie qui arrive ne ramène pas en bas) ; la
+//! dictée : `terminal-dictee` (le micro écoute, le texte provisoire au-dessus de la saisie), `saisie-dictee` (une
+//! consigne de Patronus, sur plusieurs lignes, dictée). Suffixe `+clair` ou `+sombre` : le thème (sinon celui du
+//! système).
 
 use slint::ComponentHandle;
 use suite_mobile::msg::{
@@ -31,6 +33,7 @@ use suite_mobile::ui::{
 };
 
 use crate::app::with;
+use crate::dictee::{Heard, Recognizer};
 use crate::tailnet::Tailnet;
 use crate::termkeys::Latch;
 use crate::veilleur::{Away, Eyrie, Reach, Start};
@@ -135,6 +138,14 @@ fn fawkes_home() -> Screen {
     s
 }
 
+/// « Lancer avec une consigne… » d'une tâche de Patronus : une saisie sur plusieurs lignes (celle du vrai module).
+fn note_act() -> Act {
+    Act::new("lancer-note:revue", "Lancer avec une consigne…")
+        .glyph("📝")
+        .input("Ajoutée à la consigne de la tâche", "Ex. : regarde surtout le module de facturation")
+        .multiline()
+}
+
 fn patronus_home() -> Screen {
     let mut s = Screen::new("Patronus").subtitle("1 tâche en cours").act(Act::new("tout", "Tout arrêter").danger());
     s.meter("Budget du mois", 0.42, "8,40 € / 20 €", Tone::Ok);
@@ -147,7 +158,7 @@ fn patronus_home() -> Screen {
             .detail("réussie")
             .open("tache/revue")
             .trailing(Act::new("lancer:revue", "Lancer").glyph("▶").primary())
-            .act(Act::new("consigne:revue", "Lancer avec une consigne…").input("Consigne", "")),
+            .act(note_act()),
     );
     s.row(
         Row::new("Mise à jour des dépendances")
@@ -780,6 +791,18 @@ fn terminal_scene(ui: &AppWindow, scene: &str) {
             );
         }
         "terminal-zoom" => ui.set_term_zoom(1.8),
+        // La dictée : le micro écoute (rouge, le niveau du son autour), le texte provisoire se montre au-dessus de la
+        // saisie, qui garde ce qu'on y avait tapé.
+        "terminal-dictee" => {
+            ui.set_term_draft("Relis le diff ci-dessus".into());
+            with(|c| {
+                c.demo_recognizer(Recognizer::OnDevice);
+                c.term_dictate();
+                c.demo_heard(Heard::Ready);
+                c.demo_heard(Heard::Partial("et propose un titre de commit en français au style du journal".into()));
+                c.demo_heard(Heard::Level(0.6));
+            });
+        }
         // Une longue sortie, suivie en bas ; puis la liste rapetisse comme quand le clavier du téléphone s'ouvre (ici, la
         // fenêtre perd 300 px de haut ; rien n'arrive du PC) : le bas reste en vue.
         "terminal-suivi" => {
@@ -949,6 +972,23 @@ pub fn play(ui: &AppWindow, scene: &str) {
         "patronus" => {
             with(|c| c.nav_select("patronus"));
         }
+        // Une consigne de Patronus (une saisie sur plusieurs lignes), en partie tapée, puis dictée : le micro écoute
+        // sous le champ, le texte provisoire n'y est pas encore.
+        "saisie-dictee" => {
+            with(|c| {
+                c.demo_recognizer(Recognizer::OnDevice);
+                c.nav_select("patronus");
+            });
+            let local = crate::view::Local { screen: ("patronus".into(), String::new()), ..Default::default() };
+            let act = UiAct { input_value: "Regarde surtout".into(), ..crate::view::act_in(&note_act(), &local) };
+            ui.invoke_open_act(act.clone());
+            with(|c| {
+                c.input_dictate(&act);
+                c.demo_heard(Heard::Ready);
+                c.demo_heard(Heard::Partial("le module de facturation et les avoirs du mois dernier".into()));
+                c.demo_heard(Heard::Level(0.4));
+            });
+        }
         // Un Fetch envoyé, sans réponse encore (rien ne part en démonstration).
         "depot" => {
             with(|c| {
@@ -1004,13 +1044,16 @@ pub fn play(ui: &AppWindow, scene: &str) {
                 c.open_note(&NoteItem { key: key.into(), ..Default::default() });
             });
         }
-        // Comme sur Android : le nœud Tailscale de l'application, connecté.
+        // Comme sur Android : le nœud Tailscale de l'application, connecté, et la reconnaissance vocale de Google.
         "reglages" => {
             show_tailnet(
                 ui,
                 Tailnet::Running { name: "eyrie-pixel-8.tail1234.ts.net".into(), ip: "100.64.0.7".into() },
             );
-            with(|c| c.nav_select(scene));
+            with(|c| {
+                c.demo_recognizer(Recognizer::Service("Services vocaux de Google".into()));
+                c.nav_select(scene);
+            });
         }
         "accueil" => ui.set_page(0),
         // L'accueil sur Android, avant la connexion du téléphone à Tailscale.
