@@ -332,6 +332,10 @@ pub struct Row {
     /// Barre de progression sous la ligne, en pour cent ([`PROGRESS_UNKNOWN`] : indéterminée).
     #[serde(default)]
     pub progress: Option<u8>,
+    /// Le titre et le sous-titre en entier, sur autant de lignes qu'il faut (sinon le titre tient sur une ligne et le
+    /// sous-titre sur deux, coupés au-delà). Un téléphone plus ancien l'ignore et les coupe.
+    #[serde(default)]
+    pub full: bool,
 }
 
 impl Row {
@@ -407,6 +411,12 @@ impl Row {
     /// Progression en pour cent ; `None` : indéterminée.
     pub fn progress(mut self, percent: Option<u8>) -> Self {
         self.progress = Some(percent.map_or(PROGRESS_UNKNOWN, |p| p.min(100)));
+        self
+    }
+
+    /// Le titre et le sous-titre en entier (un titre de PR, un nom de branche), jamais coupés.
+    pub fn full(mut self) -> Self {
+        self.full = true;
         self
     }
 }
@@ -838,7 +848,7 @@ mod tests {
         let s: Screen = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(s.title, "DragonTree");
         assert!(matches!(&s.blocks[0], Block::Section { fold: Fold::No, key, .. } if key.is_empty()));
-        assert!(matches!(&s.blocks[1], Block::Row(r) if r.title == "Eyrie" && r.graph.is_none()));
+        assert!(matches!(&s.blocks[1], Block::Row(r) if r.title == "Eyrie" && r.graph.is_none() && !r.full));
         assert!(matches!(&s.blocks[2], Block::Note { progress: None, .. }));
         assert!(s.tabs.is_empty() && s.search.is_empty());
     }
@@ -857,6 +867,18 @@ mod tests {
         let act = Act::new("shell:1", "Ouvrir un shell").terminal();
         let back: Act = rmp_serde::from_slice(&rmp_serde::to_vec_named(&act).unwrap()).unwrap();
         assert!(back.terminal && back.reaches_pc());
+    }
+
+    /// Une ligne en entier le reste en passant par MessagePack ; un téléphone plus ancien la lit, sans ce champ.
+    #[test]
+    fn a_full_row_says_so_and_older_phones_still_read_it() {
+        #[derive(Deserialize)]
+        struct OldRow {
+            title: String,
+        }
+        let bytes = rmp_serde::to_vec_named(&Row::new("Corrige l'export des factures").full()).unwrap();
+        assert!(rmp_serde::from_slice::<Row>(&bytes).unwrap().full);
+        assert_eq!(rmp_serde::from_slice::<OldRow>(&bytes).unwrap().title, "Corrige l'export des factures");
     }
 
     #[test]

@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use owlery::app::App;
 use owlery::contract::{Incoming, kind_id};
 use owlery::inbox::{Filter, Group, GroupBy, Inbox, Rules, Snooze};
-use owlery::model::{Ci, Item, Kind, Status};
+use owlery::model::{Ci, Item, Kind, Status, Target};
 use suite_sdk::mobile::msg::MODULE_PREFIX;
 use suite_sdk::mobile::ui::{Act, Band, Row, Screen, Tone};
 
@@ -48,6 +48,31 @@ fn kind_glyph(k: Kind) -> &'static str {
     }
 }
 
+/// Le titre d'un bandeau (et de son écran) quand la liste est groupée par sorte : au pluriel, puisqu'il en réunit
+/// plusieurs ; les PR de l'utilisateur sont « Pull Requests ».
+fn kind_title(k: Kind) -> &'static str {
+    match k {
+        Kind::ReviewRequested => "Revues demandées",
+        Kind::CiFailed => "CI en échec",
+        Kind::Mention => "Mentions",
+        Kind::Assigned => "Tickets assignés",
+        Kind::MyPr => "Pull Requests",
+    }
+}
+
+/// Le titre d'une entrée sur le téléphone, et la sorte de ticket qu'Owlery met devant celui d'un ticket Azure DevOps
+/// (« Product Backlog Item : Corrige l'export ») : elle prend de la place pour rien en tête de ligne, le détail la
+/// montre à part.
+fn split_title(i: &Item) -> (&str, Option<&str>) {
+    if matches!(i.target, Target::Azure { pr: false, .. })
+        && let Some((kind, title)) = i.title.split_once(" : ")
+        && !kind.is_empty()
+    {
+        return (title, Some(kind));
+    }
+    (&i.title, None)
+}
+
 pub fn ago(t: i64, now: i64) -> String {
     let s = (now - t).max(0);
     match s {
@@ -55,13 +80,6 @@ pub fn ago(t: i64, now: i64) -> String {
         60..3600 => format!("il y a {} min", s / 60),
         3600..86_400 => format!("il y a {} h", s / 3600),
         _ => format!("il y a {} j", s / 86_400),
-    }
-}
-
-fn reference(i: &Item) -> String {
-    match i.number {
-        Some(n) => format!("{}#{n}", i.repo),
-        None => i.repo.clone(),
     }
 }
 
@@ -94,19 +112,14 @@ fn group_key(g: &Group, by: GroupBy) -> String {
     }
 }
 
-/// Une entrée dans la liste ; le groupe dit déjà le dépôt (ou la sorte), la ligne dit l'autre.
-fn item_row(item: &Item, status: Status, by: GroupBy, now: i64) -> Row {
-    let place = match (by, item.number) {
-        (GroupBy::Repo, Some(n)) => format!("{} · #{n}", item.kind.label()),
-        (GroupBy::Repo, None) => item.kind.label().to_string(),
-        (GroupBy::Kind, _) => reference(item),
-    };
-    let sub = if item.author.is_empty() { place } else { format!("{place} · {}", item.author) };
+/// Une entrée dans la liste : son titre en entier et son auteur, rien d'autre (la sorte se lit à son glyphe) ; le
+/// reste (dépôt, numéro, activité, branche) est sur l'écran de l'entrée.
+fn item_row(item: &Item, status: Status) -> Row {
     let id = &item.id;
-    let mut row = Row::new(&item.title)
+    let mut row = Row::new(split_title(item).0)
+        .full()
         .key(id)
-        .subtitle(sub)
-        .detail(ago(item.updated_at, now))
+        .subtitle(&item.author)
         .glyph(kind_glyph(item.kind))
         .open(format!("item/{id}"));
     if let Some(t) = ci_tone(item.ci) {
@@ -145,6 +158,14 @@ fn with_undo(s: Screen, can_undo: bool) -> Screen {
     if can_undo { s.act(Act::new("annuler", "Annuler le dernier geste").glyph("↩️")) } else { s }
 }
 
+/// Le titre d'un groupe : son dépôt, ou sa sorte au pluriel.
+fn group_title<'a>(g: &'a Group, by: GroupBy) -> &'a str {
+    match (by, g.entries.first()) {
+        (GroupBy::Kind, Some((i, _))) => kind_title(i.kind),
+        _ => &g.title,
+    }
+}
+
 /// Le bandeau d'un groupe : ouvert s'il a des non lues, en alerte si une CI y échoue ; son menu reprend celui de
 /// l'en-tête du PC.
 fn group_band(g: &Group, key: &str, by: GroupBy) -> Band {
@@ -152,7 +173,8 @@ fn group_band(g: &Group, key: &str, by: GroupBy) -> Band {
         GroupBy::Repo => "📦",
         GroupBy::Kind => g.entries.first().map_or("✉", |(i, _)| kind_glyph(i.kind)),
     };
-    let mut band = Band::new(key, &g.title).aside(g.entries.len().to_string()).glyph(glyph).open(g.unread > 0);
+    let mut band =
+        Band::new(key, group_title(g, by)).aside(g.entries.len().to_string()).glyph(glyph).open(g.unread > 0);
     if g.unread > 0 {
         band = band.badge(unread_text(g.unread)).act(mark_group_act(key));
     }
@@ -189,7 +211,7 @@ pub fn home(inbox: &Inbox, rules: &Rules, by: GroupBy, now: i64, can_undo: bool)
         let shown = g.entries.len().min(per).min(room);
         room -= shown;
         for (item, status) in g.entries.iter().take(shown) {
-            s.row(item_row(item, *status, by, now));
+            s.row(item_row(item, *status));
         }
         let title = match (shown, g.entries.len() - shown) {
             (_, 0) => continue,
@@ -214,7 +236,7 @@ pub fn group(inbox: &Inbox, rules: &Rules, by: GroupBy, key: &str, now: i64, can
         0 => entries_text(g.entries.len()),
         n => format!("{} · {}", unread_text(n), entries_text(g.entries.len())),
     };
-    let mut s = Screen::new(&g.title).subtitle(subtitle).search("Chercher dans le groupe");
+    let mut s = Screen::new(group_title(g, by)).subtitle(subtitle).search("Chercher dans le groupe");
     if g.unread > 0 {
         s = s.act(mark_group_act(key));
     }
@@ -223,14 +245,18 @@ pub fn group(inbox: &Inbox, rules: &Rules, by: GroupBy, key: &str, now: i64, can
         s = s.act(mute_act(&g.title));
     }
     for (item, status) in &g.entries {
-        s.row(item_row(item, *status, by, now));
+        s.row(item_row(item, *status));
     }
     s
 }
 
-/// Le détail d'une entrée ; `claude` : son dossier local est connu (*Corriger avec Claude* possible).
+/// Le détail d'une entrée : la barre du haut dit son numéro (un dépôt Azure DevOps, « org/projet/dépôt », y serait
+/// coupé) et sa sorte, puis viennent son titre en entier, et ce que la liste ne montre pas, le dépôt et la branche en
+/// entier ; `claude` : son dossier local est connu (*Corriger avec Claude* possible).
 pub fn item(i: &Item, status: Status, now: i64, claude: bool) -> Screen {
-    let mut s = Screen::new(&i.title).subtitle(format!("{} · {}", reference(i), i.kind.label()));
+    let (title, ticket) = split_title(i);
+    let number = i.number.map_or_else(|| i.repo.clone(), |n| format!("#{n}"));
+    let mut s = Screen::new(number).subtitle(i.kind.label());
     s.acts.push(match status {
         Status::Unread => Act::new("lu", "Marquer lue").glyph("✅"),
         _ => Act::new("non-lu", "Marquer non lue").glyph("⚪"),
@@ -245,19 +271,23 @@ pub fn item(i: &Item, status: Status, now: i64, claude: bool) -> Screen {
             .danger()
             .confirm(format!("Ne plus rien montrer de {} ? (rétabli dans les réglages d'Owlery)", i.repo)),
     );
-    let mut info: Vec<(&str, String)> = vec![("Forge", i.forge.label().to_string())];
+    s.row(Row::new(title).full().glyph(kind_glyph(i.kind)));
+    s.section("Détails", "");
+    // Les textes longs (sorte de ticket, dépôt, branche) dessous, en entier ; les courts à droite.
+    if let Some(t) = ticket {
+        s.row(Row::new("Type").subtitle(t).full());
+    }
+    s.row(Row::new("Dépôt").subtitle(&i.repo).full());
+    s.row(Row::new("Forge").detail(i.forge.label()));
     if !i.author.is_empty() {
-        info.push(("Auteur", i.author.clone()));
+        s.row(Row::new("Auteur").subtitle(&i.author).full());
     }
     if let Some(b) = &i.branch {
-        info.push(("Branche", b.clone()));
+        s.row(Row::new("Branche").subtitle(b).full());
     }
-    info.push(("Activité", ago(i.updated_at, now)));
+    s.row(Row::new("Activité").detail(ago(i.updated_at, now)));
     if i.comments > 0 {
-        info.push(("Commentaires", i.comments.to_string()));
-    }
-    for (k, v) in info {
-        s.row(Row::new(k).detail(v));
+        s.row(Row::new("Commentaires").detail(i.comments.to_string()));
     }
     if let Some(ci) = i.ci {
         let text = match ci {
@@ -521,8 +551,10 @@ mod tests {
         );
         // La plus récente d'abord ; ni terminée, ni dépôt ignoré.
         assert_eq!(s.opens().len(), 4);
+        // Le titre en entier et l'auteur ; le reste est sur l'écran de l'entrée.
         let first = rows(&s)[0];
-        assert_eq!((first.title.as_str(), first.subtitle.as_str()), ("PR 13", "Revue demandée · #13 · ada"));
+        assert_eq!((first.title.as_str(), first.subtitle.as_str(), first.detail.as_str()), ("PR 13", "ada", ""));
+        assert!(first.full);
         assert_eq!((first.key.as_str(), first.badge.as_str(), first.glyph.as_str()), ("b", "non lu", "👀"));
         let ids = s.action_ids();
         for id in [
@@ -560,13 +592,87 @@ mod tests {
         assert_eq!(
             keys,
             [
-                ("revue".to_string(), "Revue demandée".to_string()),
+                ("revue".to_string(), "Revues demandées".to_string()),
                 ("ci".to_string(), "CI en échec".to_string()),
-                ("mention".to_string(), "Mention".to_string()),
+                ("mention".to_string(), "Mentions".to_string()),
             ]
         );
-        assert_eq!(rows(&s)[0].subtitle, "contoso/web#13 · ada");
+        assert_eq!(rows(&s)[0].subtitle, "ada");
         assert!(!s.action_ids().iter().any(|a| a.starts_with("ignorer-depot:")));
+        assert_eq!(group(&inbox, &rules, GroupBy::Kind, "revue", now, false).title, "Revues demandées");
+    }
+
+    /// Les bandeaux d'une sorte sont au pluriel ; les PR de l'utilisateur, « Pull Requests ».
+    #[test]
+    fn kind_bands_are_plural_and_my_prs_are_pull_requests() {
+        let now = 1_800_000_000;
+        let mut inbox = Inbox::default();
+        for i in [
+            entry("p", Kind::MyPr, "contoso/web", 1, now - 60, None),
+            entry("t", Kind::Assigned, "contoso/web", 2, now - 120, None),
+        ] {
+            inbox.items.insert(i.id.clone(), i);
+        }
+        let s = home(&inbox, &Rules::default(), GroupBy::Kind, now, false);
+        let titles: Vec<String> = bands(&s).into_iter().map(|(_, t, ..)| t).collect();
+        assert_eq!(titles, ["Pull Requests", "Tickets assignés"]);
+    }
+
+    /// Un ticket Azure DevOps : sa sorte (« Product Backlog Item ») ne précède plus son titre ; l'écran du ticket la
+    /// montre à part. Le titre d'une PR, même avec « : », reste entier.
+    #[test]
+    fn a_work_item_title_loses_its_kind_which_its_screen_shows_apart() {
+        let now = 1_800_000_000;
+        let mut t = entry("t", Kind::Assigned, "xelya/Ozmo", 4321, now - 60, None);
+        t.forge = owlery::model::Forge::AzureDevOps;
+        t.title = "Product Backlog Item : Export : les remises disparaissent".into();
+        t.target =
+            Target::Azure { org: "xelya".into(), project: "Ozmo".into(), repo_id: String::new(), id: 4321, pr: false };
+        assert_eq!(item_row(&t, Status::Unread).title, "Export : les remises disparaissent");
+        let s = item(&t, Status::Unread, now, false);
+        let r = rows(&s);
+        assert_eq!(r[0].title, "Export : les remises disparaissent");
+        assert_eq!((r[1].title.as_str(), r[1].subtitle.as_str()), ("Type", "Product Backlog Item"));
+
+        let mut pr = t.clone();
+        pr.target = Target::Azure { org: "xelya".into(), project: "Ozmo".into(), repo_id: "r".into(), id: 7, pr: true };
+        pr.title = "Export : corrige les remises".into();
+        assert_eq!(item_row(&pr, Status::Unread).title, "Export : corrige les remises");
+        assert!(rows(&item(&pr, Status::Unread, now, false)).iter().all(|r| r.title != "Type"));
+    }
+
+    /// Avec `SUITE_MOBILE_DUMP=<dossier>`, écrit des écrans d'exemple (l'accueil groupé par sorte, une PR, un ticket)
+    /// pour les voir dans l'appli de bureau : `EYRIE_MOBILE_DEMO=ecran:owlery:<dossier>/owlery-accueil.json`.
+    #[test]
+    fn example_screens_can_be_dumped_for_a_preview() {
+        let Some(out) = std::env::var_os("SUITE_MOBILE_DUMP") else { return };
+        let out = std::path::Path::new(&out);
+        let now = 1_800_000_000;
+        let mut pr = entry("pr", Kind::ReviewRequested, "xelya/Ozmo/Ozmo", 18342, now - 600, Some(Ci::Pending));
+        pr.forge = owlery::model::Forge::AzureDevOps;
+        pr.title =
+            "Facturation électronique : envoi des factures rectificatives au PDP avec leurs pièces jointes".into();
+        pr.author = "Camille Martin".into();
+        pr.branch = Some("feature/18342-facturation-electronique-factures-rectificatives-pieces-jointes".into());
+        let mut ticket = entry("ticket", Kind::Assigned, "xelya/Ozmo", 52817, now - 7200, None);
+        ticket.forge = owlery::model::Forge::AzureDevOps;
+        ticket.title = "Product Backlog Item : Export comptable : les remises disparaissent des écritures".into();
+        ticket.author = "Jean Dupont".into();
+        ticket.target =
+            Target::Azure { org: "xelya".into(), project: "Ozmo".into(), repo_id: String::new(), id: 52817, pr: false };
+        let mine = entry("mine", Kind::MyPr, "AubinCheD/Eyrie", 42, now - 60, Some(Ci::Failure));
+        let mut inbox = Inbox::default();
+        for i in [pr.clone(), ticket.clone(), mine] {
+            inbox.items.insert(i.id.clone(), i);
+        }
+        let rules = Rules::default();
+        for (name, screen) in [
+            ("owlery-accueil", home(&inbox, &rules, GroupBy::Kind, now, true)),
+            ("owlery-pr", item(&pr, Status::Unread, now, true)),
+            ("owlery-ticket", item(&ticket, Status::Read, now, false)),
+        ] {
+            std::fs::write(out.join(format!("{name}.json")), serde_json::to_vec(&screen).unwrap()).unwrap();
+        }
     }
 
     /// Plus rien n'est coupé sans le dire : au-delà de 15, une ligne mène au groupe entier, qui se cherche.
@@ -644,8 +750,14 @@ mod tests {
         let now = 1_800_000_000;
         let mut i = entry("c", Kind::CiFailed, "contoso/api", 7, now - 7200, Some(Ci::Failure));
         i.checks = vec![Check { name: "build".into(), url: "https://ci.example/1".into() }];
+        i.branch = Some("correctif/7-export-des-factures-avec-remises-sur-plusieurs-lignes".into());
         let s = item(&i, Status::Unread, now, false);
-        assert_eq!(s.subtitle, "contoso/api#7 · CI en échec");
+        assert_eq!((s.title.as_str(), s.subtitle.as_str()), ("#7", "CI en échec"));
+        // Le titre en tête, la branche dessous : en entier tous deux.
+        let r = rows(&s);
+        assert!(r[0].title == "PR 7" && r[0].full);
+        let branch = r.iter().find(|r| r.title == "Branche").expect("branche");
+        assert!(branch.full && branch.subtitle == "correctif/7-export-des-factures-avec-remises-sur-plusieurs-lignes");
         assert_eq!(
             s.action_ids().into_iter().collect::<Vec<_>>(),
             ["fait", "ignorer", "lu", "pc", "reporter", "reporter-3h", "reporter-lundi"]

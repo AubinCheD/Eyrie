@@ -49,7 +49,7 @@ export struct GraphSeg {
 // 0 contexte, 1 ajout, 2 retrait, 3 en-tête ; `subtitle` et `detail` : ancien et nouveau numéro ; `gutter` : chiffres
 // de la gouttière, 0 sans numéros), 8 bandeau (`key` : sa clé ; `fold` : 0 ne se plie pas, 1 ouvert, 2 plié, 3 ouvert
 // le temps d'une recherche, sans se plier), 9 en-tête d'un diff (`title` : ajouts et retraits). `wrap` : les lignes des
-// diffs passent à la ligne.
+// diffs passent à la ligne ; une ligne de liste montre son titre et son sous-titre en entier (`Row::full`).
 export struct UiRow {
     kind: int,
     key: string,
@@ -895,12 +895,14 @@ export component RowView inherits Rectangle {
                 spacing: 2px;
                 HorizontalLayout {
                     spacing: 8px;
-                    // Le titre garde au moins 30 % de la ligne : les boutons et le texte à droite cèdent avant lui.
+                    // Le titre garde au moins 30 % de la ligne : les boutons et le texte à droite cèdent avant lui. En
+                    // entier (`wrap`), il passe à la ligne autant qu'il faut.
                     Text {
                         text: item.title;
                         color: Theme.text;
                         font-size: Theme.font-body;
                         font-weight: 500;
+                        wrap: item.wrap ? TextWrap.word-wrap : TextWrap.no-wrap;
                         overflow: elide;
                         min-width: min(self.preferred-width, root.width * 0.3);
                         horizontal-stretch: 1;
@@ -918,13 +920,14 @@ export component RowView inherits Rectangle {
                         chips: item.chips;
                     }
                 }
+                // Deux lignes au plus ; en entier (`wrap`), toutes (un nom de branche sans espace se coupe n'importe où).
                 if item.subtitle != "": Text {
                     text: item.subtitle;
                     color: Theme.text-dim;
                     font-size: Theme.font-small;
                     wrap: word-wrap;
                     overflow: elide;
-                    max-height: 36px;
+                    max-height: item.wrap ? 600px : 36px;
                 }
             }
             if item.detail != "": Text {

@@ -460,6 +460,7 @@ fn row(r: &Row, first: bool, last: bool, local: &Local) -> UiRow {
         last,
         busy: r.tap.iter().chain(&r.acts).any(|a| local.busy(a)),
         chips: chips(&r.chips, if r.graph.is_some() { COMMIT_CHIPS_SHOWN } else { CHIPS_SHOWN }),
+        wrap: r.full,
         ..Default::default()
     };
     if let Some(g) = &r.graph {
