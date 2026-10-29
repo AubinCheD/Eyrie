@@ -26,9 +26,9 @@ import java.util.Locale;
  * du téléphone lui-même d'abord (Android 12 et suivants, quand il l'a), sinon son service par défaut (Google, le plus
  * souvent), qui peut envoyer le son sur Internet, comme le micro du clavier.
  *
- * SpeechRecognizer ne s'utilise que dans le fil principal : chaque appel y est posté. Ce que dit la reconnaissance part
- * aux fonctions natives, enregistrées par Rust (RegisterNatives), avec le numéro de l'écoute : Rust ignore ce qui reste
- * d'une écoute finie ou annulée.
+ * SpeechRecognizer ne s'utilise que dans le fil principal : chaque appel y est posté, et aucune de ses exceptions n'en
+ * sort (elle arrêterait l'application). Ce que dit la reconnaissance part aux fonctions natives, enregistrées par Rust
+ * (RegisterNatives), avec le numéro de l'écoute : Rust ignore ce qui reste d'une écoute finie ou annulée.
  */
 public final class Dictee implements RecognitionListener {
     /** Le micro est ouvert : on peut parler. */
@@ -48,8 +48,9 @@ public final class Dictee implements RecognitionListener {
 
     private static final Handler PRINCIPAL = new Handler(Looper.getMainLooper());
 
-    /** La reconnaissance en cours (fil principal seulement). */
+    /** La reconnaissance en cours, et le numéro de son écoute (fil principal seulement). */
     private static SpeechRecognizer reconnaisseur;
+    private static int numero;
 
     private final int ecoute;
     private final SpeechRecognizer mien;
@@ -102,6 +103,7 @@ public final class Dictee implements RecognitionListener {
                     reconnaisseur = surAppareil && Build.VERSION.SDK_INT >= 31
                             ? SpeechRecognizer.createOnDeviceSpeechRecognizer(ctx)
                             : SpeechRecognizer.createSpeechRecognizer(ctx);
+                    numero = ecoute;
                     reconnaisseur.setRecognitionListener(new Dictee(ecoute, reconnaisseur));
                     Intent i = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
                     i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
@@ -118,13 +120,23 @@ public final class Dictee implements RecognitionListener {
         });
     }
 
-    /** Finit l'écoute : ce qui a été dit est reconnu, puis le texte final arrive (`resultat`). */
+    /**
+     * Finit l'écoute : ce qui a été dit est reconnu, puis le texte final arrive (`resultat`). Si la reconnaissance ne
+     * sait pas finir (une exception), l'écoute finit en erreur : pas de texte final à attendre.
+     */
     public static void arreter() {
         PRINCIPAL.post(new Runnable() {
             @Override
             public void run() {
-                if (reconnaisseur != null) {
+                if (reconnaisseur == null) {
+                    return;
+                }
+                try {
                     reconnaisseur.stopListening();
+                } catch (Throwable e) {
+                    int finie = numero;
+                    fermer();
+                    erreur(finie, SpeechRecognizer.ERROR_CLIENT);
                 }
             }
         });
@@ -140,11 +152,25 @@ public final class Dictee implements RecognitionListener {
         });
     }
 
+    /**
+     * Ferme la reconnaissance en cours. Ses exceptions s'arrêtent ici (destroy, quand la liaison au service est déjà
+     * défaite : « Service not registered » ; cancel, d'une reconnaissance de fabricant) ; détruite même si cancel lève.
+     */
     private static void fermer() {
-        if (reconnaisseur != null) {
-            reconnaisseur.cancel();
-            reconnaisseur.destroy();
-            reconnaisseur = null;
+        SpeechRecognizer r = reconnaisseur;
+        reconnaisseur = null;
+        if (r == null) {
+            return;
+        }
+        try {
+            r.cancel();
+        } catch (Throwable e) {
+            // Rien à faire : elle est détruite ensuite.
+        }
+        try {
+            r.destroy();
+        } catch (Throwable e) {
+            // Déjà défaite.
         }
     }
 
