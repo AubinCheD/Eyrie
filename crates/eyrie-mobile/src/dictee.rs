@@ -444,7 +444,7 @@ mod tests {
         assert!(d.paused(true), "la fin demandée aussi");
         assert!(!d.paused(false));
         d.tap(term());
-        assert!(d.paused(false), "pas encore ouverte, sans question : abandonnée (le micro s'ouvrirait en arrière-plan)");
+        assert!(d.paused(false), "pas encore ouverte, sans question : abandonnée (sinon ouverte en arrière-plan)");
         assert!(!d.active());
     }
 
