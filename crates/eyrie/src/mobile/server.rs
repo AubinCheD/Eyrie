@@ -320,15 +320,23 @@ pub const DECISION: Duration = Duration::from_secs(120);
 /// Pendant cette attente, le PC regarde à ce pas si le téléphone est encore là.
 const WATCH: Duration = Duration::from_millis(200);
 
-/// Attend le clic sur le PC (`Some`), en regardant si le téléphone est parti (`None` : retour, autre QR, il a fermé
-/// sa connexion). Le premier des deux tranche la demande : close, un accord arrivé ensuite n'appaire rien. Au bout de
-/// [`DECISION`], elle est close aussi, et vaut un refus.
-fn wait_decision(decision: &mpsc::Receiver<bool>, state: &AtomicU8, stream: &TcpStream) -> Option<bool> {
+/// Attend le clic sur le PC (`Some`), en regardant sur `watch`, une copie de sa connexion, si le téléphone est parti
+/// (`None` : retour, autre QR, il a fermé sa connexion). Le premier des deux tranche la demande : close, un accord
+/// arrivé ensuite n'appaire rien. Au bout de `within` ([`DECISION`]), elle est close aussi, et vaut un refus.
+fn wait_decision(
+    decision: &mpsc::Receiver<bool>,
+    state: &AtomicU8,
+    watch: std::io::Result<TcpStream>,
+    within: Duration,
+) -> Option<bool> {
     // Une copie à elle : sous Windows, son délai court ne touche pas la lecture des messages ; ailleurs, il est commun
-    // à toutes les copies, d'où le délai d'ouverture rendu à la fin.
-    let Ok(watch) = stream.try_clone() else { return Some(false) };
-    let _ = watch.set_read_timeout(Some(Duration::from_millis(1)));
-    let deadline = Instant::now() + DECISION;
+    // à toutes les copies, d'où le délai d'ouverture rendu à la fin. Sans copie (plus de descripteurs), le clic est
+    // attendu sans regarder le téléphone, et la demande est close au bout du délai comme les autres.
+    let watch = watch.ok();
+    if let Some(w) = &watch {
+        let _ = w.set_read_timeout(Some(Duration::from_millis(1)));
+    }
+    let deadline = Instant::now() + within;
     let mut byte = [0u8; 1];
     let answer = loop {
         match decision.recv_timeout(WATCH) {
@@ -338,17 +346,19 @@ fn wait_decision(decision: &mpsc::Receiver<bool>, state: &AtomicU8, stream: &Tcp
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
         // Regardé sans être lu : ce que le téléphone aurait déjà envoyé reste aux messages.
-        let gone = match watch.peek(&mut byte) {
+        let gone = watch.as_ref().is_some_and(|w| match w.peek(&mut byte) {
             Ok(n) => n == 0,
             Err(e) => !matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut),
-        };
+        });
         let late = Instant::now() >= deadline;
         // Acceptée entre-temps, la demande ne se ferme plus : la réponse arrive au tour suivant.
         if (gone || late) && state.compare_exchange(WAITING, CLOSED, Ordering::AcqRel, Ordering::Acquire).is_ok() {
             break if gone { None } else { Some(false) };
         }
     };
-    let _ = watch.set_read_timeout(Some(OPENING));
+    if let Some(w) = &watch {
+        let _ = w.set_read_timeout(Some(OPENING));
+    }
     answer
 }
 
@@ -491,7 +501,7 @@ fn serve(mut stream: TcpStream, shared: Arc<Shared>) {
                     state: state.clone(),
                 }));
 
-                match wait_decision(&decision, &state, &stream) {
+                match wait_decision(&decision, &state, stream.try_clone(), DECISION) {
                     Some(true) => {
                         if tx.send(&ToPhone::Paired { pc: shared.pc_name.clone() }).is_err() {
                             return;
@@ -731,6 +741,41 @@ mod tests {
         };
         assert_eq!(device, "Pixel");
         assert!(req.closed());
+        assert!(!req.accept(), "trop tard");
+    }
+
+    /// Sans copie de la connexion pour regarder le téléphone (plus de descripteurs), le PC attend quand même le clic ;
+    /// au bout du délai, la demande est close comme les autres : un « Appairer » ensuite n'appaire pas un téléphone à
+    /// qui le refus est déjà parti.
+    #[test]
+    fn without_a_copy_to_watch_the_phone_the_click_is_awaited_and_the_delay_closes_the_request() {
+        let request = || {
+            let (reply, decision) = mpsc::channel();
+            let req = PairRequest {
+                name: "Pixel".into(),
+                model: String::new(),
+                key: [0; 32],
+                identity: Identity::default(),
+                sas: String::new(),
+                at: Instant::now(),
+                reply,
+                state: Arc::new(AtomicU8::new(WAITING)),
+            };
+            (req, decision)
+        };
+        let lost = || Err(std::io::Error::other("plus de descripteurs"));
+        let (req, decision) = request();
+        let state = req.state.clone();
+        let click = std::thread::spawn(move || {
+            std::thread::sleep(WATCH * 2);
+            assert!(req.accept(), "le téléphone attend encore");
+            req.answer(true);
+        });
+        assert_eq!(wait_decision(&decision, &state, lost(), Duration::from_secs(10)), Some(true), "le clic appaire");
+        click.join().unwrap();
+        let (req, decision) = request();
+        assert_eq!(wait_decision(&decision, &req.state, lost(), WATCH * 2), Some(false), "délai passé : refus");
+        assert!(req.closed(), "la confirmation disparaît du PC");
         assert!(!req.accept(), "trop tard");
     }
 
