@@ -251,8 +251,10 @@ component ModuleCard inherits Rectangle {
     background: ta.pressed ? Theme.pressed : Theme.surface;
     animate background { duration: 90ms; }
     opacity: module.running ? 1 : 0.55;
-    // Avec un état d'une ligne, la carte garde ses 104 px ; sur deux, elle grandit d'autant.
+    // Avec un état d'une ligne, la carte garde ses 104 px ; sur deux, elle grandit d'autant, et sa voisine avec elle :
+    // le texte de celle-ci reste en haut.
     VerticalLayout {
+        alignment: start;
         padding: 14px;
         padding-bottom: 8px;
         spacing: 8px;
@@ -274,13 +276,16 @@ component ModuleCard inherits Rectangle {
             font-weight: 600;
             overflow: elide;
         }
-        // Deux lignes au plus : la carte fait la moitié de l'écran (« 5 h 38 % · sem. 61 % · 🔄 14:20 » de Gringotts).
+        // Une ligne d'état tient sur deux lignes au plus : la carte fait la moitié de l'écran (« 5 h 38 % · sem. 61 % ·
+        // 🔄 14:20 » de Gringotts). La description d'un module sans état reste sur une ligne, coupée. Sans `min-height`,
+        // un texte à la ligne réclame toute sa hauteur et passe outre `max-height`.
         Text {
             text: root.module.running ? (root.module.status != "" ? root.module.status : root.module.summary) : root.module.status;
             color: Theme.text-dim;
             font-size: 12px;
-            wrap: word-wrap;
+            wrap: root.module.running && root.module.status != "" ? TextWrap.word-wrap : TextWrap.no-wrap;
             overflow: elide;
+            min-height: 0px;
             max-height: 34px;
         }
     }
@@ -609,13 +614,15 @@ export component MorePage inherits Rectangle {
                                 }
                                 Rectangle { }
                             }
-                            // Sans état (un module qui n'en donne pas) : le nom seul, centré. Deux lignes au plus.
+                            // Sans état (un module qui n'en donne pas) : le nom seul, centré. Une ligne d'état tient sur
+                            // deux lignes au plus ; la description d'un module, sur une.
                             if (m.running ? (m.status != "" ? m.status : m.summary) : m.status) != "": Text {
                                 text: m.running ? (m.status != "" ? m.status : m.summary) : m.status;
                                 color: Theme.text-dim;
                                 font-size: 12.5px;
-                                wrap: word-wrap;
+                                wrap: m.running && m.status != "" ? TextWrap.word-wrap : TextWrap.no-wrap;
                                 overflow: elide;
+                                min-height: 0px;
                                 max-height: 36px;
                             }
                         }

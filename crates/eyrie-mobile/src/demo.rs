@@ -46,7 +46,8 @@ fn show_tailnet(ui: &AppWindow, t: Tailnet) {
     ui.set_tailnet_text(text.into());
 }
 
-fn card(id: &str, name: &str, glyph: &str, color: u32, badge: Option<(u32, Tone)>, status: &str) -> ModuleCard {
+/// Une carte comme le pont l'envoie : sans ligne d'état, elle montre la description du module (`ModuleInfo::summary`).
+fn card(id: &str, name: &str, glyph: &str, color: u32, badge: Option<(u32, Tone)>, summary: &str) -> ModuleCard {
     ModuleCard {
         id: id.into(),
         name: name.into(),
@@ -55,23 +56,76 @@ fn card(id: &str, name: &str, glyph: &str, color: u32, badge: Option<(u32, Tone)
         running: true,
         reason: String::new(),
         badge: badge.map(|(n, tone)| Badge { count: Some(n), tone, tip: String::new() }),
-        status: status.into(),
-        summary: String::new(),
+        status: String::new(),
+        summary: summary.into(),
     }
 }
 
 fn modules() -> Vec<ModuleCard> {
-    // La ligne que Gringotts écrit pour sa carte (`mobile_status`), chaque partie d'un seul tenant.
+    // Seul Gringotts écrit une ligne pour sa carte (`mobile_status`), chaque partie d'un seul tenant ; les autres n'ont
+    // pas de ligne d'état, même dans la barre du PC : leur carte montre leur description, sur une ligne.
     let gringotts = ["5 h 38 %", "sem. 61 %", "🔄 17:40"].map(|p| p.replace(' ', "\u{202f}")).join("\u{202f}· ");
     vec![
-        card("fawkes", "Fawkes", "🔥", 0xf26d3b, Some((1, Tone::Warn)), "6 terminaux"),
-        card("dragontree", "DragonTree", "🌳", 0xe08a5c, None, "Ozmo · main ↑2"),
-        card("owlery", "Owlery", "🦉", 0x3aa8d8, Some((3, Tone::Info)), "3 PR à relire"),
-        card("patronus", "Patronus", "🦌", 0x9fc5ff, Some((2, Tone::Info)), "1 tâche en cours"),
-        card("menagerie", "Menagerie", "🐾", 0x4cb872, None, "4 services"),
-        card("grimoire", "Grimoire", "📖", 0xb07ce0, None, "2 profils"),
-        card("gringotts", "Gringotts", "🏦", 0xe8b84a, None, &gringotts),
-        card("carnet", "Carnet", "🗒", 0x8a919d, None, ""),
+        card(
+            "fawkes",
+            "Fawkes",
+            "🔥",
+            0xf26d3b,
+            Some((1, Tone::Warn)),
+            "Terminaux par groupes, restauration exacte des sessions Claude",
+        ),
+        card(
+            "dragontree",
+            "DragonTree",
+            "🌳",
+            0xe08a5c,
+            None,
+            "Client git : historique, changements, branches, plusieurs dépôts en onglets",
+        ),
+        card(
+            "owlery",
+            "Owlery",
+            "🦉",
+            0x3aa8d8,
+            Some((3, Tone::Info)),
+            "Boîte de réception : PR à relire, CI en échec, mentions, tickets",
+        ),
+        card("patronus", "Patronus", "🦌", 0x9fc5ff, Some((2, Tone::Info)), "Agents autonomes et tâches récurrentes"),
+        card(
+            "menagerie",
+            "Menagerie",
+            "🐾",
+            0x4cb872,
+            None,
+            "Services locaux, ports, Docker, mails de test et environnements",
+        ),
+        card(
+            "grimoire",
+            "Grimoire",
+            "📖",
+            0xb07ce0,
+            None,
+            "Configuration de Claude Code, conversations et consommation",
+        ),
+        ModuleCard {
+            status: gringotts,
+            ..card(
+                "gringotts",
+                "Gringotts",
+                "🏦",
+                0xe8b84a,
+                None,
+                "Consommation de Claude : conversations, coûts, limites des abonnements",
+            )
+        },
+        card(
+            "carnet",
+            "Carnet",
+            "🗒",
+            0x8a919d,
+            None,
+            "Notes par dépôt et journal du bus d'Eyrie (module natif, gabarit)",
+        ),
     ]
 }
 
