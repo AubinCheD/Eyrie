@@ -2332,7 +2332,7 @@ impl Controller {
             Outcome::Stale => return,
             // Le micro s'est ouvert alors que l'application passait en arrière-plan : abandonné.
             Outcome::Update => {
-                if platform::in_background() && self.dictation.paused() {
+                if platform::in_background() && self.dictation.paused(platform::asking_mic()) {
                     platform::cancel_dictation();
                 } else if starting && self.dictation.phase == dictee::Phase::Listening {
                     // Le micro vient de s'ouvrir : on peut parler.
@@ -2689,9 +2689,10 @@ impl Controller {
         self.refresh_recognizer();
     }
 
-    /// L'application passe en arrière-plan (Android) : une écoute ouverte s'abandonne.
+    /// L'application passe en arrière-plan (Android) : l'écoute s'abandonne, sauf pendant la question du micro, qui
+    /// cause cette pause.
     pub fn paused(&mut self) {
-        if self.dictation.paused() {
+        if self.dictation.paused(platform::asking_mic()) {
             platform::cancel_dictation();
             self.refresh_dictation();
         }
@@ -3499,8 +3500,8 @@ mod tests {
         assert!(!ui.get_term_listening() && !ui.get_dictation_starting());
     }
 
-    /// Une saisie masquée (un mot de passe demandé) ou la liaison coupée abandonnent l'écoute ; masquée, le micro ne
-    /// part pas.
+    /// Une saisie masquée (un mot de passe demandé), la liaison coupée ou l'application en arrière-plan abandonnent
+    /// l'écoute ; masquée, le micro ne part pas.
     #[test]
     fn a_masked_draft_or_a_dropped_link_stops_dictation() {
         let ui = dictating_terminal("dictee-masque");
@@ -3517,6 +3518,13 @@ mod tests {
             c.on_net(NetEvent::Offline { reason: "essai".into(), retry_in: Duration::from_secs(1), away: Away::default() });
         });
         assert!(!ui.get_term_listening(), "liaison coupée");
+        // L'application en arrière-plan : l'écoute s'abandonne, même pas encore ouverte (sans question du micro).
+        with(|c| {
+            c.term_dictate();
+            assert!(c.dictation.active());
+            c.paused();
+        });
+        assert!(!ui.get_term_listening(), "en arrière-plan");
     }
 
     /// Le texte dicté s'ajoute au champ d'une saisie sur plusieurs lignes, sans l'envoyer, même avec « Envoyer la

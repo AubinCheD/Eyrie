@@ -6,7 +6,7 @@ use std::ffi::{CStr, c_void};
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::ptr::null_mut;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -358,6 +358,15 @@ static HEARD: Mutex<Option<HeardSink>> = Mutex::new(None);
 /// l'ouvre, son annulation est postée après l'ouverture (voir `Requested`).
 static DICTATING: Requested = Requested::new();
 
+/// L'écoute dont la question du micro est posée (son numéro ; 0 : aucune), de la demande jusqu'à la réponse,
+/// l'application revenue au premier plan : la pause que cause la question n'abandonne pas cette écoute.
+static ASKING: AtomicU32 = AtomicU32::new(0);
+
+/// La question du micro est-elle posée ? (Voir `Dictation::paused`.)
+pub fn asking_mic() -> bool {
+    ASKING.load(Ordering::Relaxed) != 0
+}
+
 fn dictee_class() -> Option<&'static GlobalRef> {
     DICTEE_CLASS
         .get_or_init(|| {
@@ -465,17 +474,17 @@ pub fn start_dictation(seq: u32, on_device: bool, heard: HeardSink) {
     let _ = std::thread::Builder::new().name("eyrie-dictee".into()).spawn(move || {
         let still = || DICTATING.is(seq);
         if !granted(RECORD_AUDIO) {
-            ask(RECORD_AUDIO, 9);
-            let asked = Instant::now();
-            let mut asking = Asking::default();
-            loop {
-                if !still() {
-                    return;
-                }
-                match asking.answer(granted(RECORD_AUDIO), !in_background(), asked.elapsed()) {
-                    Some(true) => break,
-                    Some(false) => return deliver(seq, Heard::Error(dictee::NO_PERMISSION)),
-                    None => std::thread::sleep(Duration::from_millis(150)),
+            ASKING.store(seq, Ordering::Relaxed);
+            let answer = ask_mic(&still);
+            // Une écoute suivante pose peut-être déjà la sienne.
+            let _ = ASKING.compare_exchange(seq, 0, Ordering::Relaxed, Ordering::Relaxed);
+            match answer {
+                None => return,
+                Some(true) => {}
+                // Accordée, mais l'application n'est pas revenue à temps : rien à reprocher au micro.
+                Some(false) => {
+                    let code = if granted(RECORD_AUDIO) { dictee::NOT_STARTED } else { dictee::NO_PERMISSION };
+                    return deliver(seq, Heard::Error(code));
                 }
             }
         }
@@ -498,6 +507,23 @@ pub fn start_dictation(seq: u32, on_device: bool, heard: HeardSink) {
             deliver(seq, Heard::Error(dictee::NOT_STARTED));
         }
     });
+}
+
+/// La question du micro, puis sa réponse relue (`Asking`) jusqu'au retour de l'application ; `None` : l'écoute n'est
+/// plus demandée.
+fn ask_mic(still: &dyn Fn() -> bool) -> Option<bool> {
+    ask(RECORD_AUDIO, 9);
+    let asked = Instant::now();
+    let mut asking = Asking::default();
+    loop {
+        if !still() {
+            return None;
+        }
+        match asking.answer(granted(RECORD_AUDIO), !in_background(), asked.elapsed()) {
+            Some(answer) => return Some(answer),
+            None => std::thread::sleep(Duration::from_millis(150)),
+        }
+    }
 }
 
 fn dictee_call(method: &str) {

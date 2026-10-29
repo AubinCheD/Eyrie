@@ -169,10 +169,11 @@ impl Dictation {
         was
     }
 
-    /// L'application passe en arrière-plan : une écoute ouverte s'abandonne ; une écoute qui démarre continue (la
-    /// question d'Android sur le micro met l'application en pause). `true` : abandonnée.
-    pub fn paused(&mut self) -> bool {
-        matches!(self.phase, Phase::Listening | Phase::Stopping) && self.cancel()
+    /// L'application passe en arrière-plan : l'écoute s'abandonne, même pas encore ouverte (le micro s'ouvrirait en
+    /// arrière-plan), sauf celle qui attend la réponse d'Android sur le micro (`asking` : sa question met l'application
+    /// en pause). `true` : abandonnée.
+    pub fn paused(&mut self, asking: bool) -> bool {
+        !(asking && self.phase == Phase::Starting) && self.cancel()
     }
 
     /// La fin demandée n'a rien donné à temps (voir [`STOP_WITHIN`]) : abandonnée. `true` : c'était le cas.
@@ -324,9 +325,10 @@ pub const ASK_SETTLES: Duration = Duration::from_millis(600);
 pub const ASK_GIVES_UP: Duration = Duration::from_secs(90);
 
 impl Asking {
-    /// `at` : le temps depuis la demande. `Some(true)` : accordée ; `Some(false)` : refusée ; `None` : pas encore.
+    /// `at` : le temps depuis la demande. `Some(true)` : accordée, et l'application revenue au premier plan (le micro
+    /// ne s'ouvre pas en arrière-plan) ; `Some(false)` : refusée, ou pas de retour à temps ; `None` : pas encore.
     pub fn answer(&mut self, granted: bool, foreground: bool, at: Duration) -> Option<bool> {
-        if granted {
+        if granted && foreground {
             return Some(true);
         }
         if at > ASK_GIVES_UP {
@@ -424,22 +426,26 @@ mod tests {
         assert_eq!(d.tap(term()), Tap::Stop);
     }
 
-    /// En arrière-plan, une écoute ouverte s'abandonne ; celle qui attend la réponse d'Android sur le micro continue.
+    /// En arrière-plan, une écoute s'abandonne, même pas encore ouverte ; pas celle qui attend la réponse d'Android sur
+    /// le micro (`asking` : sa question met l'application en pause).
     #[test]
-    fn going_to_the_background_drops_an_open_mic_but_not_the_permission_question() {
+    fn going_to_the_background_drops_the_mic_but_not_the_permission_question() {
         let mut d = Dictation::default();
         let Tap::Start(seq) = d.tap(term()) else { panic!("écoute") };
-        assert!(!d.paused(), "la question d'Android met l'application en pause");
+        assert!(!d.paused(true), "la question d'Android met l'application en pause");
         assert_eq!(d.phase, Phase::Starting);
         d.heard(seq, Heard::Ready);
         d.heard(seq, Heard::Partial("ajoute".into()));
-        assert!(d.paused());
+        assert!(d.paused(false));
         assert_eq!((d.phase, d.partial.as_str()), (Phase::Idle, ""));
         let Tap::Start(seq) = d.tap(term()) else { panic!("écoute") };
         d.heard(seq, Heard::Ready);
         d.tap(term());
-        assert!(d.paused(), "la fin demandée aussi");
-        assert!(!d.paused());
+        assert!(d.paused(true), "la fin demandée aussi");
+        assert!(!d.paused(false));
+        d.tap(term());
+        assert!(d.paused(false), "pas encore ouverte, sans question : abandonnée (le micro s'ouvrirait en arrière-plan)");
+        assert!(!d.active());
     }
 
     /// La fin demandée sans texte final à temps : abandonnée ; pas une écoute suivante.
@@ -558,7 +564,13 @@ mod tests {
         assert_eq!(a.answer(false, true, ms(100)), None);
         assert_eq!(a.answer(false, false, ms(400)), None, "la question est posée");
         assert_eq!(a.answer(false, false, ms(20_000)), None, "on y réfléchit");
-        assert_eq!(a.answer(true, true, ms(20_300)), Some(true));
+        // Accordée, mais l'application n'est pas encore revenue : le micro ne s'ouvre pas en arrière-plan (ce qu'il
+        // dirait serait abandonné aussitôt).
+        assert_eq!(a.answer(true, false, ms(20_300)), None, "accordée, pas encore revenue");
+        assert_eq!(a.answer(true, true, ms(20_500)), Some(true));
+        let mut a = Asking::default();
+        a.answer(false, false, ms(300));
+        assert_eq!(a.answer(true, false, ASK_GIVES_UP + ms(1)), Some(false), "jamais revenue");
         // Refusée : l'application revient sans la permission.
         let mut a = Asking::default();
         a.answer(false, false, ms(300));

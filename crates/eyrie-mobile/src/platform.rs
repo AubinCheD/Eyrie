@@ -37,8 +37,8 @@ impl Notice {
 
 #[cfg(target_os = "android")]
 pub use crate::android::{
-    ask_notifications, can_scan, cancel_dictation, data_dir, device_model, device_name, haptic, in_background, notify,
-    open_url, recognizer, start_dictation, start_scan, stop_dictation, stop_scan,
+    ask_notifications, asking_mic, can_scan, cancel_dictation, data_dir, device_model, device_name, haptic,
+    in_background, notify, open_url, recognizer, start_dictation, start_scan, stop_dictation, stop_scan,
 };
 
 #[cfg(not(target_os = "android"))]
@@ -103,6 +103,11 @@ mod desktop {
     pub fn stop_dictation() {}
 
     pub fn cancel_dictation() {}
+
+    /// Pas de question du micro sur le bureau.
+    pub fn asking_mic() -> bool {
+        false
+    }
 }
 
 #[cfg(not(target_os = "android"))]
