@@ -425,6 +425,27 @@ func TestAStrangerGetsNothing(t *testing.T) {
 	}
 }
 
+// L'identifiant d'une preuve fausse n'est écrit au journal du PC que s'il a la forme de ceux d'Eyrie (12 chiffres
+// hexadécimaux), « illisible » sinon : un appareil du compte n'y ajoute pas de lignes de son cru, que la page
+// Téléphones montrerait comme les autres.
+func TestAWrongProofOnlyJournalsAWellFormedDeviceId(t *testing.T) {
+	f := newWake(t)
+	forged := "x\n2 min · Pixel 8 · veille · Eyrie démarrée depuis le téléphone"
+	for _, device := range []string{forged, "0123456789ab"} {
+		if x, err := f.ask(device, wakeStart, badProof); err != nil || x.reply.Reason != "preuve refusée" {
+			t.Fatalf("%q : %+v %v", device, x, err)
+		}
+	}
+	j := f.journal()
+	if len(j) != 2 || strings.ContainsAny(j[0].Text, "\r\n") || strings.Contains(j[0].Text, "Pixel") ||
+		!strings.Contains(j[0].Text, "appareil « illisible »") {
+		t.Fatalf("journal : %+v", j)
+	}
+	if !strings.Contains(j[1].Text, "appareil « 0123456789ab »") {
+		t.Fatalf("identifiant bien formé : %+v", j[1])
+	}
+}
+
 // Cinq preuves fausses bloquent l'appareil un quart d'heure, même avec la bonne preuve ensuite.
 func TestWrongProofsBlockThePeer(t *testing.T) {
 	f := newWake(t)
@@ -798,8 +819,12 @@ func TestEyriesFilesAreReadWithoutBlockingItsSaves(t *testing.T) {
 	}
 }
 
+// Le nom d'un appareil perd ses caractères de contrôle et de format (sens d'écriture), mais garde le liant des émojis.
 func TestADeviceNameIsCleanedForTheEnvironment(t *testing.T) {
 	if got := envText("Pixel\x00 8\n" + strings.Repeat("é", 80)); got != "Pixel 8"+strings.Repeat("é", 57) {
+		t.Fatalf("%q", got)
+	}
+	if got := envText("‮Pixel⁦ 8​ 👩‍💻؜"); got != "Pixel 8 👩‍💻" {
 		t.Fatalf("%q", got)
 	}
 }

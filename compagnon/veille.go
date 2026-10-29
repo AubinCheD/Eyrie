@@ -492,7 +492,12 @@ func (w *waker) decide(peer, login string, devices []pairedDevice, cfg wakeConfi
 		if dev != nil {
 			name = dev.Name
 		}
-		text := fmt.Sprintf("Démarrage refusé : preuve fausse (compte %s, appareil « %s »)", login, req.Device)
+		// L'identifiant vient de l'appareil : tel quel, il pourrait ajouter des lignes au journal que montre Eyrie.
+		shown := req.Device
+		if !deviceIDShape(shown) {
+			shown = "illisible"
+		}
+		text := fmt.Sprintf("Démarrage refusé : preuve fausse (compte %s, appareil « %s »)", login, shown)
 		if s.count >= maxWrongProofs {
 			s.until = now.Add(blockedFor)
 			text += fmt.Sprintf(" ; %d preuves fausses, cet appareil est bloqué %s", maxWrongProofs, waitText(blockedFor))
@@ -599,12 +604,27 @@ func waitText(d time.Duration) string {
 	return fmt.Sprintf("%d min", int((d+time.Minute-1)/time.Minute))
 }
 
-// envText : le nom d'un appareil, sans caractère de contrôle, 64 caractères au plus (EYRIE_DEMARRE_PAR).
+// deviceIDShape : `id` a-t-il la forme d'un identifiant d'appareil d'Eyrie (12 chiffres hexadécimaux en minuscules,
+// Store::add de crates/eyrie/src/mobile/store.rs) ?
+func deviceIDShape(id string) bool {
+	if len(id) != 12 {
+		return false
+	}
+	for _, c := range []byte(id) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// envText : le nom d'un appareil, sans caractère de contrôle ni de format (sens d'écriture, U+202E…) hormis le liant
+// des émojis (U+200D), 64 caractères au plus (EYRIE_DEMARRE_PAR).
 func envText(s string) string {
 	var b strings.Builder
 	n := 0
 	for _, r := range s {
-		if unicode.IsControl(r) {
+		if unicode.IsControl(r) || (unicode.Is(unicode.Cf, r) && r != '‍') {
 			continue
 		}
 		if n == 64 {
