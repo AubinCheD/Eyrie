@@ -497,6 +497,9 @@ pub struct Controller {
     /// plan (la démonstration en pose une).
     dictation: Dictation,
     recognizer: Recognizer,
+    /// Quand la reconnaissance du téléphone sait télécharger une langue (Android 13 et suivants) : la langue de la
+    /// dictée et qui fait son modèle (voir `dictee::download_question`) ; relues avec la reconnaissance.
+    language_download: Option<(String, String)>,
     /// Les listes de l'interface, mises à jour sur place (jamais remplacées) : une ligne touchée survit aux messages.
     models: Models,
     /// L'écran dont les lignes sont affichées, et leurs clés et empreintes (voir [`view::patch`]).
@@ -662,6 +665,7 @@ impl Controller {
             term_secret: false,
             dictation: Dictation::default(),
             recognizer: Recognizer::default(),
+            language_download: None,
             models,
             shown_for: None,
             shown: Vec::new(),
@@ -2250,6 +2254,8 @@ impl Controller {
     fn refresh_recognizer(&mut self) {
         if !self.demo {
             self.recognizer = platform::recognizer();
+            self.language_download =
+                if self.recognizer == Recognizer::OnDevice { platform::language_download() } else { None };
         }
         if let Some(ui) = self.ui() {
             ui.set_can_dictate(self.recognizer.available());
@@ -2309,6 +2315,9 @@ impl Controller {
                 slint::Timer::single_shot(dictee::STOP_WITHIN, move || {
                     with(|c| {
                         if c.dictation.stop_timed_out(seq) {
+                            platform::dictation_log(&format!(
+                                "écoute {seq} : pas de texte final après la fin, abandonnée"
+                            ));
                             platform::cancel_dictation();
                             c.refresh_dictation();
                             c.toast(dictee::NOTHING_HEARD, 1);
@@ -2317,6 +2326,7 @@ impl Controller {
                 });
             }
             Tap::Cancel => {
+                platform::dictation_log("micro touché avant de s'ouvrir : écoute abandonnée");
                 platform::haptic();
                 platform::cancel_dictation();
             }
@@ -2328,12 +2338,15 @@ impl Controller {
     /// Ce qu'entend la reconnaissance, pour l'écoute `seq`.
     pub(crate) fn on_heard(&mut self, seq: u32, heard: Heard) {
         let starting = self.dictation.phase == dictee::Phase::Starting;
+        let opening = heard == Heard::Opening;
         match self.dictation.heard(seq, heard) {
             Outcome::Stale => return,
             // Le micro s'est ouvert alors que l'application passait en arrière-plan : abandonné.
             Outcome::Update => {
                 if platform::in_background() && self.dictation.paused(platform::asking_mic()) {
                     platform::cancel_dictation();
+                } else if opening {
+                    self.open_deadline(seq);
                 } else if starting && self.dictation.phase == dictee::Phase::Listening {
                     // Le micro vient de s'ouvrir : on peut parler.
                     platform::haptic();
@@ -2341,8 +2354,58 @@ impl Controller {
             }
             Outcome::Text(target, text) => self.dictated(&target, &text),
             Outcome::Failed(why, tone) => self.toast(&why, tone),
+            Outcome::NoLanguage(code) => self.language_missing(code),
         }
         self.refresh_dictation();
+    }
+
+    /// L'écoute `seq` est demandée à Android : sans micro ouvert à temps, elle s'abandonne, et on le dit (« Un
+    /// instant… » ne reste pas pour toujours).
+    fn open_deadline(&self, seq: u32) {
+        slint::Timer::single_shot(dictee::OPEN_WITHIN, move || {
+            with(|c| {
+                if c.dictation.open_timed_out(seq) {
+                    let s = dictee::OPEN_WITHIN.as_secs();
+                    platform::dictation_log(&format!("écoute {seq} : micro pas ouvert après {s} s, abandonnée"));
+                    platform::cancel_dictation();
+                    c.refresh_dictation();
+                    c.toast(dictee::NOT_OPENED, 3);
+                }
+            });
+        });
+    }
+
+    /// La reconnaissance n'a pas la langue de la dictée (`code`) : celle du téléphone, quand Android le permet, propose
+    /// de la télécharger (le modèle de son fabricant, Google le plus souvent : la question le dit) ; sinon une bulle.
+    /// Jamais une autre reconnaissance à la place, qui pourrait envoyer le son sur Internet.
+    fn language_missing(&self, code: i32) {
+        let ui = self.ui();
+        match (&self.language_download, &ui) {
+            (Some((lang, maker)), Some(ui)) if self.recognizer == Recognizer::OnDevice => {
+                let (text, ok) = dictee::download_question(lang, maker);
+                ui.set_dictation_download_text(view::tied(&text).into());
+                ui.set_dictation_download_ok(ok.into());
+                ui.set_dictation_download_visible(true);
+            }
+            _ => {
+                let (text, tone) = dictee::error_text(code);
+                self.toast(&text, tone);
+            }
+        }
+    }
+
+    /// « Télécharger le français » : demandé à la reconnaissance du téléphone ; ce qu'il en devient se dit en bulle.
+    fn download_language(&self) {
+        let Some((lang, _)) = self.language_download.clone() else { return };
+        let (text, tone) = dictee::download_text(&dictee::Download::Asked, &lang);
+        self.toast(&text, tone);
+        platform::download_language(Box::new(move |news| {
+            let lang = lang.clone();
+            post(move |c| {
+                let (text, tone) = dictee::download_text(&news, &lang);
+                c.toast(&text, tone);
+            });
+        }));
     }
 
     /// Le texte final, au bout de la saisie de sa cible si elle est toujours là : à relire, puis à envoyer ; dans le
@@ -2662,6 +2725,9 @@ impl Controller {
     /// donnée.
     /// Démonstration : une reconnaissance vocale (le bureau n'en a pas), pour montrer le micro.
     pub(crate) fn demo_recognizer(&mut self, recognizer: Recognizer) {
+        // Comme un téléphone d'Android 13 ou plus, en français, avec la reconnaissance de Google.
+        self.language_download =
+            (recognizer == Recognizer::OnDevice).then(|| ("fr-FR".to_string(), "Google".to_string()));
         self.recognizer = recognizer;
         self.refresh_recognizer();
     }
@@ -2964,6 +3030,9 @@ fn wire(ui: &AppWindow) {
     });
     ui.on_dictation_cancel(|term| {
         with(|c| c.drop_dictation(Some(term)));
+    });
+    ui.on_dictation_download(|| {
+        with(|c| c.download_language());
     });
     ui.on_set_dictation_send(|on| {
         with(|c| {
@@ -3498,6 +3567,30 @@ mod tests {
         assert!(ui.get_term_listening() && !ui.get_dictation_starting(), "un texte : le micro était ouvert");
         with(|c| c.drop_dictation(None));
         assert!(!ui.get_term_listening() && !ui.get_dictation_starting());
+    }
+
+    /// La reconnaissance du téléphone sans la langue de la dictée : quand Android sait la télécharger, la question le
+    /// propose (le modèle de Google, qui reste sur le téléphone) ; sinon une bulle le dit. Jamais une autre
+    /// reconnaissance à la place.
+    #[test]
+    fn a_missing_language_offers_its_download_on_the_phone() {
+        let ui = dictating_terminal("dictee-langue");
+        with(|c| {
+            c.language_download = Some(("fr-FR".into(), "Google".into()));
+            c.term_dictate();
+            c.on_heard(c.dictation.seq(), Heard::Error(13));
+        });
+        assert!(ui.get_dictation_download_visible() && !ui.get_term_listening());
+        assert_eq!(ui.get_dictation_download_ok().as_str(), "Télécharger le français");
+        assert!(ui.get_dictation_download_text().contains("Google"), "{}", ui.get_dictation_download_text());
+        ui.set_dictation_download_visible(false);
+        with(|c| {
+            c.language_download = None;
+            c.term_dictate();
+            c.on_heard(c.dictation.seq(), Heard::Error(13));
+        });
+        assert!(!ui.get_dictation_download_visible(), "Android ne sait pas la télécharger");
+        assert!(ui.get_toast_text().contains("langue"), "{}", ui.get_toast_text());
     }
 
     /// Une saisie masquée (un mot de passe demandé), la liaison coupée ou l'application en arrière-plan abandonnent

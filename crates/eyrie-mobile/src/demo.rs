@@ -17,7 +17,8 @@
 //! `terminal-masque` (un mot de passe demandé : la saisie se masque), `terminal-zoom`, `terminal-suivi` (le bas
 //! reste en vue quand la liste rapetisse), `terminal-remonte` (la sortie qui arrive ne ramène pas en bas) ; la
 //! dictée : `terminal-dictee` (le micro écoute, le texte provisoire au-dessus de la saisie), `terminal-dictee-instant`
-//! (le micro touché, pas encore ouvert : « Un instant… »), `saisie-dictee` (une consigne de Patronus, sur plusieurs
+//! (le micro touché, pas encore ouvert : « Un instant… »), `terminal-dictee-langue` (la reconnaissance du téléphone
+//! n'a pas le français : « Télécharger le français »), `saisie-dictee` (une consigne de Patronus, sur plusieurs
 //! lignes, dictée). Suffixe `+clair` ou `+sombre` : le thème (sinon celui du système).
 
 use slint::ComponentHandle;
@@ -863,6 +864,16 @@ fn terminal_scene(ui: &AppWindow, scene: &str) {
             with(|c| {
                 c.demo_recognizer(Recognizer::OnDevice);
                 c.term_dictate();
+            });
+        }
+        // La reconnaissance du téléphone n'a pas le français (ERROR_LANGUAGE_UNAVAILABLE) : son téléchargement est
+        // proposé.
+        "terminal-dictee-langue" => {
+            ui.set_term_draft("Relis le diff ci-dessus".into());
+            with(|c| {
+                c.demo_recognizer(Recognizer::OnDevice);
+                c.term_dictate();
+                c.demo_heard(Heard::Error(13));
             });
         }
         // Une longue sortie, suivie en bas ; puis la liste rapetisse comme quand le clavier du téléphone s'ouvre (ici, la

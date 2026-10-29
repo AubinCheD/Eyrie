@@ -119,6 +119,11 @@ export component AppWindow inherits Window {
     in property <int> dictation-kind;
     in property <string> dictation-text;
     in-out property <bool> dictation-send;
+    // La reconnaissance du téléphone n'a pas la langue de la dictée : la question de son téléchargement (le modèle, et
+    // qui le fait), et le libellé du bouton (« Télécharger le français »).
+    in property <string> dictation-download-text;
+    in property <string> dictation-download-ok;
+    in-out property <bool> dictation-download-visible;
 
     // --- Accueil et appairage ---
     in property <image> logo;
@@ -214,6 +219,7 @@ export component AppWindow inherits Window {
     callback term-dictate();
     callback input-dictate(UiAct);
     callback dictation-cancel(bool);
+    callback dictation-download();
     callback set-dictation-send(bool);
     callback open-folder(UiAct);
     callback picker-go(string);
@@ -354,7 +360,7 @@ export component AppWindow inherits Window {
     focus := FocusScope {
         key-pressed(e) => {
             if e.text == Key.Back || e.text == Key.Escape {
-                if root.sheet-visible || root.confirm-visible || root.input-visible || root.forget-visible || root.logout-visible || root.start-visible || root.term-paste-visible {
+                if root.sheet-visible || root.confirm-visible || root.input-visible || root.forget-visible || root.logout-visible || root.start-visible || root.term-paste-visible || root.dictation-download-visible {
                     root.sheet-visible = false;
                     root.confirm-visible = false;
                     root.has-chosen = false;
@@ -363,6 +369,7 @@ export component AppWindow inherits Window {
                     root.logout-visible = false;
                     root.start-visible = false;
                     root.term-paste-visible = false;
+                    root.dictation-download-visible = false;
                     return accept;
                 }
                 // Le texte à copier se ferme ; Ctrl ou Alt collé se relâche.
@@ -750,6 +757,16 @@ export component AppWindow inherits Window {
             if yes {
                 root.haptic();
                 root.term-paste-confirmed();
+            }
+        }
+    }
+    if root.dictation-download-visible: ConfirmDialog {
+        text: root.dictation-download-text;
+        ok-text: root.dictation-download-ok;
+        answered(yes) => {
+            root.dictation-download-visible = false;
+            if yes {
+                root.dictation-download();
             }
         }
     }

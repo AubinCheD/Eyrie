@@ -37,8 +37,9 @@ impl Notice {
 
 #[cfg(target_os = "android")]
 pub use crate::android::{
-    ask_notifications, asking_mic, can_scan, cancel_dictation, data_dir, device_model, device_name, haptic,
-    in_background, notify, open_url, recognizer, start_dictation, start_scan, stop_dictation, stop_scan,
+    ask_notifications, asking_mic, can_scan, cancel_dictation, data_dir, device_model, device_name, dictation_log,
+    download_language, haptic, in_background, language_download, notify, open_url, recognizer, start_dictation,
+    start_scan, stop_dictation, stop_scan,
 };
 
 #[cfg(not(target_os = "android"))]
@@ -46,7 +47,7 @@ mod desktop {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::dictee::{Heard, Recognizer};
+    use crate::dictee::{Download, Heard, Recognizer};
 
     /// `EYRIE_MOBILE_DATA`, sinon `%LOCALAPPDATA%\EyrieMobile`.
     pub fn data_dir() -> PathBuf {
@@ -108,6 +109,16 @@ mod desktop {
     pub fn asking_mic() -> bool {
         false
     }
+
+    /// Le journal de la dictée est celui d'Android.
+    pub fn dictation_log(_step: &str) {}
+
+    /// Rien à télécharger sur le bureau.
+    pub fn language_download() -> Option<(String, String)> {
+        None
+    }
+
+    pub fn download_language(_done: Box<dyn Fn(Download) + Send>) {}
 }
 
 #[cfg(not(target_os = "android"))]

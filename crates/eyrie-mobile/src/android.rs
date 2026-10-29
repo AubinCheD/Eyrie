@@ -15,7 +15,7 @@ use jni::sys::{jfloat, jint};
 use jni::{JNIEnv, JavaVM, NativeMethod};
 use slint::android::AndroidApp;
 
-use crate::dictee::{self, Asking, Heard, Recognizer, Requested};
+use crate::dictee::{self, Asking, Download, Heard, Recognizer, Requested};
 use crate::platform::{Frame, Notice};
 
 static APP: OnceLock<AndroidApp> = OnceLock::new();
@@ -354,6 +354,10 @@ static DICTEE_CLASS: OnceLock<Option<GlobalRef>> = OnceLock::new();
 type HeardSink = Box<dyn Fn(u32, Heard) + Send>;
 static HEARD: Mutex<Option<HeardSink>> = Mutex::new(None);
 
+/// Où va ce que devient le téléchargement de la langue (le contrôleur, par `download_language`).
+type DownloadSink = Box<dyn Fn(Download) + Send>;
+static DOWNLOADED: Mutex<Option<DownloadSink>> = Mutex::new(None);
+
 /// L'écoute demandée : abandonnée pendant la question du micro, elle ne démarre pas ; abandonnée pendant que son fil
 /// l'ouvre, son annulation est postée après l'ouverture (voir `Requested`).
 static DICTATING: Requested = Requested::new();
@@ -388,6 +392,7 @@ fn dictee_class() -> Option<&'static GlobalRef> {
                     ("resultat", "(ILjava/lang/String;)V", resultat as *mut c_void),
                     ("erreur", "(II)V", erreur as *mut c_void),
                     ("niveau", "(IF)V", niveau as *mut c_void),
+                    ("modele", "(II)V", modele as *mut c_void),
                 ];
                 let natives =
                     natives.map(|(name, sig, fn_ptr)| NativeMethod { name: name.into(), sig: sig.into(), fn_ptr });
@@ -469,6 +474,32 @@ extern "system" fn niveau<'l>(mut env: JNIEnv<'l>, _: JClass<'l>, seq: jint, db:
     native(&mut env, |_| deliver(seq as u32, Heard::Level(dictee::level(db))));
 }
 
+/// Le téléchargement de la langue : 0 fini, 1 prévu par Android, 2 échoué (`code`).
+extern "system" fn modele<'l>(mut env: JNIEnv<'l>, _: JClass<'l>, state: jint, code: jint) {
+    native(&mut env, |_| {
+        let news = match state {
+            0 => Download::Done,
+            1 => Download::Scheduled,
+            _ => Download::Failed(code),
+        };
+        if let Ok(sink) = DOWNLOADED.lock()
+            && let Some(f) = sink.as_ref()
+        {
+            f(news);
+        }
+    });
+}
+
+/// Une étape de la dictée au journal d'Android, sous l'étiquette de `Dictee.java` (`adb logcat -s EyrieDictee`) :
+/// jamais ce qui a été dit.
+pub fn dictation_log(step: &str) {
+    let Some(class) = dictee_class() else { return };
+    with_java(|env, _| {
+        let s = env.new_string(step)?;
+        env.call_static_method(class, "journal", "(Ljava/lang/String;)V", &[JValue::Object(&s)]).map(|_| ())
+    });
+}
+
 /// Écoute (`on_device` : la reconnaissance du téléphone lui-même), après la permission du micro, demandée la première
 /// fois ; ce qu'elle entend part à `heard`, avec son numéro `seq`. Une écoute d'avant est annulée.
 pub fn start_dictation(seq: u32, on_device: bool, heard: HeardSink) {
@@ -479,10 +510,17 @@ pub fn start_dictation(seq: u32, on_device: bool, heard: HeardSink) {
     let _ = std::thread::Builder::new().name("eyrie-dictee".into()).spawn(move || {
         let still = || DICTATING.is(seq);
         if !granted(RECORD_AUDIO) {
+            dictation_log(&format!("écoute {seq} : le micro n'est pas encore permis, question d'Android"));
             ASKING.store(seq, Ordering::Relaxed);
             let answer = ask_mic(&still);
             // Une écoute suivante pose peut-être déjà la sienne.
             let _ = ASKING.compare_exchange(seq, 0, Ordering::Relaxed, Ordering::Relaxed);
+            let said = match answer {
+                None => "plus demandée",
+                Some(true) => "permis, application revenue",
+                Some(false) => "refusé, ou pas de retour à temps",
+            };
+            dictation_log(&format!("écoute {seq} : question du micro, {said}"));
             match answer {
                 None => return,
                 Some(true) => {}
@@ -507,9 +545,14 @@ pub fn start_dictation(seq: u32, on_device: bool, heard: HeardSink) {
                 })
             })
         });
-        // `None` : plus demandée, rien à dire.
-        if started == Some(None) {
-            deliver(seq, Heard::Error(dictee::NOT_STARTED));
+        match started {
+            // Postée à Android : le micro doit s'ouvrir à temps (le contrôleur compte).
+            Some(Some(())) => deliver(seq, Heard::Opening),
+            Some(None) => {
+                dictation_log(&format!("écoute {seq} : Dictee.ecouter n'a pas pu être appelée"));
+                deliver(seq, Heard::Error(dictee::NOT_STARTED));
+            }
+            None => dictation_log(&format!("écoute {seq} : plus demandée, pas ouverte")),
         }
     });
 }
@@ -545,6 +588,43 @@ pub fn stop_dictation() {
 /// Abandonne l'écoute (ou sa demande du micro) : plus rien n'arrive d'elle.
 pub fn cancel_dictation() {
     DICTATING.clear(|| dictee_call("annuler"));
+}
+
+/// Quand la reconnaissance du téléphone sait télécharger une langue (Android 13 et suivants) : la langue de la dictée
+/// (« fr-FR ») et qui fait son modèle (« Google », vide s'il ne se lit pas).
+pub fn language_download() -> Option<(String, String)> {
+    let class = dictee_class()?;
+    with_java(|env, activity| {
+        const CTX: &str = "(Landroid/content/Context;)";
+        if !env.call_static_method(class, "peutTelecharger", format!("{CTX}Z"), &[JValue::Object(activity)])?.z()? {
+            return Ok(None);
+        }
+        let mut text = |method: &str| -> jni::errors::Result<String> {
+            let s = env.call_static_method(class, method, "()Ljava/lang/String;", &[])?.l()?;
+            Ok(if s.is_null() { String::new() } else { env.get_string(&JString::from(s))?.into() })
+        };
+        Ok(Some((text("langue")?, text("auteur")?)))
+    })
+    .flatten()
+}
+
+/// Demande à la reconnaissance du téléphone de télécharger la langue de la dictée ; ce qu'il en devient part à `done`.
+pub fn download_language(done: DownloadSink) {
+    if let Ok(mut sink) = DOWNLOADED.lock() {
+        *sink = Some(done);
+    }
+    let called = dictee_class().and_then(|class| {
+        with_java(|env, activity| {
+            env.call_static_method(class, "telecharger", "(Landroid/content/Context;)V", &[JValue::Object(activity)])
+                .map(|_| ())
+        })
+    });
+    if called.is_none()
+        && let Ok(sink) = DOWNLOADED.lock()
+        && let Some(f) = sink.as_ref()
+    {
+        f(Download::Failed(dictee::NOT_STARTED));
+    }
 }
 
 mod camera {
