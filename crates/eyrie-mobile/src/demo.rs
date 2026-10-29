@@ -1,6 +1,7 @@
 //! Démonstration sans PC (`EYRIE_MOBILE_DEMO=<scène>`), pour les captures et la mise au point de l'interface :
-//! `ensemble`, `fawkes`, `recherche`, `terminal`, `patronus`, `depot`, `menu`, `erreur`, `erreur-lue`, `erreur-longue`,
-//! `historique`, `diff`, `diff-retour`, `plus`, `notes`, `reglages`, `attente`, `injoignable`, `refus`, `accueil`,
+//! `ensemble`, `fawkes`, `recherche`, `terminal`, `patronus`, `depots` (la liste de DragonTree), `depot`, `menu`,
+//! `erreur`, `erreur-lue`, `erreur-longue`, `historique`, `branches`, `diff`, `diff-retour`, `plus`, `notes`,
+//! `reglages`, `attente`, `injoignable`, `refus`, `accueil`,
 //! `commandes`, `accueil-tailscale`, `code`, `appairage`, `hors-ligne`, `lien` (l'écran d'un autre module) ; le
 //! sélecteur de dossiers du PC : `dossiers` (un dossier quelconque, une page sur plusieurs), `dossiers-racine`,
 //! `dossiers-depot` (un dépôt existant), `dossiers-clone` et `dossiers-clone-pris` (où cloner), `dossiers-erreur`,
@@ -183,9 +184,17 @@ const PUSH_REFUSED: &str = concat!(
     "may want to first integrate the remote changes (e.g., 'git pull ...') before pushing again."
 );
 
+/// Les quatre onglets d'un dépôt de DragonTree (`depot::with_tabs`).
+fn tabs(s: Screen) -> Screen {
+    s.tab("État", "depot/eyrie")
+        .tab("Historique", "depot/eyrie/historique")
+        .tab("Branches", "depot/eyrie/branches")
+        .tab("Plus", "depot/eyrie/plus")
+}
+
 /// Un dépôt de DragonTree, avec ses onglets.
 fn depot(title: &str) -> Screen {
-    Screen::new(title)
+    let s = Screen::new(title)
         .subtitle("mobile-ergonomie · ↑2 ↓1")
         .act(Act::new("@pc", "Montrer sur le PC"))
         .act(Act::new("actualiser", "Actualiser").glyph("🔄"))
@@ -196,11 +205,8 @@ fn depot(title: &str) -> Screen {
                 .glyph("×")
                 .danger()
                 .confirm("Retirer ce dépôt de DragonTree ?"),
-        )
-        .tab("État", "depot/eyrie")
-        .tab("Historique", "depot/eyrie/historique")
-        .tab("Branches", "depot/eyrie/branches")
-        .tab("Plus", "depot/eyrie/plus")
+        );
+    tabs(s)
 }
 
 /// Un dépôt de DragonTree, onglet État : l'opération en cours, les gestes, les modifications.
@@ -337,12 +343,117 @@ fn clone_act() -> Act {
         .folder("Où cloner Ozmo", spec)
 }
 
-/// La liste des dépôts de DragonTree, avec ses deux actions qui demandent un dossier du PC.
+/// Un dépôt de la liste, comme DragonTree l'envoie (`liste::row_of`) : son état rapide et son ton, ses gestes.
+fn repo(title: &str, key: &str, state: &str, tone: Tone) -> Row {
+    Row::new(title)
+        .key(key)
+        .glyph("🌿")
+        .open(format!("depot/{key}"))
+        .subtitle(state)
+        .tone(tone)
+        .act(Act::new(format!("fetch:{key}"), "Fetch").glyph("⬇️"))
+        .act(Act::new(format!("pull:{key}"), "Pull").glyph("↓"))
+        .act(
+            Act::new(format!("push:{key}"), "Push")
+                .glyph("↑")
+                .confirm("Pousser la branche courante vers sa branche distante ?"),
+        )
+        .act(Act::new(format!("pc:{key}"), "Afficher dans DragonTree sur le PC").glyph("🖥️"))
+}
+
+/// La liste des dépôts de DragonTree (`liste::home`) : ouverts sur le PC, épinglés, un bandeau par dossier analysé
+/// (plié au-delà de quinze dépôts), les récents ; un Fetch tout juste fini, un Pull en cours ; les deux actions qui
+/// demandent un dossier du PC.
 fn dragontree_home() -> Screen {
-    let mut s = Screen::new("DragonTree").search("Chercher un dépôt").act(add_act()).act(clone_act());
-    s.band(Band::new("ouverts", "Ouverts sur le PC").aside("2"));
-    s.row(Row::new("Eyrie").subtitle("mobile-ergonomie · ↑2 ↓1").glyph("🌳").key("eyrie").open("depot/eyrie"));
-    s.row(Row::new("Ozmo").subtitle("main · à jour").glyph("🌳").key("ozmo").open("depot/ozmo"));
+    let mut s = Screen::new("DragonTree")
+        .search("Chercher un dépôt")
+        .act(add_act())
+        .act(clone_act())
+        .act(Act::new("actualiser", "Actualiser").glyph("🔄"));
+    s.note("Ozmo · DEV : Fetch terminé", Tone::Ok);
+    s.band(Band::new("ouverts", "Ouverts sur le PC").glyph("🖥️").aside("2"));
+    let eyrie = repo("Eyrie", "eyrie", "mobile-ergonomie · ↑2 ↓1 · 3 modifications", Tone::Warn);
+    s.row(eyrie.color(0x5b8def).badge("affiché"));
+    s.row(repo("Ozmo · DEV", "ozmo", "main · ↑2 · propre", Tone::Ok).color(0x4cb872));
+    s.band(Band::new("epingles", "Épinglés").glyph("📌").aside("1"));
+    let dragontree = repo("DragonTree", "dragontree", "suite/mobile-ergonomie · ↓4 · propre", Tone::Warn);
+    s.row(dragontree.badge("en cours").progress(Some(35)));
+    s.band(Band::new("racine/5e0c1a", "TestAubin").glyph("📁").aside("4"));
+    s.row(repo("Fawkes", "fawkes", "suite/mobile-ergonomie · propre", Tone::Ok));
+    s.row(repo("Owlery", "owlery", "main · ↑1 · 1 modification", Tone::Warn));
+    s.row(repo("Menagerie", "menagerie", "HEAD détachée · propre", Tone::Ok));
+    s.row(repo("Grimoire", "grimoire", "Dépôt illisible : .git/HEAD manquant", Tone::Danger));
+    s.band(Band::new("racine/a41f07", "Clients").glyph("📁").aside("23").open(false));
+    s.row(repo("Ozmo · Clients", "ozmo-clients", "main · propre", Tone::Ok));
+    s.band(Band::new("recents", "Récents").glyph("🕘").aside("1"));
+    s.row(repo("Ballon", "ballon", "main · ↓2 · propre", Tone::Warn));
+    s
+}
+
+/// Une branche locale de l'onglet Branches, comme DragonTree l'envoie (`branches::branch_row`) : elle ouvre son
+/// détail, ses gestes au menu.
+fn branch(name: &str, key: &str, sub: &str) -> Row {
+    let current = "mobile-ergonomie";
+    Row::new(name)
+        .key(key)
+        .glyph("🌿")
+        .subtitle(sub)
+        .open(format!("depot/eyrie/branche/{key}"))
+        .act(Act::new(format!("basculer:{name}"), "Basculer").glyph("↪️").confirm(format!("Basculer sur {name} ?")))
+        .act(
+            Act::new(format!("fusionner:{name}"), format!("Fusionner dans {current}"))
+                .glyph("🔀")
+                .confirm(format!("Fusionner {name} dans {current} ?")),
+        )
+        .act(Act::new(format!("renommer:{name}"), "Renommer…").glyph("✏️").input("Nouveau nom", "").input_value(name))
+        .act(
+            Act::new(format!("supprimer-branche:{name}"), "Supprimer")
+                .glyph("🗑️")
+                .danger()
+                .confirm(format!("Supprimer la branche {name} ? (refusé si elle n'est pas fusionnée)")),
+        )
+}
+
+/// L'onglet Branches d'un dépôt (`branches::list`) : la courante, les locales les plus récentes d'abord, puis les
+/// distantes, pliées, par remote.
+fn depot_branches() -> Screen {
+    let mut s = tabs(Screen::new("Branches"))
+        .subtitle("Courante : mobile-ergonomie · 6 locale(s), 9 distante(s)")
+        .search("Chercher une branche")
+        .act(
+            Act::new("nouvelle-branche", "Nouvelle branche…")
+                .glyph("🌿")
+                .input("Nom (créée depuis HEAD et sortie)", "feature/…"),
+        );
+    s.band(Band::new("courante", "Courante").glyph("📍"));
+    s.row(
+        Row::new("mobile-ergonomie")
+            .key("c0ffee")
+            .glyph("🌿")
+            .badge("courante")
+            .tone(Tone::Ok)
+            .subtitle("origin/mobile-ergonomie · ↑2 ↓1 · il y a 1 h")
+            .open("depot/eyrie/branche/c0ffee")
+            .act(
+                Act::new("push", "Pousser")
+                    .glyph("⬆️")
+                    .confirm("Pousser mobile-ergonomie vers origin/mobile-ergonomie ?"),
+            ),
+    );
+    s.band(Band::new("g:1b2c3d", "Locales").glyph("🌿").aside("5"));
+    s.row(branch("main", "a1b2c3", "origin/main · à jour · il y a 2 j"));
+    s.row(branch("graphe", "d4e5f6", "origin/graphe (supprimée sur le serveur) · il y a 3 h"));
+    s.row(branch("feature/qr-code", "0a1b2c", "non publiée · il y a 5 h"));
+    s.row(branch("correctif-veille", "3d4e5f", "origin/correctif-veille · ↑1 ↓3 · il y a 1 j").tone(Tone::Warn));
+    s.row(branch("essai-slint-1.18", "6a7b8c", "non publiée · il y a 6 j"));
+    s.band(Band::new("g:9e8d7c", "origin").glyph("☁️").aside("7").open(false));
+    let remote = |name: &str, key: &str, sub: &str| {
+        Row::new(name).key(key).glyph("☁️").subtitle(sub).open(format!("depot/eyrie/branche/{key}"))
+    };
+    s.row(remote("origin/mobile-ergonomie", "e1e2e3", "suivie par mobile-ergonomie · il y a 3 h"));
+    s.row(remote("origin/main", "f1f2f3", "suivie par main · il y a 2 j"));
+    s.band(Band::new("g:4f5e6d", "upstream").glyph("☁️").aside("2").open(false));
+    s.row(remote("upstream/main", "a9b8c7", "il y a 4 j"));
     s
 }
 
@@ -438,7 +549,6 @@ fn dev_listing(choose: Option<&str>, why_not: &str) -> Listing {
 
 /// La démonstration du sélecteur de dossiers : l'écran du module, l'action touchée, puis ce que répond le PC.
 fn folders(scene: &str, feed: &dyn Fn(ToPhone)) {
-    feed(ToPhone::Screen { module: "dragontree".into(), path: String::new(), screen: dragontree_home() });
     feed(ToPhone::Screen { module: "fawkes".into(), path: "nouveau".into(), screen: fawkes_new() });
     let answer = |l: Listing| {
         with(|c| c.demo_folder(Some(l)));
@@ -802,7 +912,10 @@ pub fn play(ui: &AppWindow, scene: &str) {
     });
     feed(ToPhone::Screen { module: "fawkes".into(), path: String::new(), screen: fawkes_home() });
     feed(ToPhone::Screen { module: "patronus".into(), path: String::new(), screen: patronus_home() });
+    feed(ToPhone::Screen { module: "dragontree".into(), path: String::new(), screen: dragontree_home() });
     feed(ToPhone::Screen { module: "dragontree".into(), path: "depot/eyrie".into(), screen: depot_state() });
+    let branches = depot_branches();
+    feed(ToPhone::Screen { module: "dragontree".into(), path: "depot/eyrie/branches".into(), screen: branches });
     let history = depot_history();
     feed(ToPhone::Screen { module: "dragontree".into(), path: "depot/eyrie/historique".into(), screen: history });
     let file = depot_file();
@@ -867,10 +980,15 @@ pub fn play(ui: &AppWindow, scene: &str) {
                 }
             });
         }
-        "historique" => {
+        // La liste des dépôts de DragonTree.
+        "depots" => {
+            with(|c| c.nav_select("dragontree"));
+        }
+        "historique" | "branches" => {
+            let tab = format!("depot/eyrie/{scene}");
             with(|c| {
                 c.open_module_path("dragontree", "depot/eyrie");
-                c.select_tab("depot/eyrie/historique");
+                c.select_tab(&tab);
             });
         }
         "plus" | "commandes" => {
