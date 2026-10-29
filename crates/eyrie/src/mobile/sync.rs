@@ -116,6 +116,12 @@ impl Session {
         }
         self.screen.as_ref().map(|s| (s.module.as_str(), s.path.as_str()))
     }
+
+    /// Essais : les lectures de dossiers de ce téléphone.
+    #[cfg(test)]
+    pub(super) fn browser(&mut self) -> &mut browse::Browser {
+        &mut self.browse
+    }
 }
 
 /// Ce qui est commun à tous les téléphones, recalculé toutes les 700 ms.
@@ -306,14 +312,9 @@ fn message(
             let offered = s.screen.as_ref().filter(|f| f.module == module && f.path == path).and_then(|f| {
                 Some((f.folders.get(&action).cloned()?, f.allowed.get(&action).cloned().unwrap_or_default()))
             });
-            let why = if !rights.act {
-                "Ce téléphone n'a plus le droit d'agir (réglage du PC)."
-            } else if !rights.files {
-                "Ce téléphone n'a pas le droit de parcourir les dossiers du PC (réglage du PC)."
-            } else {
-                "Cet écran a changé entre-temps : réessayez."
-            };
-            let Some((spec, label)) = offered.filter(|_| rights.act && rights.files) else {
+            let refused = cannot_browse(rights);
+            let why = refused.unwrap_or("Cet écran a changé entre-temps : réessayez.");
+            let Some((spec, label)) = offered.filter(|_| refused.is_none()) else {
                 s.send(ToPhone::Folder { req, listing: browse::refused(dir, why) });
                 return;
             };
@@ -715,13 +716,32 @@ fn folders_of(screen: &Screen) -> BTreeMap<String, FolderInput> {
     out
 }
 
-/// Lance, dans leur fil, les lectures de dossiers dont c'est le tour ; la réponse part de là au téléphone.
+/// Pourquoi ce téléphone ne parcourt pas les dossiers du PC (droits « Agir » et « Dossiers du PC ») ; `None` : il le
+/// peut.
+fn cannot_browse(rights: Rights) -> Option<&'static str> {
+    if !rights.act {
+        Some("Ce téléphone n'a plus le droit d'agir (réglage du PC).")
+    } else if !rights.files {
+        Some("Ce téléphone n'a pas le droit de parcourir les dossiers du PC (réglage du PC).")
+    } else {
+        None
+    }
+}
+
+/// Lance, dans leur fil, les lectures de dossiers dont c'est le tour ; la réponse part de là au téléphone. Celle qui
+/// attendait son tour quand le droit de parcourir a été retiré n'est pas lue : le téléphone reçoit le refus.
 fn pump_folders(core: &mut Core, ctx: &egui::Context) {
     if !core.mobile.sessions.iter().any(|s| s.browse.waiting()) {
         return;
     }
     let env = core.mobile.folder_env();
     for s in &mut core.mobile.sessions {
+        if let Some(why) = cannot_browse(s.rights) {
+            if let Some(old) = s.browse.cancel() {
+                s.send(ToPhone::Folder { req: old.req, listing: browse::refused(old.dir, why) });
+            }
+            continue;
+        }
         let wake = ctx.clone();
         if let Some(wait) = s.browse.pump(&env, &s.sender, move || wake.request_repaint()) {
             ctx.request_repaint_after(wait);

@@ -799,6 +799,20 @@ impl Browser {
         self.waiting.is_some()
     }
 
+    /// Le téléphone n'a plus le droit de parcourir : la demande qui attendait ne sera pas lue (rendue, pour lui
+    /// répondre).
+    pub fn cancel(&mut self) -> Option<Ask> {
+        self.waiting.take()
+    }
+
+    /// Essais : une lecture en cours, finie quand le drapeau rendu passe à vrai.
+    #[cfg(test)]
+    pub fn hold(&mut self) -> Arc<AtomicBool> {
+        let done = Arc::new(AtomicBool::new(false));
+        self.running = Some(done.clone());
+        done
+    }
+
     /// La demande à lancer maintenant, s'il y en a une ; `Err(délai)` : la rafale est pleine, revenir après.
     fn next(&mut self, now: Instant) -> Result<Option<Ask>, Duration> {
         let busy = self.running.as_ref().is_some_and(|done| !done.load(Ordering::Acquire));
@@ -1313,6 +1327,10 @@ mod tests {
         b.ask(asked(99));
         assert_eq!(b.next(now + Duration::from_millis(500)).unwrap_err(), BURST_WINDOW - Duration::from_millis(500));
         assert_eq!(b.next(now + BURST_WINDOW).unwrap().map(|a| a.req), Some(99));
+        // Le droit de parcourir retiré : la demande qui attend est rendue, pour être refusée ; plus rien n'attend.
+        b.ask(asked(100));
+        assert_eq!(b.cancel().map(|a| a.req), Some(100));
+        assert!(!b.waiting() && b.cancel().is_none());
 
         // Pour de vrai : la réponse part du fil, avec le bon numéro.
         let env = Arc::new(Env::for_tests(Vec::new()));

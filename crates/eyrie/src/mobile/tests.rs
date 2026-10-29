@@ -456,6 +456,41 @@ fn without_the_folders_right_the_phone_cannot_browse() {
     assert!(!journal.iter().any(|l| l.kind == "dossiers"));
 }
 
+/// Une liste de dossiers qui attend son tour (une lecture en cours) quand le droit « Dossiers du PC » est retiré n'est
+/// pas lue : le téléphone reçoit le refus, pour cette demande.
+#[test]
+fn a_waiting_folder_listing_is_refused_once_the_right_is_withdrawn() {
+    let tree = tempfile::tempdir().unwrap();
+    let root: PathBuf = tree.path().to_path_buf();
+    std::fs::create_dir_all(root.join("depot").join(".git")).unwrap();
+    let mut h = suite();
+    h.state_mut().core.mobile.folders = Some(Arc::new(browse::Env::for_tests(Vec::new())));
+    h.state_mut().core.mobile.new_ticket(None).unwrap();
+    let uri = h.state().core.mobile.ticket.as_ref().unwrap().uri.clone();
+    let ticket = Ticket::from_uri(&uri).unwrap();
+    let phone = std::thread::spawn(move || {
+        let me = Keypair::generate();
+        let mut c = client::open(&ticket.addresses(), &me, Duration::from_secs(5)).unwrap();
+        client::pair(&mut c, &ticket.secret, Some(&ticket.key), "Pixel", "Google Pixel 8").unwrap();
+        client::wait_paired(&mut c).unwrap();
+        client::hello(&mut c, &ticket.key, "Pixel", "Google Pixel 8").unwrap();
+        follow_home(&mut c);
+        list_folder(&mut c, 1, "choisir", Some(&root))
+    });
+    spin(&mut h, |h| !h.state().core.mobile.requests.is_empty());
+    h.state_mut().core.mobile.decide(0, true);
+    spin(&mut h, |h| !h.state().core.mobile.sessions.is_empty());
+    // Une lecture en cours, avant que le téléphone ne demande la sienne : elle attendra son tour.
+    let reading = h.state_mut().core.mobile.sessions[0].browser().hold();
+    spin(&mut h, |h| h.state_mut().core.mobile.sessions[0].browser().waiting());
+    let id = h.state().core.mobile.store.devices[0].id.clone();
+    h.state_mut().core.mobile.set_rights(&id, suite_mobile::msg::Rights { files: false, ..Default::default() });
+    reading.store(true, Ordering::Release);
+    spin(&mut h, |_| phone.is_finished());
+    let l = phone.join().expect("le téléphone a reçu sa réponse");
+    assert!(l.error.contains("parcourir les dossiers") && l.entries.is_empty(), "{l:?}");
+}
+
 #[test]
 fn a_notification_leads_the_phone_to_its_screen() {
     let mut h = suite();
