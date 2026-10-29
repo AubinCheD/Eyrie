@@ -648,11 +648,11 @@ fn push_light(core: &mut Core) {
         for slot in &core.slots {
             let status = slot.module().and_then(|m| {
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    (m.status(), m.commands(), m.mobile_waiting())
+                    (m.status(), m.commands(), m.mobile_waiting(), m.mobile_status())
                 }))
                 .ok()
             });
-            let (status, module_commands, waiting) = status.unwrap_or_default();
+            let (status, module_commands, waiting, phone_line) = status.unwrap_or_default();
             let reason = match &slot.state {
                 SlotState::Running(_) => String::new(),
                 SlotState::Disabled => "Désactivé sur le PC".into(),
@@ -681,7 +681,8 @@ fn push_light(core: &mut Core) {
                 running: slot.is_running(),
                 reason,
                 badge: status.badge.map(|b| Badge { count: b.count, tone: tone(b.tone), tip: b.tip }),
-                status: status.status_line.map(|l| status_for_phone(l.text)).unwrap_or_default(),
+                // La ligne écrite pour la carte du téléphone, sinon celle de la barre du PC.
+                status: phone_line.or(status.status_line.map(|l| l.text)).map(status_for_phone).unwrap_or_default(),
                 summary: slot.info.summary.into(),
             });
         }

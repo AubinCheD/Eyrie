@@ -239,26 +239,30 @@ impl Gringotts {
         });
     }
 
+    /// Les limites en cours du compte relevé en dernier : la part de ses deux fenêtres, dans l'ordre de `Kind::ALL` (0 %
+    /// sans fenêtre en cours), et l'heure où celle de 5 h se remet à zéro.
+    fn limits(&self, now: i64) -> Option<([f64; 2], Option<i64>)> {
+        let a = self.analysis.accounts.first()?;
+        let pcts = Kind::ALL.map(|kind| a.window(kind).map_or(0.0, |w| current(w, now)));
+        Some((pcts, a.window(Kind::FiveHour).map(|w| w.resets_at).filter(|at| *at > now)))
+    }
+
     /// Les limites en cours, pour la barre d'état : le compte relevé en dernier, ses deux fenêtres toujours (0 % sans
     /// fenêtre en cours), et le détail de tous en infobulle.
     fn status_text(&self) -> StatusText {
         let now = now();
-        let Some(a) = self.analysis.accounts.first() else {
+        let Some((pcts, reset)) = self.limits(now) else {
             return StatusText {
                 text: "Limites Claude : relais à installer".into(),
                 tone: Tone::Info,
                 tip: "Gringotts relève les limites par la ligne d'état de Claude Code : Réglages › Gringotts.".into(),
             };
         };
-        let mut worst: f64 = 0.0;
-        let mut parts = Vec::new();
-        for kind in Kind::ALL {
-            let p = a.window(kind).map_or(0.0, |w| current(w, now));
-            worst = worst.max(p);
-            parts.push(format!("{} {}", kind.label(), readings::pct_text(p)));
-        }
-        if let Some(w) = a.window(Kind::FiveHour).filter(|w| w.resets_at > now) {
-            parts.push(format!("↻ {}", readings::local(w.resets_at, "%H:%M")));
+        let worst = pcts.into_iter().fold(0.0, f64::max);
+        let mut parts: Vec<String> =
+            Kind::ALL.iter().zip(pcts).map(|(kind, p)| format!("{} {}", kind.label(), readings::pct_text(p))).collect();
+        if let Some(at) = reset {
+            parts.push(format!("↻ {}", readings::local(at, "%H:%M")));
         }
         let tone = if worst >= 100.0 {
             Tone::Danger
@@ -397,6 +401,19 @@ impl Module for Gringotts {
         if id == "relire" {
             self.rescan();
         }
+    }
+
+    /// La ligne de sa carte sur le téléphone : « 5 h 38 % · sem. 61 % · 🔄 14:20 ». Celle de la barre y était coupée
+    /// avant l'heure de remise à zéro. Chaque partie reste d'un seul tenant (espaces fines insécables, que Slint ne coupe
+    /// pas) : sur deux lignes, la carte ne passe à la ligne qu'après un « · ». Sans relevé, celle de la barre.
+    fn mobile_status(&self) -> Option<String> {
+        let (pcts, reset) = self.limits(now())?;
+        let mut parts: Vec<String> =
+            ["5 h", "sem."].iter().zip(pcts).map(|(label, p)| format!("{label} {}", readings::pct_text(p))).collect();
+        if let Some(at) = reset {
+            parts.push(format!("🔄 {}", readings::local(at, "%H:%M")));
+        }
+        Some(parts.iter().map(|p| p.replace(' ', "\u{202f}")).collect::<Vec<_>>().join("\u{202f}· "))
     }
 
     /// Accueil : limites, coût du jour, conversations les plus coûteuses ; `conv/<id>` : le détail d'une conversation.

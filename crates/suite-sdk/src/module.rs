@@ -194,6 +194,12 @@ pub trait Module {
 
     // --- Le téléphone (voir `docs/mobile.md`) ---
 
+    /// La ligne d'état de sa carte sur le téléphone, quand celle de la barre du PC y serait coupée (la carte fait la
+    /// moitié d'un écran de 360 px, sur deux lignes au plus). `None` : celle de la barre (`status().status_line`).
+    fn mobile_status(&self) -> Option<String> {
+        None
+    }
+
     /// L'écran `path` du module sur le téléphone (`""` : son accueil). `None` : pas d'écran mobile, l'hôte en montre
     /// un générique (état, ce qui attend, commandes).
     fn mobile_screen(&mut self, _path: &str, _cx: &mut Cx) -> Option<mobile::ui::Screen> {

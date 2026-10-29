@@ -996,6 +996,73 @@ fn the_generic_screen_restarts_a_stopped_module_and_says_a_command_left() {
     assert!(actions.contains(&"Fragile › Réessayer"), "{actions:?}");
 }
 
+/// Une ligne d'état écrite aussi pour le téléphone, plus courte que celle de la barre du PC (comme Gringotts).
+struct Court {
+    info: ModuleInfo,
+}
+
+fn court_info() -> ModuleInfo {
+    ModuleInfo { id: "court", name: "Court", icon: "c", summary: "essai de la ligne d'état du téléphone", ..info() }
+}
+
+fn build_court(_: &suite_sdk::BuildCx) -> Result<Box<dyn Module>, Unavailable> {
+    Ok(Box::new(Court { info: court_info() }))
+}
+
+impl Module for Court {
+    fn info(&self) -> &ModuleInfo {
+        &self.info
+    }
+
+    fn logic(&mut self, _ctx: &egui::Context, _cx: &mut Cx) {}
+
+    fn ui(&mut self, _ui: &mut egui::Ui, _view: &str, _cx: &mut Cx) {}
+
+    fn status(&self) -> ModuleStatus {
+        let text = "Claude 5 h 38 % · semaine 61 % · ↻ 14:30".into();
+        ModuleStatus {
+            status_line: Some(StatusText { text, tone: Tone::Ok, tip: String::new() }),
+            ..Default::default()
+        }
+    }
+
+    fn mobile_status(&self) -> Option<String> {
+        Some("5 h 38 % · sem. 61 % · 🔄 14:30".into())
+    }
+}
+
+/// La carte d'un module qui écrit sa ligne d'état pour le téléphone la montre (celle de la barre du PC était coupée
+/// avant l'heure sur la carte de Gringotts) ; celle d'un module qui n'en écrit pas garde la ligne de la barre. La
+/// barre du PC ne change pas.
+#[test]
+fn a_card_shows_the_status_line_written_for_the_phone() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = suite();
+    {
+        let ctx = h.ctx.clone();
+        let s = h.state_mut();
+        let mut slot = Slot::new(court_info(), build_court);
+        let cc = eframe::CreationContext::_new_kittest(ctx);
+        slot.start(&cc, &s.core.host, suite_sdk::DataMode::Shared, &mut s.core.journal);
+        s.core.slots.push(slot);
+    }
+    let cards = with_phone(
+        &mut h,
+        |_| {},
+        |c| {
+            until(c, |m| match m {
+                ToPhone::Modules { modules } => Some(modules),
+                _ => None,
+            })
+        },
+    );
+    let status = |id: &str| cards.iter().find(|c| c.id == id).map(|c| c.status.as_str());
+    assert_eq!(status("court"), Some("5 h 38 % · sem. 61 % · 🔄 14:30"));
+    assert_eq!(status("factice"), Some("Claude 5 h 38 % · 🔄 14:30"), "celle de la barre, sans ↻");
+    h.run_steps(2);
+    assert!(h.query_by_label("Claude 5 h 38 % · semaine 61 % · ↻ 14:30").is_some(), "la barre du PC");
+}
+
 /// La clé du veilleur arrive pendant qu'un téléphone est connecté : il reçoit un nouveau `Welcome` avec son secret et
 /// son identifiant ; Eyrie qui se ferme lui dit `Bye { closing: true }` (« Eyrie est fermée », pas « hors ligne »).
 #[test]

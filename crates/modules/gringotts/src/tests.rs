@@ -157,6 +157,21 @@ fn the_status_line_keeps_the_highest_rate_and_both_windows() {
     assert!(text.starts_with("Claude 5 h 0 % · semaine 23 %"), "{text}");
 }
 
+/// La carte du téléphone a sa propre ligne, plus courte que celle de la barre (qui y était coupée avant l'heure) :
+/// 5 h, semaine et l'heure de remise à zéro, chaque partie d'un seul tenant pour ne passer à la ligne qu'après un
+/// « · ». La barre du PC ne change pas ; sans relevé, la carte garde sa ligne.
+#[test]
+fn the_phone_card_gets_a_shorter_line_with_the_reset_time() {
+    let g = gringotts("carte");
+    let bar = g.status().status_line.unwrap().text;
+    assert!(bar.starts_with("Claude 5 h 35 % · semaine 45 % · ↻ "), "{bar}");
+    let reset = bar.rsplit("↻ ").next().unwrap();
+    let n = '\u{202f}';
+    assert_eq!(g.mobile_status().unwrap(), format!("5{n}h{n}35{n}%{n}· sem.{n}45{n}%{n}· 🔄{n}{reset}"));
+    let empty = Gringotts::open(host("carte-vide"), host("carte-vide").module_dir(ID), Vec::new(), false);
+    assert_eq!(empty.mobile_status(), None);
+}
+
 #[test]
 fn without_readings_the_view_offers_to_install_the_relay() {
     let mut g = Gringotts::open(host("sans"), host("sans").module_dir(ID), vec![Profile::default_profile()], false);

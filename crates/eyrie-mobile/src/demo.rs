@@ -58,6 +58,8 @@ fn card(id: &str, name: &str, glyph: &str, color: u32, badge: Option<(u32, Tone)
 }
 
 fn modules() -> Vec<ModuleCard> {
+    // La ligne que Gringotts écrit pour sa carte (`mobile_status`), chaque partie d'un seul tenant.
+    let gringotts = ["5 h 38 %", "sem. 61 %", "🔄 17:40"].map(|p| p.replace(' ', "\u{202f}")).join("\u{202f}· ");
     vec![
         card("fawkes", "Fawkes", "🔥", 0xf26d3b, Some((1, Tone::Warn)), "6 terminaux"),
         card("dragontree", "DragonTree", "🌳", 0xe08a5c, None, "Ozmo · main ↑2"),
@@ -65,8 +67,7 @@ fn modules() -> Vec<ModuleCard> {
         card("patronus", "Patronus", "🦌", 0x9fc5ff, Some((2, Tone::Info)), "1 tâche en cours"),
         card("menagerie", "Menagerie", "🐾", 0x4cb872, None, "4 services"),
         card("grimoire", "Grimoire", "📖", 0xb07ce0, None, "2 profils"),
-        // La ligne d'état de la barre du PC, son ↻ remplacé par le pont.
-        card("gringotts", "Gringotts", "🏦", 0xe8b84a, None, "Claude 5 h 38 % · semaine 61 % · 🔄 17:40"),
+        card("gringotts", "Gringotts", "🏦", 0xe8b84a, None, &gringotts),
         card("carnet", "Carnet", "🗒", 0x8a919d, None, ""),
     ]
 }
