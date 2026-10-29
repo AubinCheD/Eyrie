@@ -240,9 +240,11 @@ export component TermView inherits Rectangle {
     in-out property <bool> copy-visible;
     // La dictée (voir `dictee.rs`) : le micro se montre si le téléphone sait reconnaître la parole, que la saisie est
     // permise et n'est pas masquée (jamais un mot de passe). `listening` : il écoute pour ce terminal (micro rouge,
-    // « J'écoute… » et le texte provisoire au-dessus du champ) ; `sends` : le texte dicté partira aussitôt (réglage).
+    // « J'écoute… » et le texte provisoire au-dessus du champ ; « Un instant… » tant que le micro ne s'est pas ouvert,
+    // `dictation-starting`) ; `sends` : le texte dicté partira aussitôt (réglage).
     in property <bool> can-dictate;
     in property <bool> listening;
+    in property <bool> dictation-starting;
     in property <bool> dictation-stopping;
     in property <string> heard;
     in property <float> level;
@@ -673,6 +675,7 @@ export component TermView inherits Rectangle {
                 x: 18px;
                 y: 8px;
                 width: parent.width - 36px;
+                starting: root.dictation-starting;
                 stopping: root.dictation-stopping;
                 heard: root.heard;
                 // Espace fine insécable (\u{202f}) avant « : », comme `view::tied`. Claude attend un choix : rien ne
@@ -762,6 +765,7 @@ export component TermView inherits Rectangle {
                     alignment: end;
                     MicButton {
                         listening: root.listening;
+                        starting: root.dictation-starting;
                         stopping: root.dictation-stopping;
                         level: root.level;
                         clicked => { root.dictate(); }

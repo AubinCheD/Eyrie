@@ -2266,6 +2266,7 @@ impl Controller {
         let term = d.active() && matches!(d.target, Some(dictee::Target::Term { .. }));
         ui.set_term_listening(term);
         ui.set_input_listening(d.active() && !term);
+        ui.set_dictation_starting(d.phase == dictee::Phase::Starting);
         ui.set_dictation_stopping(d.phase == dictee::Phase::Stopping);
         ui.set_dictation_heard(d.partial.as_str().into());
         ui.set_dictation_level(d.level);
@@ -2295,13 +2296,14 @@ impl Controller {
             self.toast(dictee::UNAVAILABLE, 3);
             return;
         }
-        platform::haptic();
+        // Pour écouter, la vibration attend que le micro s'ouvre (`on_heard`) : elle dit « parlez ».
         match self.dictation.tap(target) {
             Tap::Start(seq) => {
                 let on_device = self.recognizer == Recognizer::OnDevice;
                 platform::start_dictation(seq, on_device, Box::new(|seq, heard| post(move |c| c.on_heard(seq, heard))));
             }
             Tap::Stop => {
+                platform::haptic();
                 platform::stop_dictation();
                 let seq = self.dictation.seq();
                 slint::Timer::single_shot(dictee::STOP_WITHIN, move || {
@@ -2314,7 +2316,10 @@ impl Controller {
                     });
                 });
             }
-            Tap::Cancel => platform::cancel_dictation(),
+            Tap::Cancel => {
+                platform::haptic();
+                platform::cancel_dictation();
+            }
             Tap::Nothing => {}
         }
         self.refresh_dictation();
@@ -2322,12 +2327,16 @@ impl Controller {
 
     /// Ce qu'entend la reconnaissance, pour l'écoute `seq`.
     pub(crate) fn on_heard(&mut self, seq: u32, heard: Heard) {
+        let starting = self.dictation.phase == dictee::Phase::Starting;
         match self.dictation.heard(seq, heard) {
             Outcome::Stale => return,
             // Le micro s'est ouvert alors que l'application passait en arrière-plan : abandonné.
             Outcome::Update => {
                 if platform::in_background() && self.dictation.paused() {
                     platform::cancel_dictation();
+                } else if starting && self.dictation.phase == dictee::Phase::Listening {
+                    // Le micro vient de s'ouvrir : on peut parler.
+                    platform::haptic();
                 }
             }
             Outcome::Text(target, text) => self.dictated(&target, &text),
@@ -3448,7 +3457,7 @@ mod tests {
             seq
         })
         .unwrap();
-        assert!(ui.get_term_listening());
+        assert!(ui.get_term_listening() && !ui.get_dictation_starting());
         assert_eq!((ui.get_dictation_heard().as_str(), ui.get_term_draft().as_str()), ("le diff", "relis"));
         with(|c| {
             c.term_dictate();
@@ -3469,6 +3478,25 @@ mod tests {
         assert!(!ui.get_term_listening(), "un autre terminal : l'écoute s'abandonne");
         with(|c| c.on_heard(seq, Heard::Final("ailleurs".into())));
         assert_eq!(ui.get_term_draft().as_str(), "", "rien dans la saisie du nouveau terminal");
+    }
+
+    /// Le micro touché ne s'ouvre pas tout de suite (la reconnaissance se lie, son modèle se charge) : « Un instant… »
+    /// jusqu'à ce qu'Android dise qu'il écoute, ou donne un premier texte ; ce qui serait dit avant serait perdu.
+    #[test]
+    fn the_mic_says_to_wait_until_it_is_open() {
+        let ui = dictating_terminal("dictee-instant");
+        with(|c| c.term_dictate());
+        assert!(ui.get_term_listening() && ui.get_dictation_starting(), "pas encore ouvert");
+        with(|c| c.on_heard(c.dictation.seq(), Heard::Ready));
+        assert!(ui.get_term_listening() && !ui.get_dictation_starting(), "ouvert : on peut parler");
+        with(|c| {
+            c.drop_dictation(None);
+            c.term_dictate();
+            c.on_heard(c.dictation.seq(), Heard::Partial("bonjour".into()));
+        });
+        assert!(ui.get_term_listening() && !ui.get_dictation_starting(), "un texte : le micro était ouvert");
+        with(|c| c.drop_dictation(None));
+        assert!(!ui.get_term_listening() && !ui.get_dictation_starting());
     }
 
     /// Une saisie masquée (un mot de passe demandé) ou la liaison coupée abandonnent l'écoute ; masquée, le micro ne

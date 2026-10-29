@@ -106,10 +106,11 @@ export component AppWindow inherits Window {
     // --- Dictée (voir `dictee.rs`) ---
     // Le téléphone sait reconnaître la parole : le micro se montre (terminal, saisie sur plusieurs lignes).
     in property <bool> can-dictate;
-    // Il écoute pour le terminal, ou pour la saisie ouverte ; la fin est demandée ; le texte provisoire ; le niveau du
-    // son (de 0 à 1).
+    // Il écoute pour le terminal, ou pour la saisie ouverte ; le micro ne s'est pas encore ouvert (« Un instant… » :
+    // ce qui serait dit déjà serait perdu) ; la fin est demandée ; le texte provisoire ; le niveau du son (de 0 à 1).
     in property <bool> term-listening;
     in property <bool> input-listening;
+    in property <bool> dictation-starting;
     in property <bool> dictation-stopping;
     in property <string> dictation-heard;
     in property <float> dictation-level;
@@ -638,6 +639,7 @@ export component AppWindow inherits Window {
                         haptic => { root.haptic(); }
                         can-dictate: root.can-dictate;
                         listening: root.term-listening;
+                        dictation-starting: root.dictation-starting;
                         dictation-stopping: root.dictation-stopping;
                         heard: root.dictation-heard;
                         level: root.dictation-level;
@@ -828,12 +830,14 @@ export component AppWindow inherits Window {
                         alignment: start;
                         MicButton {
                             listening: root.input-listening;
+                            starting: root.dictation-starting;
                             stopping: root.dictation-stopping;
                             level: root.dictation-level;
                             clicked => { root.input-dictate(root.pending); }
                         }
                     }
                     if root.input-listening: ListenLine {
+                        starting: root.dictation-starting;
                         stopping: root.dictation-stopping;
                         heard: root.dictation-heard;
                         hint: "Parlez, puis touchez le micro rouge\u{202f}: le texte s'ajoute au champ.";

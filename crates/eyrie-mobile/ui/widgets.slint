@@ -275,19 +275,20 @@ export component IconButton inherits Rectangle {
 }
 
 // Le micro de la dictée (voir `dictee.rs`) : un toucher écoute, un second finit, et le texte entendu s'ajoute à la
-// saisie. Rouge pendant l'écoute, un halo suit le niveau du son (`level`, de 0 à 1) ; pâli quand la fin est demandée,
-// le temps que le texte final arrive.
+// saisie. Rouge pendant l'écoute, un halo suit le niveau du son (`level`, de 0 à 1) ; pâli tant que le micro ne s'est
+// pas ouvert (`starting` : un toucher abandonne), et quand la fin est demandée, le temps que le texte final arrive.
 export component MicButton inherits Rectangle {
     in property <bool> listening;
+    in property <bool> starting;
     in property <bool> stopping;
     in property <float> level;
     callback clicked();
     width: 42px;
     height: 42px;
     accessible-role: button;
-    accessible-label: root.listening ? "Finir la dictée" : "Dicter";
+    accessible-label: root.starting ? "Annuler la dictée" : root.listening ? "Finir la dictée" : "Dicter";
     accessible-action-default => { root.clicked(); }
-    if root.listening: Rectangle {
+    if root.listening && !root.starting: Rectangle {
         width: root.width + 16px * root.level;
         height: self.width;
         border-radius: self.width / 2;
@@ -298,7 +299,7 @@ export component MicButton inherits Rectangle {
         border-radius: root.width / 2;
         background: root.listening ? (ta.pressed ? Theme.danger.darker(0.2) : Theme.danger)
             : ta.pressed ? Theme.pressed : Theme.surface-2;
-        opacity: root.stopping ? 0.55 : 1;
+        opacity: root.starting || root.stopping ? 0.55 : 1;
         animate background { duration: 120ms; }
         Icon {
             kind: "mic";
@@ -311,16 +312,19 @@ export component MicButton inherits Rectangle {
     }
 }
 
-// L'écoute de la dictée : « J'écoute… », puis le texte provisoire, en italique (il n'est pas encore dans la saisie),
-// dont on voit la fin sur `lines` lignes ; `hint` tant que rien n'est entendu.
+// L'écoute de la dictée : « Un instant… » tant que le micro ne s'est pas ouvert (`starting` : ce qui serait dit déjà
+// serait perdu), « J'écoute… », puis le texte provisoire, en italique (il n'est pas encore dans la saisie), dont on
+// voit la fin sur `lines` lignes ; `hint` tant que rien n'est entendu.
 export component ListenLine inherits Rectangle {
+    in property <bool> starting;
     in property <bool> stopping;
     in property <string> heard;
     in property <string> hint;
     in property <int> lines: 2;
     height: col.preferred-height;
     accessible-role: AccessibleRole.text;
-    accessible-label: (root.stopping ? "Fin de la dictée" : "J'écoute") + (root.heard != "" ? " : " + root.heard : "");
+    accessible-label: (root.starting ? "Un instant" : root.stopping ? "Fin de la dictée" : "J'écoute")
+        + (root.heard != "" ? " : " + root.heard : "");
     probe := Text {
         visible: false;
         text: root.lines >= 3 ? "X\nX\nX" : "X\nX";
@@ -336,11 +340,11 @@ export component ListenLine inherits Rectangle {
                     width: 8px;
                     height: 8px;
                     border-radius: 4px;
-                    background: Theme.danger;
+                    background: root.starting ? Theme.text-faint : Theme.danger;
                 }
             }
             Text {
-                text: root.stopping ? "Fin de la dictée…" : "J'écoute…";
+                text: root.starting ? "Un instant…" : root.stopping ? "Fin de la dictée…" : "J'écoute…";
                 color: Theme.text;
                 font-size: 14px;
                 font-weight: 600;
@@ -354,7 +358,7 @@ export component ListenLine inherits Rectangle {
                 y: min(0px, parent.height - self.height);
                 width: parent.width;
                 height: self.preferred-height;
-                text: root.heard != "" ? root.heard : root.hint;
+                text: root.heard != "" ? root.heard : root.starting ? "" : root.hint;
                 color: root.heard != "" ? Theme.text-dim : Theme.text-faint;
                 font-size: 14px;
                 font-italic: root.heard != "";

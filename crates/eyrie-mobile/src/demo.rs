@@ -16,9 +16,9 @@
 //! `terminal-ctrl-coller` (Ctrl collé, puis Coller : relâché), `terminal-saisie` (sur plusieurs lignes),
 //! `terminal-masque` (un mot de passe demandé : la saisie se masque), `terminal-zoom`, `terminal-suivi` (le bas
 //! reste en vue quand la liste rapetisse), `terminal-remonte` (la sortie qui arrive ne ramène pas en bas) ; la
-//! dictée : `terminal-dictee` (le micro écoute, le texte provisoire au-dessus de la saisie), `saisie-dictee` (une
-//! consigne de Patronus, sur plusieurs lignes, dictée). Suffixe `+clair` ou `+sombre` : le thème (sinon celui du
-//! système).
+//! dictée : `terminal-dictee` (le micro écoute, le texte provisoire au-dessus de la saisie), `terminal-dictee-instant`
+//! (le micro touché, pas encore ouvert : « Un instant… »), `saisie-dictee` (une consigne de Patronus, sur plusieurs
+//! lignes, dictée). Suffixe `+clair` ou `+sombre` : le thème (sinon celui du système).
 
 use slint::ComponentHandle;
 use suite_mobile::msg::{
@@ -855,6 +855,14 @@ fn terminal_scene(ui: &AppWindow, scene: &str) {
                 c.demo_heard(Heard::Ready);
                 c.demo_heard(Heard::Partial("et propose un titre de commit en français au style du journal".into()));
                 c.demo_heard(Heard::Level(0.6));
+            });
+        }
+        // Le micro touché, pas encore ouvert par Android : « Un instant… », le micro pâli ; rien à dire encore.
+        "terminal-dictee-instant" => {
+            ui.set_term_draft("Relis le diff ci-dessus".into());
+            with(|c| {
+                c.demo_recognizer(Recognizer::OnDevice);
+                c.term_dictate();
             });
         }
         // Une longue sortie, suivie en bas ; puis la liste rapetisse comme quand le clavier du téléphone s'ouvre (ici, la
