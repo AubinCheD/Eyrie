@@ -24,6 +24,7 @@ use suite_mobile::msg::{
     ENTRY_CLOUD, ENTRY_DENIED, ENTRY_DRIVE, ENTRY_HIDDEN, ENTRY_KNOWN, ENTRY_LINK, ENTRY_REPO, FolderEntry, Listing,
     PlaceGroup, ToPhone,
 };
+use suite_mobile::paths::protected_name;
 use suite_mobile::ui::{FOLDER_ANY, FOLDER_PARENT, FOLDER_REPO, FolderInput, Tone};
 
 /// Dossiers par page.
@@ -44,19 +45,6 @@ const MAX_ROOTS: usize = 6;
 /// Le libellé de la racine du sélecteur.
 const ROOT: &str = "Ce PC";
 const NETWORK: &str = "Chemin réseau refusé : seuls les disques du PC sont proposés.";
-
-/// Noms de dossiers refusés où qu'ils soient : secrets (clés, jetons) et dossiers du système.
-const FORBIDDEN_NAMES: [&str; 9] = [
-    ".ssh",
-    ".gnupg",
-    ".aws",
-    ".azure",
-    ".kube",
-    ".docker",
-    ".password-store",
-    "$recycle.bin",
-    "system volume information",
-];
 
 /// Attributs de fichier de Windows (`FILE_ATTRIBUTE_…`).
 const HIDDEN: u32 = 0x2;
@@ -276,12 +264,10 @@ fn fixed(env: &Env, text: &str) -> Result<(), String> {
     }
 }
 
-/// `p` est dans une zone interdite : sous un nom de [`FORBIDDEN_NAMES`], dans une zone de l'environnement, dans le
-/// profil d'un autre utilisateur.
+/// `p` est dans une zone interdite : sous un nom protégé (`.ssh`, `.aws`… : [`protected_name`]), dans une zone de
+/// l'environnement, dans le profil d'un autre utilisateur.
 fn protected(env: &Env, p: &Path) -> bool {
-    let named = p.components().any(
-        |c| matches!(c, Component::Normal(n) if FORBIDDEN_NAMES.contains(&n.to_string_lossy().to_lowercase().as_str())),
-    );
+    let named = p.components().any(|c| matches!(c, Component::Normal(n) if protected_name(&n.to_string_lossy())));
     let zoned = env.forbidden.iter().any(|z| inside(p, z));
     let other_profile = env
         .profiles
@@ -406,11 +392,15 @@ fn rule(env: &Env, dir: &Path, spec: &FolderInput) -> Result<(PathBuf, bool), St
             match std::fs::symlink_metadata(&target) {
                 Err(e) if e.kind() == ErrorKind::NotFound => Ok((target, true)),
                 Err(e) => Err(format!("{} : {e}", target.display())),
-                Ok(m) if m.is_dir() => match std::fs::read_dir(&target).map(|mut r| r.next().is_none()) {
-                    Ok(true) => Ok((target, false)),
-                    Ok(false) => Err(format!("{} existe déjà et n'est pas vide.", target.display())),
-                    Err(e) => Err(format!("{} : {e}", target.display())),
-                },
+                Ok(m) if m.is_dir() => {
+                    // Un dossier existant peut être écrit sous son nom court (`AWS~1` pour `.aws`) : contrôlé résolu.
+                    check(env, &target.to_string_lossy())?;
+                    match std::fs::read_dir(&target).map(|mut r| r.next().is_none()) {
+                        Ok(true) => Ok((target, false)),
+                        Ok(false) => Err(format!("{} existe déjà et n'est pas vide.", target.display())),
+                        Err(e) => Err(format!("{} : {e}", target.display())),
+                    }
+                }
                 Ok(_) => Err(format!("{} existe déjà.", target.display())),
             }
         }
@@ -1138,6 +1128,17 @@ mod tests {
             assert!(chosen(&env, Some(&at("parent")), &parent(bad)).is_err(), "{bad}");
         }
         assert!(chosen(&env, Some(&at("")), &parent("zone")).unwrap_err().contains("protégé"));
+        for name in [".aws", ".KUBE", ".password-store"] {
+            assert!(chosen(&env, Some(&at("parent")), &parent(name)).unwrap_err().contains("protégé"), "{name}");
+        }
+        // Un dossier protégé vide, écrit sous son nom court (`AWS~1`) : la destination est contrôlée résolue.
+        mkdir(&root.join(r"parent\.aws"));
+        let aws = long(&root.join(r"parent\.aws"));
+        if let Some(short) = short_name(&aws).and_then(|s| s.file_name().map(|n| n.to_string_lossy().into_owned()))
+            && short != ".aws"
+        {
+            assert!(chosen(&env, Some(&at("parent")), &parent(&short)).unwrap_err().contains("protégé"), "{short}");
+        }
         let unknown = FolderInput { want: 9, ..Default::default() };
         assert!(chosen(&env, Some(&at("simple")), &unknown).is_err());
     }

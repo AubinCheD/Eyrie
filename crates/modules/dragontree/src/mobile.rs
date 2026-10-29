@@ -54,6 +54,7 @@ use dragontree_git::{
     LogOrder, LogScope, Oid, Repo, StatusEntry, StatusSnapshot,
 };
 use suite_sdk::mobile::msg::OPEN_PREFIX;
+use suite_sdk::mobile::paths::protected_name;
 use suite_sdk::mobile::ui::{
     Act, Block, FOLDER_PARENT, FOLDER_REPO, FolderInput, GraphCell, PROGRESS_UNKNOWN, Place, Screen, Tone,
 };
@@ -444,9 +445,6 @@ fn read_state(git: &Result<Git, String>, path: &Path) -> RepoState {
     quick_state(dragontree_app::repo_list::quick_status(git, path), repo_head(path))
 }
 
-/// Des noms de dossiers où le téléphone ne fait jamais ouvrir de dépôt, où qu'ils soient (en minuscules).
-const FORBIDDEN_NAMES: [&str; 3] = [".ssh", "$recycle.bin", "system volume information"];
-
 /// Les dossiers où le téléphone ne fait pas ouvrir de dépôt (`docs/mobile.md` §5) : Windows, les programmes, les
 /// données des applications (celles d'Eyrie et de la suite comprises), et `profile`, celui de DragonTree.
 fn forbidden_zones(profile: Option<&Path>) -> Vec<PathBuf> {
@@ -507,31 +505,35 @@ fn check_repo_dir(dir: &Path, forbidden: &[PathBuf]) -> Result<PathBuf, String> 
 }
 
 /// La destination d'un clonage demandé depuis le téléphone : le dossier parent, un dossier du PC ([`check_pc_dir`]), et
-/// le dossier `folder` dedans, hors des dossiers protégés, absent ou vide (un clone crée sa destination). Rend le
-/// dossier parent résolu : c'est lui que DragonTree reçoit.
+/// le dossier `folder` dedans, hors des dossiers protégés (les mêmes noms que pour le pont : [`protected_name`]), absent
+/// ou vide (un clone crée sa destination). Rend le dossier parent résolu : c'est lui que DragonTree reçoit.
 pub(crate) fn check_clone_target(parent: &Path, folder: &str, forbidden: &[PathBuf]) -> Result<PathBuf, String> {
     let full = check_pc_dir(parent, forbidden)?;
     let target = full.join(folder);
-    let named = FORBIDDEN_NAMES.contains(&folder.to_lowercase().as_str());
+    let named = protected_name(folder);
     if named || forbidden.iter().any(|z| inside(&target, z) || resolved(z).is_some_and(|z| inside(&target, &z))) {
         return Err(format!("{} : dossier protégé, refusé depuis le téléphone.", target.display()));
     }
     match std::fs::symlink_metadata(&target) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(full),
         Err(e) => Err(format!("{} : {e}", target.display())),
-        Ok(m) if m.is_dir() => match std::fs::read_dir(&target).map(|mut r| r.next().is_none()) {
-            Ok(true) => Ok(full),
-            Ok(false) => Err(format!("{} existe déjà et n'est pas vide.", target.display())),
-            Err(e) => Err(format!("{} : {e}", target.display())),
-        },
+        Ok(m) if m.is_dir() => {
+            // Un dossier existant peut être écrit sous son nom court (`AWS~1` pour `.aws`) : contrôlé résolu.
+            check_pc_dir(&target, forbidden)?;
+            match std::fs::read_dir(&target).map(|mut r| r.next().is_none()) {
+                Ok(true) => Ok(full),
+                Ok(false) => Err(format!("{} existe déjà et n'est pas vide.", target.display())),
+                Err(e) => Err(format!("{} : {e}", target.display())),
+            }
+        }
         Ok(_) => Err(format!("{} existe déjà.", target.display())),
     }
 }
 
 /// Un dossier désigné depuis le téléphone, contrôlé ici même si le pont l'a fait avant (`docs/mobile.md` §5) : un chemin
 /// `X:\…` d'un disque du PC ([`drive_path`]) ; résolu (noms courts, jonctions, liens), un dossier local, hors des
-/// dossiers interdits `forbidden` et des [`FORBIDDEN_NAMES`]. Rend le chemin résolu. (Le pont vérifie de plus que le
-/// lecteur est un disque fixe.)
+/// dossiers interdits `forbidden` et des noms protégés du pont ([`protected_name`] : `.ssh`, `.aws`…). Rend le chemin
+/// résolu. (Le pont vérifie de plus que le lecteur est un disque fixe.)
 fn check_pc_dir(dir: &Path, forbidden: &[PathBuf]) -> Result<PathBuf, String> {
     let refused = || "Chemin refusé : un dossier d'un disque du PC est attendu (C:\\…).".to_string();
     if !drive_path(&dir.to_string_lossy()) {
@@ -543,9 +545,7 @@ fn check_pc_dir(dir: &Path, forbidden: &[PathBuf]) -> Result<PathBuf, String> {
         return Err(refused());
     }
     for p in [dir, full.as_path()] {
-        let named = p.components().any(|c| {
-            matches!(c, Component::Normal(n) if FORBIDDEN_NAMES.contains(&n.to_string_lossy().to_lowercase().as_str()))
-        });
+        let named = p.components().any(|c| matches!(c, Component::Normal(n) if protected_name(&n.to_string_lossy())));
         let zoned = forbidden.iter().any(|z| inside(p, z) || resolved(z).is_some_and(|z| inside(p, &z)));
         if named || zoned {
             return Err(format!("{} : dossier protégé, refusé depuis le téléphone.", dir.display()));
@@ -1654,6 +1654,57 @@ mod tests {
             let e = check_repo_dir(Path::new(&local), &zones).unwrap_err();
             assert!(e.contains("protégé"), "{e}");
         }
+    }
+
+    /// Le nom court (8.3) d'un dossier existant (`AWS~1`), lu par `cmd` ; `None` si le volume n'en fait pas.
+    fn short_name(p: &Path) -> Option<String> {
+        use std::os::windows::process::CommandExt;
+        // Tel quel : les guillemets sont ceux de `cmd`, pas ceux d'un argument.
+        let out = std::process::Command::new("cmd")
+            .arg("/C")
+            .raw_arg(format!("for %I in (\"{}\") do @echo %~snxI", p.display()))
+            .output()
+            .ok()?;
+        let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let long = p.file_name()?.to_string_lossy().to_lowercase();
+        (out.status.success() && !name.is_empty() && name.to_lowercase() != long).then_some(name)
+    }
+
+    /// Les noms de dossiers de secrets et du système (`.ssh`, `.aws`, `.kube`…) sont refusés où qu'ils soient, comme
+    /// dans le sélecteur du pont : un dépôt ou un dossier parent dessous, et la destination d'un clonage, même absente
+    /// ou vide, même écrite sous son nom court. Un autre nom passe.
+    #[test]
+    fn a_protected_folder_name_is_refused_as_on_the_bridge() {
+        let dir = std::env::temp_dir().join(format!("suite-dragontree-noms-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".kube").join("depot").join(".git")).unwrap();
+        std::fs::create_dir_all(dir.join(".aws")).unwrap();
+        let names = [
+            ".ssh",
+            ".gnupg",
+            ".aws",
+            ".azure",
+            ".kube",
+            ".docker",
+            ".password-store",
+            "$recycle.bin",
+            "system volume information",
+        ];
+        for name in names.into_iter().chain([".AWS", "System Volume Information"]) {
+            let e = check_clone_target(&dir, name, &[]).unwrap_err();
+            assert!(e.contains("protégé"), "{name} : {e}");
+        }
+        let e = check_repo_dir(&dir.join(".kube").join("depot"), &[]).unwrap_err();
+        assert!(e.contains("protégé"), "{e}");
+        let e = check_pc_dir(&dir.join(".kube"), &[]).unwrap_err();
+        assert!(e.contains("protégé"), "{e}");
+        assert!(check_clone_target(&dir, "depot", &[]).is_ok());
+        // `.aws` existe et est vide : son nom court y mènerait.
+        if let Some(short) = short_name(&dir.join(".aws")) {
+            let e = check_clone_target(&dir, &short, &[]).unwrap_err();
+            assert!(e.contains("protégé"), "{short} : {e}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Un dépôt ajouté depuis le téléphone l'est par DragonTree, dans un onglet de fond (l'onglet du PC ne change pas),
@@ -2797,6 +2848,22 @@ mod tests {
         let s = phone.screen(h.state_mut(), path).unwrap();
         assert!(!ids(&s).contains(&"lancer".to_string()) && format!("{s:?}").contains("n'est pas vide"), "{s:?}");
         assert!(act(&mut phone, &mut h, "lancer", "").is_err(), "destination occupée");
+        // Un nom de dossier de secrets (`.aws`, `.kube`…), saisi ou déduit de l'URL, est refusé comme dans le pont, même
+        // absent : le pont ne contrôle que le dossier parent quand le nom vient après.
+        act(&mut phone, &mut h, "nom", ".aws").unwrap();
+        let refused = act(&mut phone, &mut h, "lancer", "").unwrap_err();
+        assert!(refused.contains("protégé"), "{refused}");
+        let s = phone.screen(h.state_mut(), path).unwrap();
+        assert!(!ids(&s).contains(&"lancer".to_string()) && format!("{s:?}").contains("protégé"), "{s:?}");
+        let (other, _) = phone.action(h.state_mut(), "", "cloner", None).unwrap();
+        let other = other.strip_prefix(OPEN_PREFIX).unwrap().to_string();
+        phone.action(h.state_mut(), &other, "dossier", Some(&parent.display().to_string())).unwrap();
+        phone.action(h.state_mut(), &other, "url", Some("https://exemple.org/x/.kube.git")).unwrap();
+        assert_eq!(phone.drafts[&2].folder, ".kube", "déduit de l'URL");
+        let refused = phone.action(h.state_mut(), &other, "lancer", Some("")).unwrap_err();
+        assert!(refused.contains("protégé"), "{refused}");
+        let clones = resolved(&parent).unwrap();
+        assert!(!clones.join(".kube").exists() && !clones.join(".aws").exists(), "rien n'y est cloné");
         act(&mut phone, &mut h, "nom", "copie").unwrap();
         act(&mut phone, &mut h, "branche", "main").unwrap();
         // Le dépôt d'essai est sur le disque : son URL est mise à la main (le téléphone n'en saisit pas de telle).
