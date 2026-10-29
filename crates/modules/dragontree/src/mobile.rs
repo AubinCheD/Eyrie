@@ -2325,18 +2325,28 @@ mod tests {
         let s = wait_gone(&mut h, &mut phone, &base, "n'a pas pu");
         assert!(!format!("{s:?}").contains("n'a pas pu"), "relu, réparé : {s:?}");
 
-        // Plus regardé (aucun écran demandé depuis 3 s) : plus relu, il attend de nouveau qu'on le regarde.
+        // Plus regardé (aucun écran demandé depuis 3 s) : plus relu, il attend de nouveau qu'on le regarde. Une lecture
+        // partie quand il l'était encore (ici « Actualiser ») se termine, et peut voir ce qui change entre-temps : on
+        // l'attend avant de changer le dépôt (celles d'avant elle sont écartées par DragonTree, de génération passée).
+        let read = |h: &H| h.state().repo_tab(&repo).and_then(|t| t.status.clone()).unwrap();
+        let before = read(&h);
+        phone.action(h.state_mut(), &base, "actualiser", None).unwrap();
         phone.focus = Instant::now().checked_sub(FOCUS_FOR * 2);
         phone.after_logic(h.state_mut());
         assert!(phone.focus.is_none());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Arc::ptr_eq(&read(&h), &before) && Instant::now() < deadline {
+            h.step();
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(!Arc::ptr_eq(&read(&h), &before), "la lecture partie quand il était regardé");
         std::fs::write(repo.join("plus-regarde.txt"), "rien\n").unwrap();
         let deadline = Instant::now() + Duration::from_millis(1500);
         while Instant::now() < deadline {
             h.step();
             std::thread::sleep(Duration::from_millis(25));
         }
-        let status = h.state().repo_tab(&repo).and_then(|t| t.status.clone()).unwrap();
-        assert!(!status.entries.iter().any(|e| e.path == "plus-regarde.txt"), "plus regardé : pas relu");
+        assert!(!read(&h).entries.iter().any(|e| e.path == "plus-regarde.txt"), "plus regardé : pas relu");
         drop(h);
         let _ = std::fs::remove_dir_all(&dir);
     }
