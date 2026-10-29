@@ -76,10 +76,13 @@ export component AppWindow inherits Window {
     in property <[TabItem]> tabs;
 
     // --- Terminal ---
+    // Ses lignes d'écran : celles du PC repliées à `term-fit-cols` colonnes (voir `termfit.rs`) ; le curseur parmi elles.
     in property <[TermRow]> term-rows;
-    in property <int> term-cols: 80;
     in property <int> term-cursor-row: -1;
     in property <int> term-cursor-col;
+    out property <int> term-fit-cols: term.fit-cols;
+    // La ligne d'écran en haut de la vue (gardée en haut quand les lignes se replient de nouveau).
+    out property <int> term-top-row: term.top-row;
     // Le zoom du terminal : le pincement le change ici (puis `term-zoomed`), le code le pose au démarrage.
     in-out property <float> term-zoom: 1;
     in property <bool> term-ended;
@@ -215,7 +218,9 @@ export component AppWindow inherits Window {
     callback term-copy(int);
     callback term-copied(bool);
     // La liste du terminal suit-elle encore le bas après ce mouvement (voir `TermView.follows`) ?
-    callback term-follows(bool, bool, length, length, length, length, bool) -> bool;
+    callback term-follows(bool, bool, length, length, length, bool) -> bool;
+    // Le terminal tient un autre nombre de colonnes (`term-fit-cols`) : ses lignes se replient de nouveau.
+    callback term-refit();
     // Le micro du terminal, ou d'une saisie (l'action qui l'a ouverte), touché ; l'écoute à abandonner (`true` : celle
     // du terminal, `false` : celle de la saisie) ; « Envoyer la dictée aussitôt ».
     callback term-dictate();
@@ -240,6 +245,11 @@ export component AppWindow inherits Window {
     // La liste du terminal reste en bas si elle le suit (la sortie qui arrive, une fois mise en page).
     public function term-stick-to-end() {
         term.stick-to-end();
+    }
+
+    // Les lignes repliées de nouveau, la liste remontée : cette ligne d'écran revient en haut.
+    public function term-scroll-to-row(row: int) {
+        term.scroll-to-row(row);
     }
 
     // Le menu ⋯ de l'écran (démonstration, captures).
@@ -637,7 +647,6 @@ export component AppWindow inherits Window {
                     term := TermView {
                         visible: root.terminal-mode;
                         rows: root.term-rows;
-                        cols: root.term-cols;
                         cursor-row: root.term-cursor-row;
                         cursor-col: root.term-cursor-col;
                         zoom <=> root.term-zoom;
@@ -660,9 +669,10 @@ export component AppWindow inherits Window {
                         paste(t) => { root.term-paste(t); }
                         copy(i) => { root.term-copy(i); }
                         copied(all) => { root.term-copied(all); }
-                        follows(follow, user, up, side, gap, row, fits) => {
-                            root.term-follows(follow, user, up, side, gap, row, fits)
+                        follows(follow, user, up, gap, row, fits) => {
+                            root.term-follows(follow, user, up, gap, row, fits)
                         }
+                        refit => { root.term-refit(); }
                         reply(i) => { root.term-reply(i); }
                         zoomed(z) => { root.term-zoomed(z); }
                         haptic => { root.haptic(); }

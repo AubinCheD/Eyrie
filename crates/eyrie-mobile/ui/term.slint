@@ -1,5 +1,6 @@
-// Un terminal du PC, en direct : la grille (couleurs résolues dans le thème du téléphone), ajustée à la largeur de
-// l'écran ; deux doigts la zooment (le zoom est gardé). Dessous : réponses rapides quand Claude attend, barre de touches
+// Un terminal du PC, en direct : ses lignes (couleurs résolues dans le thème du téléphone), à une taille de police
+// lisible, repliées à la largeur de l'écran (`termfit.rs`) : elles ne défilent que de haut en bas ; deux doigts
+// changent la taille (elle est gardée), et les lignes se replient de nouveau. Dessous : réponses rapides quand Claude attend, barre de touches
 // (Ctrl et Alt collants, coller, copier, saisie masquée), champ de saisie (sur plusieurs lignes, il part en collage),
 // avec son micro (la dictée). Un appui long sur la sortie, ou « Copier », montre son texte dans un champ en lecture
 // seule, où l'on sélectionne ce qu'on copie.
@@ -128,21 +129,20 @@ component CopySheet inherits Rectangle {
             flick := Flickable {
                 x: 12px;
                 width: parent.width - 24px;
-                // La souris sélectionne (bureau) ; le doigt fait défiler (dans les deux sens), l'appui long sélectionne.
+                // La souris sélectionne (bureau) ; le doigt fait défiler, l'appui long sélectionne.
                 mouse-drag-pan-enabled: false;
-                content-width: max(self.width, field.preferred-width + 12px);
+                content-width: self.width;
                 content-height: max(self.height, field.preferred-height + 24px);
-                // Les lignes du terminal gardent leurs colonnes (cadres, tableaux, diffs) : rien ne passe à la ligne, le
-                // texte défile de côté.
+                // Comme le terminal, le texte passe à la ligne : il ne défile que de haut en bas.
                 field := TextInput {
                     x: 0;
                     y: 12px;
-                    width: max(flick.width, self.preferred-width);
+                    width: flick.width;
                     height: max(flick.height - 24px, self.preferred-height);
                     text: root.text;
                     read-only: true;
                     single-line: false;
-                    wrap: no-wrap;
+                    wrap: word-wrap;
                     vertical-alignment: top;
                     font-family: "Hack";
                     font-size: 13px;
@@ -156,17 +156,11 @@ component CopySheet inherits Rectangle {
                         if root.placing {
                             root.placing = false;
                             flick.content-y = max(min(0px, flick.height - flick.content-height), min(0px, flick.height / 2 - p.y - 12px));
-                            flick.content-x = 0;
                         } else {
                             if p.y + 12px + flick.content-y < 0 {
                                 flick.content-y = min(0px, 8px - p.y - 12px);
                             } else if p.y + 52px + flick.content-y > flick.height {
                                 flick.content-y = flick.height - p.y - 52px;
-                            }
-                            if p.x + flick.content-x < 0 {
-                                flick.content-x = min(0px, 8px - p.x);
-                            } else if p.x + 24px + flick.content-x > flick.width {
-                                flick.content-x = flick.width - p.x - 24px;
                             }
                         }
                     }
@@ -216,12 +210,12 @@ component CopySheet inherits Rectangle {
 }
 
 export component TermView inherits Rectangle {
+    // Les lignes d'écran (celles du PC repliées à `fit-cols` colonnes), et le curseur parmi elles.
     in property <[TermRow]> rows;
-    in property <int> cols: 80;
     in property <int> cursor-row: -1;
     in property <int> cursor-col;
-    // Le zoom de la police (1 : ajustée à la largeur). Le pincement, A− et A+ le changent ici, puis le disent
-    // (`zoomed`) pour qu'il soit gardé.
+    // Le zoom de la police (1 : 13 px). Le pincement, A− et A+ le changent ici, puis le disent (`zoomed`) pour qu'il
+    // soit gardé.
     in-out property <float> zoom: 1.0;
     in property <bool> ended;
     in property <bool> waiting;
@@ -275,38 +269,47 @@ export component TermView inherits Rectangle {
     // Le micro touché ; l'écoute à abandonner (la saisie s'est masquée).
     callback dictate();
     callback dictation-cancel();
-    // La liste suit-elle encore le bas après ce mouvement (`termscroll::Follower`) : elle le suivait, le doigt l'a fait
-    // bouger, de combien elle est montée, et allée de côté, ce qui reste sous la vue, la hauteur d'une ligne, toute la
-    // sortie tient dans la vue.
-    callback follows(follow: bool, user: bool, up: length, side: length, gap: length, row: length, fits: bool) -> bool;
+    // La liste suit-elle encore le bas après ce mouvement (`termscroll::follows`) : elle le suivait, le doigt l'a fait
+    // bouger, de combien elle est montée, ce qui reste sous la vue, la hauteur d'une ligne, toute la sortie tient dans la
+    // vue.
+    callback follows(follow: bool, user: bool, up: length, gap: length, row: length, fits: bool) -> bool;
+    // Il tient un autre nombre de colonnes dans la largeur (zoom, écran tourné) : le code replie de nouveau les lignes.
+    callback refit();
 
-    // Ajusté à la largeur : la police mono (Hack) avance de 0,602 em par caractère.
-    property <length> fit-font: (root.width - 30px) / (max(root.cols, 20) * 0.602);
-    property <length> fs: max(5px, min(30px, root.fit-font * root.zoom));
-    out property <length> cw: root.fs * 0.602;
+    property <length> fs: max(8px, min(32px, 13px * root.zoom));
+    // La police mono (Hack) avance de 0,602 em par caractère, mais le moteur de rendu arrondit parfois l'avance au
+    // pixel : la largeur d'un caractère est mesurée sur dix, pour que les colonnes comptées tombent sur celles dessinées
+    // (sinon le bout des lignes pleines, le bord droit d'un cadre, sort de l'écran).
+    probe := Text {
+        visible: false;
+        text: "0000000000";
+        font-family: "Hack";
+        font-size: root.fs;
+    }
+    out property <length> cw: probe.preferred-width > 0 ? probe.preferred-width / 10 : root.fs * 0.602;
     out property <length> ch: ceil(root.fs * 1.22 / 1px) * 1px;
+    // Les colonnes qui tiennent dans la largeur, 6 px de marge de chaque côté : le code y replie les lignes du PC.
+    out property <int> fit-cols: max(8, floor((root.width - 12px) / root.cw));
+    // La ligne d'écran en haut de la vue : le code la garde en haut quand il replie de nouveau les lignes.
+    out property <int> top-row: max(0, floor(-list.content-y / root.ch));
     // La position de la liste quand le bas de la sortie est en vue : d'après la hauteur que la liste a donnée à ses
     // lignes une fois mises en page (elle ne va jamais plus bas).
     property <length> end-y: min(0px, list.visible-height - list.content-height);
     // La position de la liste au dernier mouvement vu : le suivant dit dans quel sens elle a bougé.
     property <length> seen-y;
-    property <length> seen-x;
     // Suivies seulement quand le terminal se montre (caché, il n'a rien à garder en vue) : la hauteur de la sortie
     // mise en page, celle de la liste, sa position. Il se montre : la liste reprend le bas si elle le suivait.
     property <length> shown-content-h: root.visible ? list.content-height : -1px;
     property <length> shown-list-h: root.visible ? list.visible-height : -1px;
     property <length> shown-y: root.visible ? list.content-y : 1px;
-    property <length> shown-x: root.visible ? list.content-x : 1px;
     // Le champ de saisie grandit avec ses lignes, jusqu'à cinq environ.
     property <length> input-h: min(116px, max(42px, input.preferred-height + 20px));
 
     // La liste a bougé (`user` : le doigt l'a fait) : suit-elle encore le bas ?
     function moved(user: bool) {
         let up = list.content-y - root.seen-y;
-        let side = list.content-x - root.seen-x;
         root.seen-y = list.content-y;
-        root.seen-x = list.content-x;
-        root.follow = root.follows(root.follow, user, up, side, list.content-y - root.end-y, root.ch, list.content-height <= list.visible-height);
+        root.follow = root.follows(root.follow, user, up, list.content-y - root.end-y, root.ch, list.content-height <= list.visible-height);
     }
 
     // La liste suit le bas : elle y reste (une sortie qui arrive, une autre hauteur). Remontée, elle ne bouge pas.
@@ -314,7 +317,15 @@ export component TermView inherits Rectangle {
         if root.follow {
             list.content-y = root.end-y;
             root.seen-y = list.content-y;
-            root.seen-x = list.content-x;
+        }
+    }
+
+    // Les lignes repliées de nouveau, la vue remontée : cette ligne d'écran (celle qui était en haut) revient en haut.
+    // La liste ne bouge pas par le doigt : le suivi n'en décide pas.
+    public function scroll-to-row(row: int) {
+        if !root.follow {
+            list.content-y = max(root.end-y, -row * root.ch);
+            root.seen-y = list.content-y;
         }
     }
 
@@ -333,17 +344,16 @@ export component TermView inherits Rectangle {
         }
     }
 
-    // Un autre zoom : la liste garde le bas qu'elle suivait, sinon la ligne du haut ; et la colonne de gauche. La ligne
-    // du haut, elle la garde d'elle-même en remettant ses lignes en page à la nouvelle hauteur, tant qu'on ne touche pas
-    // à sa position : la changer ici (dans la nouvelle hauteur, quand elle se repère encore dans l'ancienne) la ferait
-    // glisser de plusieurs lignes vers le bas, près du bas jusqu'au bas, qu'elle suivrait de nouveau.
+    // Un autre zoom : la liste garde le bas qu'elle suivait, sinon la ligne du haut. Celle-ci, elle la garde d'elle-même
+    // en remettant ses lignes en page à la nouvelle hauteur, tant qu'on ne touche pas à sa position : la changer ici
+    // (dans la nouvelle hauteur, quand elle se repère encore dans l'ancienne) la ferait glisser de plusieurs lignes vers
+    // le bas, près du bas jusqu'au bas, qu'elle suivrait de nouveau. Les lignes repliées ensuite (`refit`), le code la
+    // remet en haut (`scroll-to-row`).
     function set-zoom(z: float) {
-        let left = -list.content-x / root.cw;
-        root.zoom = max(0.6, min(3.0, z));
+        root.zoom = max(0.7, min(2.4, z));
         if root.follow {
             root.stick-to-end();
         }
-        list.content-x = max(min(0px, list.visible-width - list.content-width), -left * root.cw);
     }
 
     // Le presse-papiers, lu par un champ caché (le système ne le donne qu'à un champ de texte).
@@ -360,13 +370,12 @@ export component TermView inherits Rectangle {
     changed shown-list-h => {
         root.settle();
     }
-    // La liste a bougé : d'elle-même, ou par le doigt (qui, lui, l'a déjà dit : `scrolled`, `scroll-event`). De côté
-    // aussi (l'élan d'un lancer, un autre zoom) : le mouvement suivant se mesure de là.
+    // La liste a bougé : d'elle-même, ou par le doigt (qui, lui, l'a déjà dit : `scrolled`, `scroll-event`).
     changed shown-y => {
         root.settle();
     }
-    changed shown-x => {
-        root.settle();
+    changed fit-cols => {
+        root.refit();
     }
 
     // Ctrl ou Alt collé : la touche suivante tapée au clavier du téléphone arrive dans `catcher` (qui ouvre le clavier
@@ -462,7 +471,8 @@ export component TermView inherits Rectangle {
                 list := ListView {
                     width: parent.width;
                     height: parent.height;
-                    content-width: root.cols * root.cw + 12px > self.visible-width + 1px ? root.cols * root.cw + 12px : self.visible-width;
+                    // Les lignes sont repliées à la largeur : rien ne dépasse de côté.
+                    content-width: self.visible-width;
                     // La souris la fait défiler comme le doigt (bureau : essais, démonstration ; on n'y sélectionne
                     // rien, le texte à copier s'ouvre à part).
                     mouse-drag-pan-enabled: true;
@@ -511,7 +521,7 @@ export component TermView inherits Rectangle {
                             // La molette (bureau) : la liste ne bougera qu'à l'image suivante (son défilement est
                             // animé), son sens se lit ici. Elle défile ensuite comme d'habitude.
                             scroll-event(e) => {
-                                root.follow = root.follows(root.follow, true, e.delta-y, e.delta-x, list.content-y - root.end-y, root.ch, list.content-height <= list.visible-height);
+                                root.follow = root.follows(root.follow, true, e.delta-y, list.content-y - root.end-y, root.ch, list.content-height <= list.visible-height);
                                 reject
                             }
                         }

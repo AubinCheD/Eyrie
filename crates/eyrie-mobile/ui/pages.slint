@@ -1028,7 +1028,7 @@ export component SettingsPage inherits Rectangle {
                 padding-left: Theme.pad;
                 padding-right: Theme.pad;
                 Segmented {
-                    options: ["Ajusté", "Plus grand", "Très grand"];
+                    options: ["Normal", "Grand", "Très grand"];
                     current: root.text-size;
                     selected(i) => { root.set-text-size(i); }
                 }
@@ -1039,7 +1039,7 @@ export component SettingsPage inherits Rectangle {
                 padding-right: Theme.pad;
                 padding-top: 8px;
                 Text {
-                    text: root.text-size < 0 ? "Taille réglée en pinçant le terminal à deux doigts." : "Pincez le terminal à deux doigts pour régler la taille entre deux.";
+                    text: root.text-size < 0 ? "Taille réglée en pinçant le terminal à deux doigts. Ses lignes se replient à la largeur de l'écran." : "Pincez le terminal à deux doigts pour régler la taille entre deux. Ses lignes se replient à la largeur de l'écran.";
                     color: Theme.text-dim;
                     font-size: 13px;
                     wrap: word-wrap;

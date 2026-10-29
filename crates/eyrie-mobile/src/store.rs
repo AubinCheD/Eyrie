@@ -99,10 +99,11 @@ pub struct Folded {
 pub struct Prefs {
     /// 0 : comme le téléphone ; 1 : clair ; 2 : sombre.
     pub theme: i32,
-    /// 0 : ajusté ; 1 : plus grand ; 2 : très grand.
+    /// Le texte du terminal : 0 normal ; 1 grand ; 2 très grand ; -1 réglé entre deux par un pincement.
     pub text_size: i32,
-    /// Le zoom du terminal laissé par le dernier pincement (1 : ajusté à la largeur) ; 0 : celui de `text_size`.
-    pub term_zoom: f32,
+    /// Le zoom du terminal laissé par le dernier pincement (1 : police de 13 px) ; 0 : celui de `text_size`. (Celui
+    /// d'avant le repliement des lignes, `term_zoom`, relatif à la largeur du terminal du PC, n'est plus lu.)
+    pub term_scale: f32,
     /// Modules de la barre du bas (trois au plus) ; vide : les premiers proposés.
     pub pinned: Vec<String>,
     pub device_name: String,

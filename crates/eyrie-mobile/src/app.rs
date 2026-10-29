@@ -2,8 +2,8 @@
 //! les messages du PC et les gestes de l'utilisateur, et met l'interface à jour. Il vit dans le fil de l'interface ;
 //! les fils réseau lui écrivent par `slint::invoke_from_event_loop`.
 
-use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -11,7 +11,7 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use suite_mobile::client::Welcome;
 use suite_mobile::msg::{CommandCard, Listing, ModuleCard, Note, Rights, ToPc, ToPhone, Waiting, module_target};
 use suite_mobile::pairing::{self, Ticket};
-use suite_mobile::term::TermInput;
+use suite_mobile::term::{Line, TermInput};
 use suite_mobile::ui::{Act, Block, Fold, Screen, Tab, Tone};
 
 use crate::dictee::{self, Dictation, Heard, Outcome, Recognizer, Tap};
@@ -20,6 +20,7 @@ use crate::picker::{Answer, Picker};
 use crate::store::{self, Pc, Store, Wake};
 use crate::tailnet::{self, Tailnet};
 use crate::termbuf::{self, TermBuf};
+use crate::termfit;
 use crate::termkeys::{self, Latch, Paste, Typed};
 use crate::termscroll;
 use crate::veilleur::{self, Away, Shown, Start};
@@ -32,10 +33,14 @@ use crate::{
 const DEFAULT_PINS: [&str; 8] =
     ["fawkes", "patronus", "owlery", "menagerie", "gringotts", "dragontree", "grimoire", "carnet"];
 const EXTRAS: [&str; 3] = ["notes", "commandes", "reglages"];
+/// Les tailles du texte du terminal proposées dans les réglages (normal, grand, très grand) : le zoom de sa police.
 const TEXT_SIZES: [f32; 3] = [1.0, 1.35, 1.7];
-/// Le zoom du terminal permis (pincement, A− et A+) ; 1 : ajusté à la largeur.
-const ZOOM_MIN: f32 = 0.6;
-const ZOOM_MAX: f32 = 3.0;
+/// Le zoom du terminal permis (pincement, A− et A+) ; 1 : sa police fait 13 px (voir `ui/term.slint`).
+const ZOOM_MIN: f32 = 0.7;
+const ZOOM_MAX: f32 = 2.4;
+/// Les lignes du terminal se replient à la nouvelle largeur quand le zoom s'arrête ce temps (un pincement en change
+/// plusieurs fois de suite).
+const REFIT_AFTER: Duration = Duration::from_millis(120);
 /// Une action sans résultat du PC passé ce délai : « Le PC n'a pas répondu ».
 const ANSWER_WITHIN: Duration = Duration::from_secs(15);
 /// Le filtre du sélecteur de dossiers part au PC quand la saisie s'arrête ce temps.
@@ -47,8 +52,8 @@ const START_WITHIN: Duration = Duration::from_secs(30);
 
 /// Le zoom du terminal gardé : celui du dernier pincement, sinon celui de la taille choisie dans les réglages.
 fn term_zoom(prefs: &store::Prefs) -> f32 {
-    if prefs.term_zoom > 0.0 {
-        prefs.term_zoom.clamp(ZOOM_MIN, ZOOM_MAX)
+    if prefs.term_scale > 0.0 {
+        prefs.term_scale.clamp(ZOOM_MIN, ZOOM_MAX)
     } else {
         TEXT_SIZES[prefs.text_size.clamp(0, 2) as usize]
     }
@@ -463,6 +468,42 @@ struct Target {
     label: String,
 }
 
+/// Le terminal à l'écran : les lignes du PC repliées à la largeur du téléphone (voir `termfit.rs`), une ligne d'écran
+/// par élément de la liste (toutes de même hauteur).
+#[derive(Default)]
+struct TermFit {
+    /// La largeur, en colonnes, à laquelle elles sont repliées.
+    width: u16,
+    /// Pour chaque ligne du PC montrée, le nombre de lignes d'écran qu'elle prend.
+    rows: Vec<usize>,
+    /// La ligne du PC où était le curseur : elle a pu prendre une ligne d'écran de plus pour lui.
+    cursor: Option<usize>,
+}
+
+impl TermFit {
+    /// La première ligne d'écran de cette ligne du PC.
+    fn start(&self, line: usize) -> usize {
+        self.rows[..line.min(self.rows.len())].iter().sum()
+    }
+
+    /// La ligne du PC que montre cette ligne d'écran.
+    fn line_of(&self, row: usize) -> usize {
+        let mut end = 0;
+        for (i, n) in self.rows.iter().enumerate() {
+            end += n;
+            if row < end {
+                return i;
+            }
+        }
+        self.rows.len().saturating_sub(1)
+    }
+
+    fn clear(&mut self) {
+        self.rows.clear();
+        self.cursor = None;
+    }
+}
+
 pub struct Controller {
     ui: slint::Weak<AppWindow>,
     store: Store,
@@ -487,6 +528,7 @@ pub struct Controller {
     followed: Option<Followed>,
     term: TermBuf,
     term_model: Rc<VecModel<TermRow>>,
+    term_fit: TermFit,
     term_dark: Option<bool>,
     /// Ctrl ou Alt collé : il part avec la touche suivante.
     latch: Latch,
@@ -662,6 +704,7 @@ impl Controller {
             followed: None,
             term: TermBuf::default(),
             term_model,
+            term_fit: TermFit::default(),
             term_dark: None,
             latch: Latch::None,
             paste: None,
@@ -1540,6 +1583,7 @@ impl Controller {
             let (m, id) = term_follow.clone().unwrap();
             self.term.reset(&m, &id);
             self.term_model.set_vec(Vec::new());
+            self.term_fit.clear();
             // Il s'ouvre sur son bas, qu'il suit, dès sa première image : pas là où l'on relisait l'autre (le PC
             // répond parfois avant que la liste vidée soit mise en page).
             ui.invoke_term_scroll_to_end();
@@ -1651,39 +1695,104 @@ impl Controller {
         TermRow { segs: ModelRc::new(VecModel::from(segs)) }
     }
 
+    /// Une ligne du PC repliée en lignes d'écran de `width` colonnes ; `cursor` : la colonne du curseur, s'il est sur
+    /// elle (il peut lui ajouter une ligne d'écran).
+    fn fit_rows(line: &Line, width: u16, cursor: Option<u16>, p: &termbuf::TermPalette) -> Vec<TermRow> {
+        termfit::fit(line, width, cursor).rows.iter().map(|r| Self::term_row(r, p)).collect()
+    }
+
+    /// Les lignes du terminal à l'écran, repliées à la largeur que la vue tient (`term-fit-cols`) : toutes quand le
+    /// terminal, le thème ou la largeur changent ; sinon seulement celles que l'image a changées (et celles où le
+    /// curseur était et est), les lignes d'écran ajoutées ou retirées à leur place. Une autre largeur pendant qu'on
+    /// relit : la ligne du PC qui était en haut de la vue y reste.
     fn refresh_term(&mut self, change: termbuf::Change) {
         let Some(ui) = self.ui() else { return };
         let dark = ui.global::<Theme>().get_dark();
         let p = if dark { &termbuf::DARK } else { &termbuf::LIGHT };
         let target = self.term.visible_len();
+        let width = u16::try_from(ui.get_term_fit_cols()).unwrap_or(0).max(termfit::MIN_WIDTH);
+        let cursor = self.term.cursor.map(|(row, col)| (row as usize, col)).filter(|&(row, _)| row < target);
+        let on = |i: usize| cursor.filter(|&(row, _)| row == i).map(|(_, col)| col);
+        let lines = &self.term.lines;
         let model = &self.term_model;
-        if change.full || self.term_dark != Some(dark) {
+        let fit = &mut self.term_fit;
+        let mut top = None;
+        if change.full || self.term_dark != Some(dark) || fit.width != width {
+            if !change.full && fit.width != width && !ui.get_term_follow() && !fit.rows.is_empty() {
+                top = Some(fit.line_of(usize::try_from(ui.get_term_top_row()).unwrap_or(0)));
+            }
             self.term_dark = Some(dark);
-            model.set_vec(self.term.lines[..target].iter().map(|l| Self::term_row(l, p)).collect::<Vec<_>>());
+            fit.width = width;
+            fit.rows.clear();
+            let mut all = Vec::new();
+            for (i, line) in lines[..target].iter().enumerate() {
+                let rows = Self::fit_rows(line, width, on(i), p);
+                fit.rows.push(rows.len());
+                all.extend(rows);
+            }
+            model.set_vec(all);
         } else {
-            for _ in 0..change.shifted.min(model.row_count()) {
+            let shifted = change.shifted.min(fit.rows.len());
+            let gone: usize = fit.rows.drain(..shifted).sum();
+            for _ in 0..gone.min(model.row_count()) {
                 model.remove(0);
             }
-            let kept = model.row_count();
-            while model.row_count() > target {
-                model.remove(model.row_count() - 1);
+            while fit.rows.len() > target {
+                for _ in 0..fit.rows.pop().unwrap_or(0).min(model.row_count()) {
+                    model.remove(model.row_count() - 1);
+                }
             }
-            for i in kept..target {
-                model.push(Self::term_row(&self.term.lines[i], p));
+            let kept = fit.rows.len();
+            let mut redo: BTreeSet<usize> = change.changed.into_iter().collect();
+            redo.extend(fit.cursor.and_then(|row| row.checked_sub(shifted)));
+            redo.extend(cursor.map(|(row, _)| row));
+            for i in redo.into_iter().filter(|&i| i < kept) {
+                let start = fit.start(i);
+                let rows = Self::fit_rows(&lines[i], width, on(i), p);
+                let (old, new) = (fit.rows[i], rows.len());
+                for (k, row) in rows.into_iter().enumerate() {
+                    if k < old {
+                        model.set_row_data(start + k, row);
+                    } else {
+                        model.insert(start + k, row);
+                    }
+                }
+                for _ in new..old {
+                    model.remove(start + new);
+                }
+                fit.rows[i] = new;
             }
-            for i in change.changed {
-                if i < kept.min(target) {
-                    model.set_row_data(i, Self::term_row(&self.term.lines[i], p));
+            for (i, line) in lines.iter().enumerate().take(target).skip(kept) {
+                let rows = Self::fit_rows(line, width, on(i), p);
+                fit.rows.push(rows.len());
+                for row in rows {
+                    model.push(row);
                 }
             }
         }
-        ui.set_term_cols(self.term.cols.max(20) as i32);
-        match self.term.cursor {
+        fit.cursor = cursor.map(|(row, _)| row);
+        let at = cursor.and_then(|(row, col)| {
+            let (sub, col) = termfit::fit(&lines[row], width, Some(col)).cursor?;
+            Some((fit.start(row) + sub, col))
+        });
+        match at {
             Some((row, col)) => {
                 ui.set_term_cursor_row(row as i32);
-                ui.set_term_cursor_col(col as i32);
+                ui.set_term_cursor_col(i32::from(col));
             }
             None => ui.set_term_cursor_row(-1),
+        }
+        if let Some(line) = top {
+            // Une fois les nouvelles lignes mises en page.
+            let row = self.term_fit.start(line) as i32;
+            for delay in [0, 60] {
+                let weak = self.ui.clone();
+                slint::Timer::single_shot(Duration::from_millis(delay), move || {
+                    if let Some(ui) = weak.upgrade() {
+                        ui.invoke_term_scroll_to_row(row);
+                    }
+                });
+            }
         }
         ui.set_term_ended(self.term.ended);
         // Le programme est terminé : plus de saisie, ni de micro ; l'écoute en cours s'abandonne avec lui.
@@ -2240,12 +2349,21 @@ impl Controller {
             ui.set_term_zoom(zoom);
             ui.set_text_size(size_choice(zoom));
         }
-        if (self.store.prefs.term_zoom - zoom).abs() > f32::EPSILON {
-            self.store.prefs.term_zoom = zoom;
+        if (self.store.prefs.term_scale - zoom).abs() > f32::EPSILON {
+            self.store.prefs.term_scale = zoom;
             if size_choice(zoom) >= 0 {
                 self.store.prefs.text_size = size_choice(zoom);
             }
             self.store.save();
+        }
+    }
+
+    /// Le terminal tient un autre nombre de colonnes (un pincement, A− ou A+, l'écran tourné) : ses lignes se replient
+    /// de nouveau (voir `refresh_term`).
+    fn term_refit(&mut self) {
+        let width = self.ui().map(|ui| ui.get_term_fit_cols());
+        if !self.term_fit.rows.is_empty() && width.is_some_and(|w| w != i32::from(self.term_fit.width)) {
+            self.refresh_term(termbuf::Change::default());
         }
     }
 
@@ -2606,6 +2724,7 @@ impl Controller {
         self.followed = None;
         self.term = TermBuf::default();
         self.term_model.set_vec(Vec::new());
+        self.term_fit.clear();
     }
 
     fn cancel_pairing(&mut self) {
@@ -3041,8 +3160,9 @@ fn wire(ui: &AppWindow) {
     ui.on_term_paste_confirmed(|| {
         with(|c| c.term_paste_confirmed());
     });
-    ui.on_term_copy(|line| {
-        with(|c| c.term_copy(usize::try_from(line).ok()));
+    // Un appui long sur une ligne d'écran : la ligne du PC qu'elle montre.
+    ui.on_term_copy(|row| {
+        with(|c| c.term_copy(usize::try_from(row).ok().map(|row| c.term_fit.line_of(row))));
     });
     ui.on_term_copied(|all| {
         with(|c| {
@@ -3053,12 +3173,21 @@ fn wire(ui: &AppWindow) {
     ui.on_term_zoomed(|zoom| {
         with(|c| c.term_zoomed(zoom));
     });
-    // Le geste du doigt en cours sur la liste du terminal, d'un mouvement à l'autre.
-    let follower = RefCell::new(termscroll::Follower::default());
-    let start = Instant::now();
-    ui.on_term_follows(move |follow, user, up, side, gap, row, fits| {
-        let m = termscroll::Move { user, up, side, gap, row, fits };
-        follower.borrow_mut().follows(follow, m, start.elapsed())
+    ui.on_term_follows(|follow, user, up, gap, row, fits| {
+        termscroll::follows(follow, termscroll::Move { user, up, gap, row, fits })
+    });
+    // Une autre largeur : les lignes se replient une fois le zoom arrêté (un pincement en change plusieurs fois de
+    // suite), hors de tout appel au contrôleur (le code a pu poser le zoom pendant l'un d'eux).
+    let refits = Rc::new(Cell::new(0u64));
+    ui.on_term_refit(move || {
+        let seq = refits.get() + 1;
+        refits.set(seq);
+        let refits = refits.clone();
+        slint::Timer::single_shot(REFIT_AFTER, move || {
+            if refits.get() == seq {
+                with(|c| c.term_refit());
+            }
+        });
     });
     ui.on_term_reply(|i| {
         with(|c| c.term_reply(i.max(0) as usize));
@@ -3276,6 +3405,62 @@ mod tests {
         assert!(!ui.get_term_follow(), "remonté à la molette : il ne suit plus");
         with(|c| c.open_module_path("fawkes", "t/4"));
         assert!(ui.get_term_follow(), "l'autre terminal suit son bas");
+    }
+
+    /// Le terminal à la largeur du téléphone : ses lignes repliées en lignes d'écran, la suite en retrait sous le texte ;
+    /// une image qui change une ligne n'en remplace que les lignes d'écran ; un autre zoom les replie toutes ; un appui
+    /// long sur une ligne d'écran copie la ligne du PC qu'elle montre.
+    #[test]
+    fn terminal_lines_are_folded_to_the_phone_width() {
+        use suite_mobile::term::{Line, Run, TermFrame, TermView};
+        let ui = dictating_terminal("terminal-replie");
+        ui.set_page(4);
+        ui.window().set_size(slint::LogicalSize::new(390.0, 844.0));
+        let code = |text: &str| Line { runs: vec![Run { col: 4, text: text.into(), ..Default::default() }] };
+        let first = TermView {
+            cols: 120,
+            rows: 3,
+            lines: vec![Line::plain("$ cargo test"), code(&format!("+ {}", "mot ".repeat(30))), Line::plain("ok")],
+            ..Default::default()
+        };
+        with(|c| c.on_message(ToPhone::Term(TermFrame::full("fawkes", "3", &first))));
+        let width = ui.get_term_fit_cols();
+        assert!((40..60).contains(&width), "13 px sur 390 px : {width} colonnes");
+        let texts = || {
+            let rows = ui.get_term_rows();
+            (0..rows.row_count())
+                .map(|i| {
+                    let segs = rows.row_data(i).unwrap().segs;
+                    let first = segs.row_data(0).map_or(-1, |s| s.col);
+                    (first, segs.iter().map(|s| s.text.to_string()).collect::<String>())
+                })
+                .collect::<Vec<_>>()
+        };
+        let rows = texts();
+        assert!(rows.len() > 4, "{rows:?}");
+        assert_eq!((rows[0].0, rows[1].0, rows[2].0), (0, 4, 4), "la suite sous le texte : {rows:?}");
+        assert_eq!(rows.last().unwrap().1, "ok");
+        assert!(rows.iter().all(|(col, text)| *col as usize + text.chars().count() <= width as usize), "{rows:?}");
+
+        // La dernière ligne change : seules ses lignes d'écran sont remplacées, le reste ne bouge pas.
+        let mut second = first.clone();
+        second.lines[2] = Line::plain(format!("ok {}", "fini ".repeat(20)));
+        with(|c| c.on_message(ToPhone::Term(TermFrame::diff("fawkes", "3", &first, &second))));
+        let after = texts();
+        assert_eq!(after[..rows.len() - 1], rows[..rows.len() - 1]);
+        assert!(after.len() > rows.len(), "« ok … » se replie à son tour");
+
+        // Un autre zoom : moins de colonnes, plus de lignes d'écran, une fois le pincement arrêté.
+        ui.set_term_zoom(1.8);
+        assert!(ui.get_term_fit_cols() < width);
+        with(|c| c.term_refit());
+        assert!(texts().len() > after.len());
+
+        // Un appui long sur la dernière ligne d'écran : la ligne du PC « ok … » sélectionnée.
+        let last = ui.get_term_rows().row_count() as i32 - 1;
+        ui.invoke_term_copy(last);
+        let (text, anchor) = (ui.get_term_copy_text(), ui.get_term_copy_anchor() as usize);
+        assert!(text[anchor..].starts_with("ok fini"), "{:?}", &text[anchor..]);
     }
 
     /// Les bulles passent l'une après l'autre, sans doublon ; quand trop attendent, les plus anciennes cèdent leur
@@ -3546,14 +3731,17 @@ mod tests {
     }
 
     /// Le zoom du terminal est gardé : celui du dernier pincement, sinon celui de la taille des réglages (des
-    /// préférences d'avant le pincement n'en ont pas) ; une taille réglée entre deux n'en marque aucune.
+    /// préférences d'avant le pincement n'en ont pas) ; une taille réglée entre deux n'en marque aucune. Le zoom d'avant
+    /// le repliement des lignes (`term_zoom`, relatif à la largeur du terminal du PC) ne veut plus rien dire : oublié.
     #[test]
     fn the_terminal_zoom_is_kept() {
         let old: store::Prefs = serde_json::from_str(r#"{"theme":2,"text_size":1}"#).unwrap();
         assert_eq!(term_zoom(&old), TEXT_SIZES[1]);
-        let pinched = store::Prefs { term_zoom: 1.52, text_size: 1, ..Default::default() };
+        let fitted: store::Prefs = serde_json::from_str(r#"{"text_size":-1,"term_zoom":3.0}"#).unwrap();
+        assert_eq!(term_zoom(&fitted), TEXT_SIZES[0], "l'ancien zoom à fond");
+        let pinched = store::Prefs { term_scale: 1.52, text_size: 1, ..Default::default() };
         assert_eq!(term_zoom(&pinched), 1.52);
-        assert_eq!(term_zoom(&store::Prefs { term_zoom: 9.0, ..Default::default() }), ZOOM_MAX);
+        assert_eq!(term_zoom(&store::Prefs { term_scale: 9.0, ..Default::default() }), ZOOM_MAX);
         let back: store::Prefs = serde_json::from_str(&serde_json::to_string(&pinched).unwrap()).unwrap();
         assert_eq!(term_zoom(&back), 1.52, "gardé d'un lancement à l'autre");
         assert_eq!(size_choice(1.0), 0);

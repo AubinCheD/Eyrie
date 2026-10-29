@@ -177,13 +177,13 @@ fn in_font(c: char) -> bool {
 }
 
 /// Une marque sans largeur (accent combiné, sélecteur de variante, liant) : elle suit son caractère.
-fn zero_width(c: char) -> bool {
+pub(crate) fn zero_width(c: char) -> bool {
     matches!(c, '\u{300}'..='\u{36f}' | '\u{200b}'..='\u{200f}' | '\u{2060}'..='\u{2064}' | '\u{20d0}'..='\u{20ff}')
         || matches!(c, '\u{fe00}'..='\u{fe0f}' | '\u{fe20}'..='\u{fe2f}')
 }
 
 /// Deux colonnes sur le PC (ou peut-être : idéogrammes, emoji) ; la largeur de ce qui suit n'est plus sûre.
-fn wide(c: char) -> bool {
+pub(crate) fn wide(c: char) -> bool {
     matches!(
         c as u32,
         0x1100..=0x115f
