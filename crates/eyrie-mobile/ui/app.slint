@@ -5,7 +5,7 @@ import "fonts/Hack-Regular.ttf";
 import { Theme } from "theme.slint";
 import {
     UiAct, UiRow, UiChip, GraphSeg, TabItem, ModuleItem, WaitItem, NoteItem, CommandItem, PcItem, NavItem, TopBar,
-    BottomNav, ActionSheet, ConfirmDialog, DialogButtons, Toast, Icon, Busy
+    BottomNav, ActionSheet, ConfirmDialog, DialogButtons, Toast, Icon, Busy, MicButton, ListenLine
 } from "widgets.slint";
 import { ScreenPage, OverviewPage, MorePage, NotesPage, CommandsPage, SettingsPage } from "pages.slint";
 import { TermView, TermRow } from "term.slint";
@@ -104,13 +104,20 @@ export component AppWindow inherits Window {
     in-out property <bool> term-paste-visible;
 
     // --- Dictée (voir `dictee.rs`) ---
-    // Le téléphone sait reconnaître la parole : le micro se montre (terminal).
+    // Le téléphone sait reconnaître la parole : le micro se montre (terminal, saisie sur plusieurs lignes).
     in property <bool> can-dictate;
-    // Il écoute pour le terminal ; la fin est demandée ; le texte provisoire ; le niveau du son (de 0 à 1).
+    // Il écoute pour le terminal, ou pour la saisie ouverte ; la fin est demandée ; le texte provisoire ; le niveau du
+    // son (de 0 à 1).
     in property <bool> term-listening;
+    in property <bool> input-listening;
     in property <bool> dictation-stopping;
     in property <string> dictation-heard;
     in property <float> dictation-level;
+    // Réglages : 0 rien à dire (bureau), 1 pas de reconnaissance vocale, 2 laquelle (`dictation-text`) ; le texte
+    // dicté dans le terminal part aussitôt.
+    in property <int> dictation-kind;
+    in property <string> dictation-text;
+    in-out property <bool> dictation-send;
 
     // --- Accueil et appairage ---
     in property <image> logo;
@@ -201,9 +208,12 @@ export component AppWindow inherits Window {
     callback term-paste-confirmed();
     callback term-copy(int);
     callback term-copied(bool);
-    // Le micro du terminal touché ; l'écoute à abandonner (`true` : celle du terminal).
+    // Le micro du terminal, ou d'une saisie (l'action qui l'a ouverte), touché ; l'écoute à abandonner (`true` : celle
+    // du terminal, `false` : celle de la saisie) ; « Envoyer la dictée aussitôt ».
     callback term-dictate();
+    callback input-dictate(UiAct);
     callback dictation-cancel(bool);
+    callback set-dictation-send(bool);
     callback open-folder(UiAct);
     callback picker-go(string);
     callback picker-pick(string);
@@ -221,6 +231,11 @@ export component AppWindow inherits Window {
     // Le menu ⋯ de l'écran (démonstration, captures).
     public function open-screen-menu() {
         root.show-sheet(root.screen-title, root.screen-acts);
+    }
+
+    // Une action touchée : sa confirmation, sa saisie ou son envoi (démonstration, essais).
+    public function open-act(a: UiAct) {
+        root.start-act(a);
     }
 
     // Une saisie de dossier en champ de texte, quand le PC ne liste pas ses dossiers : `note` dit pourquoi.
@@ -264,8 +279,9 @@ export component AppWindow inherits Window {
     property <bool> forget-visible;
     property <bool> logout-visible;
     property <bool> start-visible;
-    property <bool> input-visible;
-    property <string> input-text;
+    // La saisie d'une action, et son texte (la dictée y ajoute le sien) ; fermée, l'écoute pour elle s'abandonne.
+    out property <bool> input-visible;
+    in-out property <string> input-text;
     // Le champ de texte tient lieu de sélecteur de dossiers : la confirmation vient après, et `input-note` dit pourquoi.
     property <bool> folder-input;
     property <string> input-note;
@@ -309,8 +325,10 @@ export component AppWindow inherits Window {
     }
 
     // La saisie est faite (champ de texte) : l'action part, ou, si le champ tenait lieu de sélecteur, sa confirmation.
+    // Une dictée en cours s'abandonne : ce qui part est ce que montre le champ.
     function submit-input() {
         root.input-visible = false;
+        root.dictation-cancel(false);
         if root.folder-input {
             root.folder-input = false;
             root.finish-act(root.pending, root.input-text);
@@ -322,6 +340,7 @@ export component AppWindow inherits Window {
     function cancel-input() {
         root.input-visible = false;
         root.folder-input = false;
+        root.dictation-cancel(false);
     }
 
     function show-sheet(title: string, acts: [UiAct]) {
@@ -561,6 +580,10 @@ export component AppWindow inherits Window {
                         tailnet-text: root.tailnet-text;
                         tailnet-login => { root.tailnet-login(); }
                         tailnet-logout => { root.logout-visible = true; }
+                        dictation-kind: root.dictation-kind;
+                        dictation-text: root.dictation-text;
+                        dictation-send <=> root.dictation-send;
+                        set-dictation-send(on) => { root.set-dictation-send(on); }
                     }
                     if !root.terminal-mode && root.tab != "ensemble" && root.tab != "plus" && root.tab != "notes" && root.tab != "commandes" && root.tab != "reglages": ScreenPage {
                         rows: root.rows;
@@ -618,6 +641,7 @@ export component AppWindow inherits Window {
                         dictation-stopping: root.dictation-stopping;
                         heard: root.dictation-heard;
                         level: root.dictation-level;
+                        sends: root.dictation-send;
                         dictate => { root.term-dictate(); }
                         dictation-cancel => { root.dictation-cancel(true); }
                     }
@@ -793,6 +817,32 @@ export component AppWindow inherits Window {
                         text: root.pending.input-placeholder;
                         color: Theme.text-faint;
                         font-size: 16px;
+                        vertical-alignment: center;
+                    }
+                }
+                // La dictée, pour un texte libre sur plusieurs lignes (jamais un nom, un chemin ni un dossier) : le
+                // texte entendu s'ajoute au champ, à relire avant l'envoi.
+                if root.can-dictate && root.pending.multiline && !root.folder-input: HorizontalLayout {
+                    spacing: 12px;
+                    VerticalLayout {
+                        alignment: start;
+                        MicButton {
+                            listening: root.input-listening;
+                            stopping: root.dictation-stopping;
+                            level: root.dictation-level;
+                            clicked => { root.input-dictate(root.pending); }
+                        }
+                    }
+                    if root.input-listening: ListenLine {
+                        stopping: root.dictation-stopping;
+                        heard: root.dictation-heard;
+                        hint: "Parlez, puis touchez le micro rouge\u{202f}: le texte s'ajoute au champ.";
+                        lines: 3;
+                    }
+                    if !root.input-listening: Text {
+                        text: "Dicter";
+                        color: Theme.text-dim;
+                        font-size: 15px;
                         vertical-alignment: center;
                     }
                 }

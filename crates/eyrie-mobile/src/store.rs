@@ -109,6 +109,9 @@ pub struct Prefs {
     pub current: Option<String>,
     /// Bandeaux pliés ou dépliés, par PC, module, écran et clé (voir [`Store::folded`]).
     pub folds: BTreeMap<String, Folded>,
+    /// « Envoyer la dictée aussitôt » : dans le terminal, le texte dicté part avec Entrée, sans relecture (voir
+    /// `dictee.rs`). Non par défaut.
+    pub dictation_send: bool,
 }
 
 fn fold_key(pc: &str, module: &str, path: &str, band: &str) -> String {
@@ -239,12 +242,15 @@ mod tests {
             wake: None,
         });
         s.prefs.theme = 2;
+        assert!(!s.prefs.dictation_send, "la dictée ne part pas seule sans l'avoir choisi");
+        s.prefs.dictation_send = true;
         s.pcs[0].notes_seen = 1_700_000_000;
         s.save();
         let back = Store::open(&dir);
         assert_eq!(back.identity, me, "la même identité : le PC la reconnaît");
         assert_eq!(back.current().map(|p| p.addresses()), Some(vec!["100.1.2.3:4747".into(), "suite-pc:4747".into()]));
         assert_eq!(back.prefs.theme, 2);
+        assert!(back.prefs.dictation_send);
         assert_eq!(back.current().map(|p| p.notes_seen), Some(1_700_000_000), "vu jusque-là, même après un arrêt");
         let mut s = back;
         s.forget("a");

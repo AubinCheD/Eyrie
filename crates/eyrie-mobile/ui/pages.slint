@@ -783,6 +783,56 @@ component Card inherits Rectangle {
     background: Theme.surface;
 }
 
+// Un interrupteur sur toute une ligne de carte : la toucher le bascule.
+component SwitchRow inherits Rectangle {
+    in property <string> label;
+    in property <bool> checked;
+    callback toggled(bool);
+    height: max(52px, label-text.preferred-height + 24px);
+    accessible-role: checkbox;
+    accessible-label: root.label;
+    accessible-checkable: true;
+    accessible-checked: root.checked;
+    accessible-action-default => { root.toggled(!root.checked); }
+    background: ta.pressed ? Theme.pressed : transparent;
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        spacing: 12px;
+        label-text := Text {
+            text: root.label;
+            color: Theme.text;
+            font-size: 15px;
+            vertical-alignment: center;
+            wrap: word-wrap;
+            horizontal-stretch: 1;
+        }
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 46px;
+                height: 28px;
+                border-radius: 14px;
+                background: root.checked ? Theme.accent : Theme.surface-2;
+                border-width: root.checked ? 0 : 1.5px;
+                border-color: Theme.border;
+                animate background { duration: 120ms; }
+                Rectangle {
+                    x: root.checked ? parent.width - self.width - 4px : 4px;
+                    width: 20px;
+                    height: 20px;
+                    border-radius: 10px;
+                    background: root.checked ? Theme.on-accent : Theme.text-faint;
+                    animate x { duration: 120ms; }
+                }
+            }
+        }
+    }
+    ta := TouchArea {
+        clicked => { root.toggled(!root.checked); }
+    }
+}
+
 export component SettingsPage inherits Rectangle {
     in property <string> pc-name;
     in property <string> pc-host;
@@ -797,6 +847,11 @@ export component SettingsPage inherits Rectangle {
     in property <int> text-size;
     in property <int> tailnet-state;
     in property <string> tailnet-text;
+    // La dictée : 0 rien à dire (bureau), 1 pas de reconnaissance vocale, 2 laquelle (`dictation-text`).
+    in property <int> dictation-kind;
+    in property <string> dictation-text;
+    in-out property <bool> dictation-send;
+    callback set-dictation-send(bool);
     callback set-theme(int);
     callback set-text-size(int);
     callback rename-device(string);
@@ -978,6 +1033,48 @@ export component SettingsPage inherits Rectangle {
                 padding-top: 8px;
                 Text {
                     text: root.text-size < 0 ? "Taille réglée en pinçant le terminal à deux doigts." : "Pincez le terminal à deux doigts pour régler la taille entre deux.";
+                    color: Theme.text-dim;
+                    font-size: 13px;
+                    wrap: word-wrap;
+                }
+            }
+            // La dictée : quelle reconnaissance vocale sert (le son peut-il passer par Internet ?), l'envoi aussitôt.
+            if root.dictation-kind != 0: SectionHeader {
+                title: "DICTÉE";
+            }
+            if root.dictation-kind != 0: Rectangle {
+                height: dictation-col.preferred-height;
+                Card {
+                    x: Theme.pad;
+                    width: parent.width - 2 * Theme.pad;
+                    dictation-col := VerticalLayout {
+                        HorizontalLayout {
+                            padding: 16px;
+                            padding-bottom: root.dictation-kind == 2 ? 4px : 16px;
+                            Text {
+                                text: root.dictation-text;
+                                color: Theme.text-dim;
+                                font-size: 13.5px;
+                                wrap: word-wrap;
+                            }
+                        }
+                        if root.dictation-kind == 2: SwitchRow {
+                            label: "Envoyer la dictée aussitôt";
+                            checked: root.dictation-send;
+                            toggled(on) => {
+                                root.dictation-send = on;
+                                root.set-dictation-send(on);
+                            }
+                        }
+                    }
+                }
+            }
+            if root.dictation-kind == 2: HorizontalLayout {
+                padding-left: Theme.pad + 4px;
+                padding-right: Theme.pad;
+                padding-top: 8px;
+                Text {
+                    text: root.dictation-send ? "Dans le terminal, le texte dicté part tout de suite, avec Entrée, sans relecture." : "Le texte dicté s'ajoute à la saisie\u{202f}: relisez-le, puis envoyez.";
                     color: Theme.text-dim;
                     font-size: 13px;
                     wrap: word-wrap;

@@ -628,6 +628,7 @@ impl Controller {
         let name =
             if store.prefs.device_name.is_empty() { platform::device_name() } else { store.prefs.device_name.clone() };
         ui.set_device_name(name.into());
+        ui.set_dictation_send(store.prefs.dictation_send);
         let models = Models::install(ui);
         let tn = tailnet::state();
         let (state, text) = tn.display();
@@ -1547,8 +1548,12 @@ impl Controller {
         // Le menu, la confirmation ou la saisie d'une action aussi : le retour les ferme avant de changer d'écran, un
         // autre écran sous eux vient du PC (le résultat d'une action), et leur « oui » vaudrait pour lui.
         let key = self.nav.key();
-        if self.overlays_for.as_ref().is_some_and(|k| *k != key) && ui.invoke_close_overlays() {
-            self.toast("L'écran a changé : rien n'est parti.", 3);
+        if self.overlays_for.as_ref().is_some_and(|k| *k != key) {
+            if ui.invoke_close_overlays() {
+                self.toast("L'écran a changé : rien n'est parti.", 3);
+            }
+            // La saisie fermée l'a demandé, mais le contrôleur est ici occupé (`with`) : fait ici.
+            self.drop_dictation(Some(false));
         }
         self.overlays_for = Some(key);
     }
@@ -2233,13 +2238,16 @@ impl Controller {
 
     // --- La dictée (voir `dictee.rs`) ---
 
-    /// La reconnaissance vocale du téléphone : le micro se montre si elle est là.
+    /// La reconnaissance vocale du téléphone : le micro se montre si elle est là ; les réglages disent laquelle.
     fn refresh_recognizer(&mut self) {
         if !self.demo {
             self.recognizer = platform::recognizer();
         }
         if let Some(ui) = self.ui() {
             ui.set_can_dictate(self.recognizer.available());
+            let (kind, text) = self.recognizer.display();
+            ui.set_dictation_kind(kind);
+            ui.set_dictation_text(view::tied(&text).into());
         }
     }
 
@@ -2249,6 +2257,7 @@ impl Controller {
         let d = &self.dictation;
         let term = d.active() && matches!(d.target, Some(dictee::Target::Term { .. }));
         ui.set_term_listening(term);
+        ui.set_input_listening(d.active() && !term);
         ui.set_dictation_stopping(d.phase == dictee::Phase::Stopping);
         ui.set_dictation_heard(d.partial.as_str().into());
         ui.set_dictation_level(d.level);
@@ -2262,6 +2271,15 @@ impl Controller {
             return;
         }
         self.dictate(dictee::Target::Term { module, id });
+    }
+
+    /// Le micro d'une saisie sur plusieurs lignes touché (l'action qui l'a ouverte).
+    pub(crate) fn input_dictate(&mut self, a: &UiAct) {
+        if !a.multiline || a.folder {
+            return;
+        }
+        let (module, path, act) = (a.module.to_string(), a.path.to_string(), a.id.to_string());
+        self.dictate(dictee::Target::Input { module, path, act });
     }
 
     fn dictate(&mut self, target: dictee::Target) {
@@ -2310,13 +2328,27 @@ impl Controller {
         self.refresh_dictation();
     }
 
-    /// Le texte final, au bout de la saisie de sa cible si elle est toujours là : à relire, puis à envoyer.
+    /// Le texte final, au bout de la saisie de sa cible si elle est toujours là : à relire, puis à envoyer ; dans le
+    /// terminal, envoyé aussitôt avec Entrée si l'utilisateur l'a choisi (« Envoyer la dictée aussitôt »).
     fn dictated(&mut self, target: &dictee::Target, text: &str) {
         let Some(ui) = self.ui() else { return };
-        if let dictee::Target::Term { module, id } = target
-            && self.followed_term().as_ref() == Some(&(module.clone(), id.clone()))
-        {
-            ui.set_term_draft(dictee::append(&ui.get_term_draft(), text).into());
+        match target {
+            dictee::Target::Term { module, id } => {
+                if self.followed_term().as_ref() != Some(&(module.clone(), id.clone())) {
+                    return;
+                }
+                let draft = dictee::append(&ui.get_term_draft(), text);
+                ui.set_term_draft(draft.as_str().into());
+                if dictee::sends_now(target, self.store.prefs.dictation_send) {
+                    self.term_send_line(&draft);
+                }
+            }
+            // Fermée, la saisie a abandonné l'écoute (`dictation-cancel`) : ouverte, c'est la sienne.
+            dictee::Target::Input { .. } => {
+                if ui.get_input_visible() {
+                    ui.set_input_text(dictee::append(&ui.get_input_text(), text).into());
+                }
+            }
         }
     }
 
@@ -2891,8 +2923,17 @@ fn wire(ui: &AppWindow) {
     ui.on_term_dictate(|| {
         with(|c| c.term_dictate());
     });
+    ui.on_input_dictate(|a| {
+        with(|c| c.input_dictate(&a));
+    });
     ui.on_dictation_cancel(|term| {
         with(|c| c.drop_dictation(Some(term)));
+    });
+    ui.on_set_dictation_send(|on| {
+        with(|c| {
+            c.store.prefs.dictation_send = on;
+            c.store.save();
+        });
     });
     ui.on_open_folder(|a| {
         with(|c| c.open_folder(&a));
@@ -3422,5 +3463,47 @@ mod tests {
             c.on_net(NetEvent::Offline { reason: "essai".into(), retry_in: Duration::from_secs(1), away: Away::default() });
         });
         assert!(!ui.get_term_listening(), "liaison coupée");
+    }
+
+    /// Le texte dicté s'ajoute au champ d'une saisie sur plusieurs lignes, sans l'envoyer, même avec « Envoyer la
+    /// dictée aussitôt » ; une saisie d'une ligne (un nom, un chemin) ne se dicte pas. Dans le terminal, ce réglage
+    /// envoie le texte avec Entrée : la saisie se vide.
+    #[test]
+    fn dictation_fills_a_multiline_input_and_sends_at_once_only_in_the_terminal() {
+        let ui = dictating_terminal("dictee-saisie");
+        let note = UiAct {
+            id: "lancer-note:revue".into(),
+            label: "Lancer".into(),
+            has_input: true,
+            multiline: true,
+            input_value: "Regarde".into(),
+            module: "patronus".into(),
+            ..Default::default()
+        };
+        ui.invoke_open_act(note.clone());
+        assert!(ui.get_input_visible());
+        with(|c| {
+            c.store.prefs.dictation_send = true;
+            c.input_dictate(&note);
+            c.on_heard(c.dictation.seq(), Heard::Partial("surtout".into()));
+        });
+        assert!(ui.get_input_listening() && !ui.get_term_listening());
+        with(|c| c.on_heard(c.dictation.seq(), Heard::Final("surtout la facturation".into())));
+        assert_eq!(ui.get_input_text().as_str(), "Regarde surtout la facturation");
+        assert!(ui.get_input_visible() && !ui.get_input_listening(), "la saisie attend son bouton");
+
+        with(|c| c.input_dictate(&UiAct { multiline: false, ..note.clone() }));
+        assert!(!ui.get_input_listening(), "une ligne : pas de dictée");
+        with(|c| c.input_dictate(&note));
+        assert!(ui.get_input_listening());
+        ui.invoke_close_overlays();
+        assert!(!ui.get_input_listening(), "la saisie fermée abandonne son écoute");
+
+        ui.set_term_draft("relis".into());
+        with(|c| {
+            c.term_dictate();
+            c.on_heard(c.dictation.seq(), Heard::Final("le diff".into()));
+        });
+        assert_eq!(ui.get_term_draft().as_str(), "", "parti au terminal, avec Entrée");
     }
 }
