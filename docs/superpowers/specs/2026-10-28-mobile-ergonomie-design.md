@@ -99,9 +99,10 @@ plusieurs lignes envoyée en collage.
   dossier, branche facultative ; compte choisi par DragonTree d'après l'URL) : par DragonTree, en onglet de fond, avec
   sa progression et « Annuler » ; « Afficher sur le PC » ensuite.
 
-API ajoutées à DragonTree (accord du 27/10 : « ce qui sert l'application mobile ») : répertoire des dépôts et leur état
-rapide, `background_tick`/foyer distant, erreurs de lecture gardées sur l'onglet, `add_repo`, clonage sans fenêtre
-(`clone_remote`, suivi, annulation), `close_repo_tab`, suppression d'une branche distante.
+Fonctions Rust `pub` ajoutées à DragonTree (accord du 28/10 : « Oui, les quatre ») : répertoire des dépôts et leur
+état rapide, `background_tick`/foyer distant, erreurs de lecture gardées sur l'onglet, `add_repo`, clonage sans
+fenêtre (`clone_remote`, suivi, annulation), `close_repo_tab`, suppression d'une branche distante, pull requests lues
+en fond (`refresh_pull_requests`).
 
 ## 5. Dossiers du PC depuis le téléphone (réponse : oui)
 
@@ -129,7 +130,8 @@ Le PC doit être allumé et éveillé, la session Windows ouverte (verrouillée,
 Impossible : PC éteint, en veille ou en veille prolongée (le Wake-on-LAN de Tailscale exige un autre appareil éveillé
 sur le même réseau local), session fermée.
 
-**(choix)** Désactivé par défaut : case « Garder le PC joignable quand Eyrie est fermée » (Réglages › Téléphones).
+**(choix)** Désactivé par défaut : case « Démarrer Eyrie depuis le téléphone » (Réglages › Téléphones). Seuls les
+téléphones qui ont « Agir » reçoivent le secret de démarrage, et le veilleur refuse les autres.
 
 - Le compagnon `eyrie-tailnet.exe` gagne un mode `--veille` : lancé à l'ouverture de session (valeur `EyrieVeille` de
   `HKCU\…\Run`, refusée si l'exécutable ou son dossier est modifiable par d'autres comptes), il garde le nœud
@@ -145,10 +147,10 @@ sur le même réseau local), session fermée.
 - Port **4748** du tailnet : défi-réponse de `suite-mobile/src/veille.rs`. Le veilleur relit à chaque demande
   `mobile\veille.dpapi` (DPAPI, entropie `eyrie/veille` ; JSON `{"v":1,"actif":bool,"cle":"<64 hex>",
   "instance":"Local\\Eyrie-instance:<dir_key>","reduite":true}`) et `mobile\appareils.json` (le compte Tailscale de
-  la connexion doit être celui d'un appareil appairé ; `appareil` = son `id` ; secret = `device_secret(cle, clé
-  publique)`). Limites : 5 preuves fausses → 15 min de blocage ; un démarrage par 30 s, 6 par heure ; Eyrie déjà
-  ouverte ou en démarrage → rien ; une connexion par adresse du tailnet (la nouvelle remplace la précédente), huit
-  adresses à la fois.
+  la connexion doit être celui d'un appareil appairé qui a « Agir » ; `appareil` = son `id` ; secret =
+  `device_secret(cle, clé publique)`). Limites : 5 preuves fausses → 15 min de blocage ; un démarrage par 30 s, 6 par
+  heure ; Eyrie déjà ouverte ou en démarrage → rien ; une connexion par adresse du tailnet (la nouvelle remplace la
+  précédente), huit adresses à la fois.
 - Lancement : seulement `<dossier du compagnon>\eyrie.exe`, après le contrôle d'emplacement ; environnement de
   l'utilisateur à jour ; `--reduite` ; `EYRIE_DEMARRE_PAR=<nom de l'appareil>` ; ligne `veille` au journal du pont.
   **(choix)** Eyrie démarrée à distance s'ouvre réduite.
@@ -165,14 +167,15 @@ sur le même réseau local), session fermée.
   attend, est en échec ou sonne)** : un bandeau par groupe, dans l'ordre du PC, groupes vides compris : couleur et
   icône du groupe, « ✻2 · 5 » (sessions Claude, terminaux), pastille « N attend » / « en échec » / 🔔. Menu : shell
   ou Claude dans le dépôt du groupe, nouveau terminal dans ce groupe, Remote Control des sessions du groupe, tout
-  mettre en veille, tout réveiller, tout redémarrer (API `restart_group` de Fawkes), montrer sur le PC. Un bandeau
+  mettre en veille, tout réveiller, tout redémarrer (fonction `restart_group` de Fawkes), montrer sur le PC. Un bandeau
   « Claude attend » en tête mène aux sessions. « Nouveau terminal » en barre du haut ; « Autre dossier… » par le
   sélecteur. États distincts (travaille, prêt, en veille).
 - **Owlery** : bandeaux comme le PC (par dépôt par défaut), « N autres… », reporter (3 h, demain, lundi), annuler,
-  tout marquer lu (API `mark_many`), ouvrir.
+  tout marquer lu en un geste (`mark_read_many` d'Owlery ; « Annuler » seulement s'il y a un geste, `can_undo`),
+  ouvrir.
 - **Patronus** : bandeaux En cours / Boîte de réception / Tâches, menu des résultats, tout marquer lu.
-- **Menagerie** : un bandeau par projet compose avec Démarrer tout / Arrêter tout (API `docker_project_action`),
-  ports pliés au-delà de 6.
+- **Menagerie** : un bandeau par projet compose avec Démarrer tout / Arrêter tout (fonction `docker_project_action`
+  de Menagerie), ports pliés au-delà de 6.
 - **Grimoire, Gringotts, Carnet** : bandeaux ; Carnet « Ajouter une ligne » en barre du haut.
 - **Écran générique d'Eyrie** : relancer un module arrêté, réessayer un module indisponible ; une commande lancée dit
   qu'elle est partie.
