@@ -1660,6 +1660,51 @@ export component ActionSheet inherits Rectangle {
     }
 }
 
+// Les deux boutons d'un dialogue : côte à côte à droite ; l'un sous l'autre, le principal en haut et sur toute la
+// largeur, quand un long libellé (« Fusionner dans mobile-ergonomie », « Ajouter un dépôt existant… ») ne tient pas
+// à côté d'« Annuler » (côte à côte, les deux se coupaient : « Ann… »).
+export component DialogButtons inherits Rectangle {
+    in property <string> ok-text;
+    in property <int> ok-style: 1;
+    callback answered(bool);
+    // Les largeurs voulues des deux boutons, mesurées hors de la mise en page.
+    property <bool> side-by-side: cancel-probe.preferred-width + ok-probe.preferred-width + 10px <= root.width;
+    height: root.side-by-side ? 48px : 2 * 48px + 10px;
+    cancel-probe := ActButton {
+        visible: false;
+        text: "Annuler";
+    }
+    ok-probe := ActButton {
+        visible: false;
+        text: root.ok-text;
+    }
+    if root.side-by-side: HorizontalLayout {
+        spacing: 10px;
+        alignment: end;
+        ActButton {
+            text: "Annuler";
+            clicked => { root.answered(false); }
+        }
+        ActButton {
+            text: root.ok-text;
+            style: root.ok-style;
+            clicked => { root.answered(true); }
+        }
+    }
+    if !root.side-by-side: VerticalLayout {
+        spacing: 10px;
+        ActButton {
+            text: root.ok-text;
+            style: root.ok-style;
+            clicked => { root.answered(true); }
+        }
+        ActButton {
+            text: "Annuler";
+            clicked => { root.answered(false); }
+        }
+    }
+}
+
 // Une question avant d'agir.
 export component ConfirmDialog inherits Rectangle {
     in property <string> text;
@@ -1685,18 +1730,10 @@ export component ConfirmDialog inherits Rectangle {
                 font-size: 17px;
                 wrap: word-wrap;
             }
-            HorizontalLayout {
-                spacing: 10px;
-                alignment: end;
-                ActButton {
-                    text: "Annuler";
-                    clicked => { root.answered(false); }
-                }
-                ActButton {
-                    text: root.ok-text;
-                    style: root.danger ? 2 : 1;
-                    clicked => { root.answered(true); }
-                }
+            DialogButtons {
+                ok-text: root.ok-text;
+                ok-style: root.danger ? 2 : 1;
+                answered(yes) => { root.answered(yes); }
             }
         }
     }

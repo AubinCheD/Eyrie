@@ -5,7 +5,7 @@ import "fonts/Hack-Regular.ttf";
 import { Theme } from "theme.slint";
 import {
     UiAct, UiRow, UiChip, GraphSeg, TabItem, ModuleItem, WaitItem, NoteItem, CommandItem, PcItem, NavItem, TopBar,
-    BottomNav, ActionSheet, ConfirmDialog, Toast, ActButton, Icon, Busy
+    BottomNav, ActionSheet, ConfirmDialog, DialogButtons, Toast, Icon, Busy
 } from "widgets.slint";
 import { ScreenPage, OverviewPage, MorePage, NotesPage, CommandsPage, SettingsPage } from "pages.slint";
 import { TermView, TermRow } from "term.slint";
@@ -775,17 +775,14 @@ export component AppWindow inherits Window {
                         vertical-alignment: center;
                     }
                 }
-                HorizontalLayout {
-                    spacing: 10px;
-                    alignment: end;
-                    ActButton {
-                        text: "Annuler";
-                        clicked => { root.cancel-input(); }
-                    }
-                    ActButton {
-                        text: root.pending.label;
-                        style: 1;
-                        clicked => { root.submit-input(); }
+                DialogButtons {
+                    ok-text: root.pending.label;
+                    answered(yes) => {
+                        if yes {
+                            root.submit-input();
+                        } else {
+                            root.cancel-input();
+                        }
                     }
                 }
             }
