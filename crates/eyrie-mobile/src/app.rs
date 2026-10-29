@@ -708,7 +708,9 @@ impl Controller {
         let Some(ui) = self.ui() else { return };
         ui.set_has_pc(self.store.current().is_some());
         if self.demo {
+            // Comme au vrai démarrage, la barre du bas (Ensemble, Plus) est là avant toute donnée du PC.
             ui.set_page(4);
+            self.refresh_all();
             return;
         }
         match self.store.current().cloned() {
