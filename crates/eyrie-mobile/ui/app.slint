@@ -419,20 +419,25 @@ export component AppWindow inherits Window {
                 }
                 // Hors ligne : les dernières données restent, un bandeau le dit (Eyrie fermée : « Démarrer » ; elle
                 // démarre : l'indicateur, la liaison réessaie d'elle-même).
+                // Le texte passe à la ligne : « Hors ligne (…) · nouvel essai dans 4 s » ne perd pas sa fin.
                 if root.link-state != 1: Rectangle {
-                    height: 48px;
+                    min-height: 48px;
                     background: root.link-state == 3 ? Theme.danger.with-alpha(0.16) : Theme.warn.with-alpha(0.16);
                     HorizontalLayout {
                         padding-left: Theme.pad;
                         padding-right: 4px;
                         spacing: 4px;
-                        Text {
-                            text: root.link-text;
-                            color: Theme.text;
-                            font-size: 13.5px;
-                            vertical-alignment: center;
-                            overflow: elide;
+                        VerticalLayout {
+                            padding-top: 6px;
+                            padding-bottom: 6px;
+                            alignment: center;
                             horizontal-stretch: 1;
+                            Text {
+                                text: root.link-text;
+                                color: Theme.text;
+                                font-size: 13.5px;
+                                wrap: word-wrap;
+                            }
                         }
                         if root.away == 3: VerticalLayout {
                             padding-right: 12px;
