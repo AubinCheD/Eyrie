@@ -298,7 +298,7 @@ La passe d'ergonomie, avec l'accord du 28/10, en ajoute d'autres, un commit par 
   clonage sans fenêtre (`clone_remote`, `clone_defaults`, `account_for_url`, `host_jobs`, `cancel_host_job`) ; les
   pull requests lues en fond (`refresh_pull_requests`, `pull_requests`).
 - Fawkes : `restart_group`. Menagerie : `docker_project_action`. Owlery : `mark_read_many`, et `can_undo`, que
-  l'accord (« tout marquer lu annulable ») ne nommait pas : à confirmer par l'utilisateur.
+  l'accord (« tout marquer lu annulable ») ne nommait pas, confirmée le 29/10.
 
 ## 7. L'application
 
