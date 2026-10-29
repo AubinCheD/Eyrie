@@ -696,15 +696,17 @@ fn flags_of(attrs: u32, link: bool, name: &str) -> u8 {
 fn entry(env: &Env, dir: &Path, r: &Raw, known: &Known, module: &str) -> FolderEntry {
     let path = dir.join(&r.name);
     let mut flags = flags_of(r.attrs, r.link, &r.name);
-    // Ni un lien ni un dossier en ligne seulement ne sont lus au travers.
-    if flags & (ENTRY_LINK | ENTRY_CLOUD) == 0 && path.join(".git").exists() {
+    let denied = protected(env, &path);
+    if denied {
+        flags |= ENTRY_DENIED;
+    }
+    // Ni un dossier protégé, ni un lien, ni un dossier en ligne seulement ne sont lus au travers ; un dossier protégé
+    // n'est pas non plus dit connu du module.
+    if !denied && flags & (ENTRY_LINK | ENTRY_CLOUD) == 0 && path.join(".git").exists() {
         flags |= ENTRY_REPO;
     }
-    if known.has(&path) {
+    if !denied && known.has(&path) {
         flags |= ENTRY_KNOWN;
-    }
-    if protected(env, &path) {
-        flags |= ENTRY_DENIED;
     }
     FolderEntry {
         name: r.name.clone(),
@@ -1215,6 +1217,24 @@ mod tests {
         assert!(listing(&small, &ask(root, spec.clone())).truncated);
         let refused = listing(&small, &ask(&root.join("zone"), spec));
         assert!(refused.error.contains("protégé") && refused.entries.is_empty());
+    }
+
+    /// Un dossier protégé se montre refusé, sans rien lire dedans : ni s'il est un dépôt (le profil d'un autre compte,
+    /// `ProgramData`), ni s'il est connu du module. Son voisin, lui, se lit.
+    #[test]
+    fn a_protected_entry_is_not_probed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for d in ["zone/.git", "depot/.git"] {
+            mkdir(&root.join(d));
+        }
+        let env = Env::for_tests(vec![root.join("zone")]);
+        let spec = FolderInput { known: vec![root.join("zone").to_string_lossy().into_owned()], ..Default::default() };
+        let l = listing(&env, &ask(root, spec));
+        assert_eq!(l.error, "");
+        let entry = |name: &str| l.entries.iter().find(|e| e.name == name).unwrap();
+        assert_eq!((entry("zone").flags, entry("zone").detail.as_str()), (ENTRY_DENIED, "protégé"));
+        assert_eq!(entry("depot").flags, ENTRY_REPO);
     }
 
     #[test]
