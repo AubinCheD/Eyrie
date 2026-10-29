@@ -10,8 +10,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -50,6 +52,8 @@ type wakeFixture struct {
 	mobile string
 	w      *waker
 	ln     net.Listener
+	// Les connexions d'adresses du tailnet choisies (from).
+	fake   *fakeListener
 	mu     sync.Mutex
 	clock  time.Time
 	open   bool
@@ -145,7 +149,64 @@ func newWake(t *testing.T) *wakeFixture {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go f.w.serve(ctx, ln)
+	f.fake = &fakeListener{conns: make(chan net.Conn), closed: make(chan struct{})}
+	go f.w.serve(ctx, f.fake)
 	return f
+}
+
+// fakeListener : des connexions d'essai (net.Pipe), chacune d'une adresse du tailnet choisie.
+type fakeListener struct {
+	conns  chan net.Conn
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (l *fakeListener) Accept() (net.Conn, error) {
+	select {
+	case c := <-l.conns:
+		return c, nil
+	case <-l.closed:
+		return nil, net.ErrClosed
+	}
+}
+
+func (l *fakeListener) Close() error {
+	l.once.Do(func() { close(l.closed) })
+	return nil
+}
+
+func (l *fakeListener) Addr() net.Addr {
+	return &net.TCPAddr{IP: net.IPv4(100, 64, 0, 1), Port: wakePort}
+}
+
+// remoteConn : le bout du veilleur d'une connexion venue de `remote`.
+type remoteConn struct {
+	net.Conn
+	remote net.Addr
+}
+
+func (c remoteConn) RemoteAddr() net.Addr {
+	return c.remote
+}
+
+// from ouvre une connexion au veilleur depuis l'adresse du tailnet `addr` (« 100.64.0.7:41000 »).
+func (f *wakeFixture) from(addr string) net.Conn {
+	f.t.Helper()
+	server, client := net.Pipe()
+	f.t.Cleanup(func() { client.Close() })
+	f.fake.conns <- remoteConn{server, net.TCPAddrFromAddrPort(netip.MustParseAddrPort(addr))}
+	client.SetDeadline(time.Now().Add(10 * time.Second))
+	return client
+}
+
+// closedAtOnce : le veilleur a-t-il fermé `c` sans rien dire (3 s au plus) ?
+func closedAtOnce(c net.Conn) error {
+	c.SetReadDeadline(time.Now().Add(3 * time.Second))
+	n, err := c.Read(make([]byte, 1))
+	if n == 0 && errors.Is(err, io.EOF) {
+		return nil
+	}
+	return fmt.Errorf("lu %d octet(s), %v", n, err)
 }
 
 // config écrit mobile\veille.dpapi comme Eyrie.
@@ -557,8 +618,8 @@ func TestAnUnsafeEyrieIsNotLaunched(t *testing.T) {
 	}
 }
 
-// Une ligne trop longue ferme la connexion ; au-delà de quatre connexions, les suivantes sont fermées tout de suite.
-func TestOverlongLinesAndExtraConnectionsAreDropped(t *testing.T) {
+// Une ligne trop longue ferme la connexion.
+func TestOverlongLinesAreDropped(t *testing.T) {
 	f := newWake(t)
 	c, err := net.Dial("tcp", f.ln.Addr().String())
 	if err != nil {
@@ -574,36 +635,47 @@ func TestOverlongLinesAndExtraConnectionsAreDropped(t *testing.T) {
 	if line, err := rd.ReadString('\n'); err == nil {
 		t.Fatalf("réponse à une ligne trop longue : %q", line)
 	}
+}
 
+// Une connexion par adresse du tailnet : la nouvelle remplace la précédente (le téléphone qui demande le démarrage
+// juste après une sonde), et un appareil du compte qui en ouvre à la chaîne, sans jamais rien demander, ne prend pas
+// la place des autres. Au-delà de huit adresses, les suivantes sont fermées tout de suite.
+func TestOneConnectionPerTailnetAddress(t *testing.T) {
+	f := newWake(t)
 	hold := make(chan struct{})
 	f.set(func(f *wakeFixture) { f.hold = hold })
-	var held []net.Conn
-	for range maxWakeConns {
-		c, err := net.Dial("tcp", f.ln.Addr().String())
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer c.Close()
-		held = append(held, c)
+	first := f.from("100.64.0.7:41000")
+	eventually(t, "première connexion", func() bool { return f.w.connections() == 1 })
+	again := f.from("100.64.0.7:41001")
+	if err := closedAtOnce(first); err != nil {
+		t.Fatalf("connexion remplacée : %v", err)
 	}
-	eventually(t, "connexions en cours", func() bool { return f.w.conns.Load() == maxWakeConns })
-	extra, err := net.Dial("tcp", f.ln.Addr().String())
-	if err != nil {
-		t.Fatal(err)
+	if n := f.w.connections(); n != 1 {
+		t.Fatalf("connexions : %d", n)
 	}
-	defer extra.Close()
-	extra.SetDeadline(time.Now().Add(3 * time.Second))
-	if _, err := extra.Read(make([]byte, 1)); err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
-		t.Fatalf("cinquième connexion : %v", err)
+	// Le même appareil en IPv6 est une autre adresse ; puis six autres appareils.
+	held := []net.Conn{again, f.from("[fd7a:115c:a1e0::7]:41002")}
+	for i := range maxWakeConns - 2 {
+		held = append(held, f.from(fmt.Sprintf("100.64.0.%d:41000", 10+i)))
+	}
+	eventually(t, "connexions en cours", func() bool { return f.w.connections() == maxWakeConns })
+	if err := closedAtOnce(f.from("100.64.0.99:41000")); err != nil {
+		t.Fatalf("neuvième adresse : %v", err)
+	}
+	// Plein, une adresse déjà là remplace encore la sienne.
+	held[0] = f.from("100.64.0.7:41003")
+	if err := closedAtOnce(again); err != nil {
+		t.Fatalf("connexion remplacée, plein : %v", err)
 	}
 	f.set(func(f *wakeFixture) { f.hold = nil })
 	close(hold)
-	for _, c := range held {
-		c.SetDeadline(time.Now().Add(5 * time.Second))
-		if _, err := bufio.NewReader(c).ReadString('\n'); err != nil {
-			t.Fatalf("connexion tenue : %v", err)
+	for i, c := range held {
+		if line, err := bufio.NewReader(c).ReadString('\n'); err != nil || !strings.Contains(line, `"defi"`) {
+			t.Fatalf("connexion tenue %d : %q %v", i, line, err)
 		}
+		c.Close()
 	}
+	eventually(t, "connexions finies", func() bool { return f.w.connections() == 0 })
 }
 
 // Le réglage du veilleur n'est lu que s'il vient d'Eyrie (DPAPI, entropie eyrie/veille) et qu'il est complet.

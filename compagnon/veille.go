@@ -4,17 +4,19 @@ package main
 
 // Démarrer Eyrie depuis le téléphone quand elle est fermée : le veilleur écoute le port 4748 du tailnet et y tient le
 // défi-réponse de crates/suite-mobile/src/veille.rs, en lignes JSON (chacune terminée par "\n", d'un Kio au plus ; une
-// demande sans fin de ligne dans les 5 s est abandonnée, sans réponse) :
+// demande sans fin de ligne dans les 5 s est abandonnée, sans réponse ; une connexion par adresse du tailnet, une
+// nouvelle remplaçant la précédente, huit adresses à la fois au plus) :
 //
 //  1. veilleur → téléphone : {"v":1,"defi":"<64 hex>","eyrie":"fermee|demarrage|ouverte|acces-coupe"} ;
 //  2. téléphone → veilleur : {"appareil":"<id>","demande":"demarrer","preuve":"<64 hex>"} ;
 //  3. veilleur → téléphone : {"ok":true,"etat":"demarrage"} ou {"ok":false,"raison":"…"}.
 //
-// Seul un appareil appairé reçoit un défi : le compte Tailscale de la connexion (WhoIs) doit être celui d'un appareil
-// de mobile\appareils.json ; les autres ne reçoivent rien. Seul un appareil qui a le droit « Agir » démarre Eyrie.
-// Le veilleur relit à chaque demande les appareils et mobile\veille.dpapi (écrit par Eyrie, chiffré par DPAPI) :
-// retirer un appareil, lui retirer « Agir » ou couper l'accès sur le PC vaut tout de suite. Il n'a pas la clé du PC
-// (Noise) : il peut seulement démarrer Eyrie, et rien d'autre qu'eyrie.exe rangé à côté de lui.
+// Seul un appareil du même compte Tailscale qu'un appareil appairé reçoit un défi : le compte de la connexion (WhoIs)
+// doit être celui d'un appareil de mobile\appareils.json ; les autres ne reçoivent rien. Seul un appareil qui a le
+// droit « Agir » démarre Eyrie. Le veilleur relit à chaque demande les appareils et mobile\veille.dpapi (écrit par
+// Eyrie, chiffré par DPAPI) : retirer un appareil, lui retirer « Agir » ou couper l'accès sur le PC vaut tout de
+// suite. Il n'a pas la clé du PC (Noise) : il peut seulement démarrer Eyrie, et rien d'autre qu'eyrie.exe rangé à
+// côté de lui.
 
 import (
 	"bufio"
@@ -34,7 +36,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -51,10 +52,12 @@ const (
 	// ce texte et oublie sa clé).
 	actRefused = "ce téléphone n'a pas le droit « Agir » sur le PC"
 
-	// Une connexion : 5 s au plus, des lignes d'un Kio au plus, quatre à la fois au plus.
+	// Une connexion : 5 s au plus, des lignes d'un Kio au plus. Une seule par adresse du tailnet (un appareil en a
+	// deux, IPv4 et IPv6), huit adresses à la fois au plus : un appareil du compte qui en ouvre à la chaîne sans rien
+	// demander ne prend pas la place du téléphone.
 	wakeDeadline = 5 * time.Second
 	maxWakeLine  = 1024
-	maxWakeConns = 4
+	maxWakeConns = 8
 
 	// Cinq preuves fausses d'un même appareil du tailnet le bloquent un quart d'heure.
 	maxWrongProofs = 5
@@ -255,6 +258,12 @@ type strikes struct {
 	until time.Time
 }
 
+// wakeConn : une connexion en cours, et de quoi l'arrêter.
+type wakeConn struct {
+	c      net.Conn
+	cancel context.CancelFunc
+}
+
 // waker : le démarrage d'Eyrie à la demande d'un téléphone.
 type waker struct {
 	// Le dossier du pont (appareils.json, veille.dpapi, journal.jsonl).
@@ -268,8 +277,10 @@ type waker struct {
 	now    func() time.Time
 	logf   func(string, ...any)
 
-	conns atomic.Int32
-	mu    sync.Mutex
+	// Les connexions en cours, une par adresse du tailnet.
+	connMu sync.Mutex
+	conns  map[string]*wakeConn
+	mu     sync.Mutex
 	// Par adresse sur le tailnet (un appareil).
 	wrong  map[string]*strikes
 	starts []time.Time
@@ -288,8 +299,51 @@ func newWaker(mobile, exe string, who whois, logf func(string, ...any)) *waker {
 		launch: launchEyrie,
 		now:    time.Now,
 		logf:   logf,
+		conns:  map[string]*wakeConn{},
 		wrong:  map[string]*strikes{},
 	}
+}
+
+// peerOf : l'adresse du tailnet d'une connexion, sans le port.
+func peerOf(addr string) string {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	return host
+}
+
+// admit compte une connexion de l'adresse `peer`, et ferme celle que cette adresse avait déjà : le téléphone qui
+// demande le démarrage juste après une sonde passe, un appareil qui en ouvre à la chaîne ne garde que la dernière.
+// nil quand maxWakeConns autres adresses ont une connexion en cours.
+func (w *waker) admit(peer string, c net.Conn, cancel context.CancelFunc) *wakeConn {
+	w.connMu.Lock()
+	defer w.connMu.Unlock()
+	if old := w.conns[peer]; old != nil {
+		old.cancel()
+		old.c.Close()
+	} else if len(w.conns) >= maxWakeConns {
+		return nil
+	}
+	wc := &wakeConn{c: c, cancel: cancel}
+	w.conns[peer] = wc
+	return wc
+}
+
+// leave : la connexion `wc` de l'adresse `peer` est finie (si une autre ne l'a pas déjà remplacée).
+func (w *waker) leave(peer string, wc *wakeConn) {
+	w.connMu.Lock()
+	defer w.connMu.Unlock()
+	if w.conns[peer] == wc {
+		delete(w.conns, peer)
+	}
+}
+
+// connections : les adresses du tailnet qui ont une connexion en cours.
+func (w *waker) connections() int {
+	w.connMu.Lock()
+	defer w.connMu.Unlock()
+	return len(w.conns)
 }
 
 func (w *waker) serve(ctx context.Context, ln net.Listener) {
@@ -307,14 +361,18 @@ func (w *waker) serve(ctx context.Context, ln net.Listener) {
 			time.Sleep(200 * time.Millisecond)
 			continue
 		}
-		if w.conns.Add(1) > maxWakeConns {
-			w.conns.Add(-1)
+		peer := peerOf(c.RemoteAddr().String())
+		cctx, cancel := context.WithCancel(ctx)
+		wc := w.admit(peer, c, cancel)
+		if wc == nil {
+			cancel()
 			c.Close()
 			continue
 		}
 		go func() {
-			defer w.conns.Add(-1)
-			w.handle(ctx, c)
+			defer w.leave(peer, wc)
+			defer cancel()
+			w.handle(cctx, c)
 		}()
 	}
 }
@@ -361,11 +419,7 @@ func (w *waker) handle(ctx context.Context, c net.Conn) {
 	if json.Unmarshal(line, &req) != nil {
 		return
 	}
-	peer, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		peer = addr
-	}
-	if reason := w.decide(peer, id.Login, devices, cfg, key, challenge, req); reason != "" {
+	if reason := w.decide(peerOf(addr), id.Login, devices, cfg, key, challenge, req); reason != "" {
 		_ = writeJSON(c, wakeReply{Reason: reason})
 	} else {
 		_ = writeJSON(c, wakeReply{OK: true, State: eyrieStarting})
