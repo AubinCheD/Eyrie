@@ -1709,9 +1709,10 @@ export component Toast inherits Rectangle {
     in property <bool> expanded;
     in property <length> max-text: 400px;
     callback tapped();
-    // La hauteur d'une ligne, mesurée : elle dépend de la police du téléphone.
-    property <length> line: probe.preferred-height;
-    height: min(label.preferred-height, root.expanded ? root.max-text : 3 * root.line) + 24px;
+    // La hauteur de trois lignes, mesurée : elle dépend de la police du téléphone (une ligne seule est plus haute que
+    // l'écart entre deux lignes : trois fois une ligne laissait voir le haut de la quatrième).
+    property <length> three-lines: probe.preferred-height;
+    height: min(label.preferred-height, root.expanded ? root.max-text : root.three-lines) + 24px;
     accessible-role: AccessibleRole.text;
     accessible-label: root.text;
     accessible-action-default => { root.tapped(); }
@@ -1721,7 +1722,7 @@ export component Toast inherits Rectangle {
     drop-shadow-color: #00000055;
     probe := Text {
         visible: false;
-        text: "X";
+        text: "X\nX\nX";
         font-size: 14px;
     }
     // Sous le texte : les marges et la pastille de ton se touchent aussi.
