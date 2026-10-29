@@ -1409,9 +1409,10 @@ export component TopBar inherits Rectangle {
             tint: Theme.text-dim;
             clicked => { root.pc(); }
         }
-        // Une action seule : en clair (rouge si elle est dangereuse).
+        // Une action seule : en clair (rouge si elle est dangereuse), son bord droit aligné sur celui des cartes.
         if root.bar.length == 1 && root.acts.length == 0: VerticalLayout {
             alignment: center;
+            padding-right: Theme.pad - 4px;
             Rectangle {
                 width: first-label.preferred-width + 24px;
                 height: 44px;
