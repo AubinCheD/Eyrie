@@ -6,7 +6,7 @@ use std::ffi::{CStr, c_void};
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::ptr::null_mut;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -15,7 +15,7 @@ use jni::sys::{jfloat, jint};
 use jni::{JNIEnv, JavaVM, NativeMethod};
 use slint::android::AndroidApp;
 
-use crate::dictee::{self, Asking, Heard, Recognizer};
+use crate::dictee::{self, Asking, Heard, Recognizer, Requested};
 use crate::platform::{Frame, Notice};
 
 static APP: OnceLock<AndroidApp> = OnceLock::new();
@@ -354,8 +354,9 @@ static DICTEE_CLASS: OnceLock<Option<GlobalRef>> = OnceLock::new();
 type HeardSink = Box<dyn Fn(u32, Heard) + Send>;
 static HEARD: Mutex<Option<HeardSink>> = Mutex::new(None);
 
-/// L'écoute demandée (son numéro ; 0 : aucune) : abandonnée pendant la question du micro, elle ne démarre pas.
-static DICTATING: AtomicU32 = AtomicU32::new(0);
+/// L'écoute demandée : abandonnée pendant la question du micro, elle ne démarre pas ; abandonnée pendant que son fil
+/// l'ouvre, son annulation est postée après l'ouverture (voir `Requested`).
+static DICTATING: Requested = Requested::new();
 
 fn dictee_class() -> Option<&'static GlobalRef> {
     DICTEE_CLASS
@@ -460,9 +461,9 @@ pub fn start_dictation(seq: u32, on_device: bool, heard: HeardSink) {
     if let Ok(mut sink) = HEARD.lock() {
         *sink = Some(heard);
     }
-    DICTATING.store(seq, Ordering::Relaxed);
+    DICTATING.set(seq);
     let _ = std::thread::Builder::new().name("eyrie-dictee".into()).spawn(move || {
-        let still = || DICTATING.load(Ordering::Relaxed) == seq;
+        let still = || DICTATING.is(seq);
         if !granted(RECORD_AUDIO) {
             ask(RECORD_AUDIO, 9);
             let asked = Instant::now();
@@ -478,21 +479,22 @@ pub fn start_dictation(seq: u32, on_device: bool, heard: HeardSink) {
                 }
             }
         }
-        if !still() {
-            return;
-        }
-        let started = dictee_class().and_then(|class| {
-            with_java(|env, activity| {
-                env.call_static_method(
-                    class,
-                    "ecouter",
-                    "(Landroid/content/Context;IZ)V",
-                    &[JValue::Object(activity), JValue::Int(seq as i32), JValue::Bool(on_device.into())],
-                )?;
-                Ok(())
+        // `ecouter` ne fait que poster à Android : vite fait, verrou tenu.
+        let started = DICTATING.open_if(seq, || {
+            dictee_class().and_then(|class| {
+                with_java(|env, activity| {
+                    env.call_static_method(
+                        class,
+                        "ecouter",
+                        "(Landroid/content/Context;IZ)V",
+                        &[JValue::Object(activity), JValue::Int(seq as i32), JValue::Bool(on_device.into())],
+                    )?;
+                    Ok(())
+                })
             })
         });
-        if started.is_none() {
+        // `None` : plus demandée, rien à dire.
+        if started == Some(None) {
             deliver(seq, Heard::Error(dictee::NOT_STARTED));
         }
     });
@@ -511,8 +513,7 @@ pub fn stop_dictation() {
 
 /// Abandonne l'écoute (ou sa demande du micro) : plus rien n'arrive d'elle.
 pub fn cancel_dictation() {
-    DICTATING.store(0, Ordering::Relaxed);
-    dictee_call("annuler");
+    DICTATING.clear(|| dictee_call("annuler"));
 }
 
 mod camera {

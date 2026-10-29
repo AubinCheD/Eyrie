@@ -7,6 +7,7 @@
 //! Ici, ce qui ne dépend pas d'Android : l'état d'une écoute, le texte ajouté à la saisie, les erreurs dites en
 //! français, la reconnaissance utilisée (pour les réglages) et la réponse à la demande du micro.
 
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 /// Où va le texte dicté.
@@ -265,6 +266,45 @@ impl Recognizer {
     }
 }
 
+/// L'écoute demandée à Android (son numéro ; 0 : aucune). Le fil qui ouvre le micro vérifie qu'elle l'est toujours et
+/// poste l'ouverture d'un tenant : une annulation ne passe pas entre les deux, elle est postée après l'ouverture qu'elle
+/// annule (le fil principal d'Android prend ce qu'on lui poste dans l'ordre), et la ferme.
+#[derive(Default)]
+pub struct Requested(Mutex<u32>);
+
+impl Requested {
+    pub const fn new() -> Self {
+        Requested(Mutex::new(0))
+    }
+
+    fn lock(&self) -> MutexGuard<'_, u32> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// L'écoute `seq` est demandée ; une d'avant ne l'est plus.
+    pub fn set(&self, seq: u32) {
+        *self.lock() = seq;
+    }
+
+    pub fn is(&self, seq: u32) -> bool {
+        *self.lock() == seq
+    }
+
+    /// `open` (poster l'ouverture à Android) si l'écoute `seq` est toujours demandée ; `None` : elle ne l'est plus.
+    pub fn open_if<R>(&self, seq: u32, open: impl FnOnce() -> R) -> Option<R> {
+        let current = self.lock();
+        // Le verrou est tenu pendant `open` : `clear` attend qu'elle soit postée.
+        (*current == seq).then(open)
+    }
+
+    /// Plus d'écoute demandée, puis `cancel` (poster l'annulation), après une ouverture en cours.
+    pub fn clear(&self, cancel: impl FnOnce()) {
+        let mut current = self.lock();
+        *current = 0;
+        cancel();
+    }
+}
+
 /// La réponse d'Android à la demande du micro, sans `onRequestPermissionsResult` (NativeActivity ne le transmet pas) :
 /// relevée régulièrement, la permission et le premier plan.
 #[derive(Clone, Debug, Default)]
@@ -477,6 +517,37 @@ mod tests {
         assert!(kind == 2 && text.contains("« Google »") && text.contains("Internet"), "{text}");
         let (_, text) = Recognizer::Service(String::new()).display();
         assert!(text.contains("Internet") && !text.contains("«"), "{text}");
+    }
+
+    /// Une annulation pendant que le fil de la dictée ouvre le micro est postée après l'ouverture, jamais avant : la
+    /// reconnaissance qu'elle doit fermer est bien là quand elle passe.
+    #[test]
+    fn a_cancel_is_never_posted_before_the_opening_it_cancels() {
+        use std::sync::{Arc, mpsc};
+        let requested = Arc::new(Requested::new());
+        let posted = Arc::new(Mutex::new(Vec::new()));
+        requested.set(4);
+        let (checked, wait) = mpsc::channel();
+        let opener = {
+            let (requested, posted) = (requested.clone(), posted.clone());
+            std::thread::spawn(move || {
+                requested.open_if(4, || {
+                    checked.send(()).unwrap();
+                    // Le temps d'attacher le fil à Java, avant de poster.
+                    std::thread::sleep(Duration::from_millis(100));
+                    posted.lock().unwrap().push("ecouter");
+                })
+            })
+        };
+        wait.recv().unwrap();
+        requested.clear(|| posted.lock().unwrap().push("annuler"));
+        assert_eq!(opener.join().unwrap(), Some(()));
+        assert_eq!(*posted.lock().unwrap(), ["ecouter", "annuler"]);
+        assert!(!requested.is(4));
+        assert_eq!(requested.open_if(4, || ()), None, "annulée : le micro ne s'ouvre plus");
+        requested.set(5);
+        assert_eq!(requested.open_if(4, || ()), None, "remplacée");
+        assert_eq!(requested.open_if(5, || 7), Some(7));
     }
 
     /// La question d'Android met l'application en pause : la permission accordée, ou l'application revenue sans elle.
