@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Eyrie mobile : une seule activité native (Slint), pas de code Java à nous. Pas de sauvegarde des données ni de
-     transfert vers un autre téléphone : la clé de l'appareil et les clés de démarrage des PC ne doivent pas partir
-     (allowBackup et fullBackupContent jusqu'à Android 11, dataExtractionRules à partir d'Android 12). -->
+<!-- Eyrie mobile : une seule activité native (Slint) ; une classe Java à nous, la dictée (android/java, Dictee.java :
+     la reconnaissance vocale d'Android parle à un écouteur Java, que NativeActivity n'a pas). Pas de sauvegarde des
+     données ni de transfert vers un autre téléphone : la clé de l'appareil et les clés de démarrage des PC ne doivent
+     pas partir (allowBackup et fullBackupContent jusqu'à Android 11, dataExtractionRules à partir d'Android 12). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="io.github.aubinched.eyrie"
     android:versionCode="1"
@@ -14,13 +15,23 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <!-- Android 13 et suivants : demandée à l'exécution une fois appairé (android.rs, ask_notifications). -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- La dictée : demandée à l'exécution au premier toucher du micro (android.rs, start_dictation). -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+
+    <!-- Android 11 et suivants : sans cela, le service de reconnaissance vocale du téléphone reste invisible. -->
+    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+    </queries>
 
     <application
         android:label="Eyrie"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
-        android:hasCode="false"
+        android:hasCode="true"
         android:extractNativeLibs="true"
         android:allowBackup="false"
         android:fullBackupContent="false"

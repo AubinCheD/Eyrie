@@ -7,7 +7,9 @@
     1. le nœud Tailscale de l'application (compagnon\telephone, Go) est compilé en bibliothèque partagée avec le
        NDK, puis la bibliothèque native (crate eyrie-mobile, Slint), qui le lie ;
     2. les ressources (manifeste, icône adaptative tirée du nid d'Eyrie) sont liées par aapt2 ;
-    3. les deux bibliothèques sont ajoutées à l'APK, aligné (zipalign) puis signé (apksigner).
+    3. le code Java de l'application (la dictée, crates\eyrie-mobile\android\java) est compilé par javac contre
+       android.jar, puis changé par d8 en classes.dex ;
+    4. les deux bibliothèques et classes.dex sont ajoutés à l'APK, aligné (zipalign) puis signé (apksigner).
 
     Prérequis (sans droits d'administrateur) : le SDK Android dans %LOCALAPPDATA%\Android\Sdk (ANDROID_HOME) avec
     platforms;android-36, build-tools;36.1.0, platform-tools et un NDK (ndk;28.x), un JDK 17
@@ -124,7 +126,22 @@ $unsigned = "$work\eyrie-unsigned.apk"
     --min-sdk-version $api --target-sdk-version 35 "$work\flat\res.zip"
 if ($LASTEXITCODE -ne 0) { throw 'aapt2 link a échoué.' }
 
-# --- 3. Les bibliothèques dans l'APK, alignement, signature ---
+# --- 3. Le code Java (la dictée : Dictee.java, appelée par android.rs) ---
+# Des classes Java 8, compilées contre l'android.jar du SDK (pas la bibliothèque du JDK) ; d8 en fait classes.dex pour
+# Android 8 et suivants ($api).
+New-Item -ItemType Directory -Force "$work\classes", "$work\dex" | Out-Null
+# Des listes, même d'un seul fichier (une chaîne seule passerait lettre par lettre).
+$java = @(Get-ChildItem (Join-Path $repo 'crates\eyrie-mobile\android\java') -Recurse -Filter *.java | ForEach-Object FullName)
+& (Join-Path $env:JAVA_HOME 'bin\javac.exe') -source 8 -target 8 -bootclasspath $androidJar '-Xlint:all' '-Xlint:-options' `
+    -encoding UTF-8 -d "$work\classes" @java
+if ($LASTEXITCODE -ne 0) { throw 'javac a échoué.' }
+$classes = @(Get-ChildItem "$work\classes" -Recurse -Filter *.class | ForEach-Object FullName)
+$mode = if ($Release) { '--release' } else { '--debug' }
+& (Join-Path $tools.FullName 'd8.bat') $mode --min-api $api --lib $androidJar --output "$work\dex" @classes
+if ($LASTEXITCODE -ne 0) { throw 'd8 a échoué.' }
+if (-not (Test-Path -LiteralPath "$work\dex\classes.dex")) { throw "d8 n'a pas produit classes.dex." }
+
+# --- 4. Les bibliothèques et classes.dex dans l'APK, alignement, signature ---
 Copy-Item $so "$work\lib\$Abi\libeyrie_mobile.so"
 Copy-Item (Join-Path $tailnet 'libeyrie_tailnet.so') "$work\lib\$Abi\libeyrie_tailnet.so"
 Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
@@ -133,9 +150,18 @@ try {
     foreach ($lib in 'libeyrie_mobile.so', 'libeyrie_tailnet.so') {
         [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, "$work\lib\$Abi\$lib", "lib/$Abi/$lib")
     }
+    [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, "$work\dex\classes.dex", 'classes.dex')
 } finally {
     $zip.Dispose()
 }
+# Sans classes.dex, l'application s'ouvrirait sans dictée (android.rs ne trouverait pas la classe) : pas d'APK.
+$zip = [System.IO.Compression.ZipFile]::OpenRead($unsigned)
+try {
+    $names = $zip.Entries | ForEach-Object FullName
+} finally {
+    $zip.Dispose()
+}
+if ($names -notcontains 'classes.dex') { throw "classes.dex manque dans l'APK." }
 $aligned = "$work\eyrie-aligned.apk"
 & (Join-Path $tools.FullName 'zipalign.exe') -f -p 4 $unsigned $aligned
 if ($LASTEXITCODE -ne 0) { throw 'zipalign a échoué.' }
