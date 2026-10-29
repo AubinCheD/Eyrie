@@ -15,7 +15,8 @@
 //! plusieurs lignes à confirmer), `terminal-coller-echap` (un collage qui cache Échap, à confirmer),
 //! `terminal-ctrl-coller` (Ctrl collé, puis Coller : relâché), `terminal-saisie` (sur plusieurs lignes),
 //! `terminal-masque` (un mot de passe demandé : la saisie se masque), `terminal-zoom`, `terminal-suivi` (le bas
-//! reste en vue quand la liste rapetisse), `terminal-remonte` (la sortie qui arrive ne ramène pas en bas) ; la
+//! reste en vue quand la liste rapetisse), `terminal-remonte` (la sortie qui arrive ne ramène pas en bas),
+//! `terminal-flux` (une session qui écrit sans s'arrêter : la remonter, même d'une ligne, arrête de la suivre) ; la
 //! dictée : `terminal-dictee` (le micro écoute, le texte provisoire au-dessus de la saisie), `terminal-dictee-instant`
 //! (le micro touché, pas encore ouvert : « Un instant… »), `terminal-dictee-langue` (la reconnaissance du téléphone
 //! n'a pas le français : « Télécharger le français »), `saisie-dictee` (une consigne de Patronus, sur plusieurs
@@ -896,8 +897,42 @@ fn terminal_scene(ui: &AppWindow, scene: &str) {
                 with(|c| c.on_message(ToPhone::Term(more)));
             });
         }
+        // Une session Claude qui écrit sans s'arrêter (une ligne tous les 1/8 s) : remontée d'un glissé ou d'un lancer,
+        // même d'une ligne, la vue ne bouge plus ; ramenée en bas, ou par « Revenir en bas », elle suit de nouveau.
+        "terminal-flux" => {
+            let mut n = 400;
+            with(|c| c.on_message(ToPhone::Term(TermFrame::full("fawkes", "3", &streaming(n)))));
+            let timer = slint::Timer::default();
+            timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(125), move || {
+                let next = TermFrame::diff("fawkes", "3", &streaming(n), &streaming(n + 1));
+                n += 1;
+                with(|c| c.on_message(ToPhone::Term(next)));
+            });
+            // Il écrit tant que la démonstration dure.
+            std::mem::forget(timer);
+        }
         _ => {}
     }
+}
+
+/// Ce qu'une session Claude a écrit au bout de `n` lignes : les dernières seulement (l'historique gardé par le PC, ici
+/// plus court : les plus vieilles tombent par le haut à chaque ligne), numérotées pour voir où en est la vue ; dessous,
+/// sa ligne d'état, réécrite à chaque fois.
+fn streaming(n: usize) -> TermView {
+    const KEPT: usize = 240;
+    const SAID: [&str; 6] = [
+        "● Je relis crates/eyrie-mobile/ui/term.slint.",
+        "  ⎿  La liste suit le bas tant qu'on ne l'a pas remontée.",
+        "● Update(crates/eyrie-mobile/src/termscroll.rs)",
+        "  ⎿  + pub fn follows(follow: bool, m: Move) -> bool {",
+        "",
+        "● cargo test -j 4 -p eyrie-mobile",
+    ];
+    let mut lines: Vec<Line> =
+        (n.saturating_sub(KEPT)..n).map(|i| Line::plain(format!("{:04} {}", i + 1, SAID[i % SAID.len()]))).collect();
+    lines.push(Line::default());
+    lines.push(Line::plain(format!("* Écriture… ({} s · esc pour interrompre)", n / 8)));
+    TermView { cols: 52, rows: 20, cursor: None, title: "Claude · appli mobile".into(), lines, ..Default::default() }
 }
 
 /// Une compilation : `n` lignes, puis l'invite.
