@@ -3,19 +3,26 @@
 //! de la démarrer, et ne garde pas une commande inscrite moins sûre. Un autre compte du poste qui pourrait remplacer
 //! l'exécutable, déposer une DLL dans son dossier ou renommer un dossier au-dessus (pour mettre le sien à la place)
 //! ferait lancer son code sous le compte de l'utilisateur à un appui sur le téléphone. Le propriétaire de chacun compte
-//! aussi : il peut toujours en changer les droits. Le chemin écrit et le vrai sont contrôlés : une jonction mène
-//! ailleurs. `fawkes::exeplace::check` applique les mêmes règles à ses démarrages : les changer ensemble.
+//! aussi : il peut toujours en changer les droits. Le chemin écrit, chaque jonction ou lien suivi comme Windows le
+//! suit, et le vrai sont contrôlés ; une jonction ne doit pas non plus pouvoir être écrite (elle mènerait ailleurs).
+//! `fawkes::exeplace::check` applique les mêmes règles à ses démarrages : les changer ensemble.
 #![cfg_attr(not(windows), allow(dead_code))]
 
 use std::path::{Path, PathBuf};
 
-/// Écrire, ajouter un fichier ou un sous-dossier, supprimer, changer les droits ou le propriétaire.
-const WRITE_RIGHTS: u32 = 0x2 | 0x4 | 0x40 | 0x1_0000 | 0x4_0000 | 0x8_0000 | 0x1000_0000 | 0x4000_0000;
+/// Écrire, ajouter un fichier ou un sous-dossier, changer les attributs (FSCTL_SET_REPARSE_POINT : une jonction mène
+/// alors ailleurs), supprimer, changer les droits ou le propriétaire.
+const WRITE_RIGHTS: u32 = 0x2 | 0x4 | 0x40 | 0x100 | 0x1_0000 | 0x4_0000 | 0x8_0000 | 0x1000_0000 | 0x4000_0000;
 /// Sur un dossier au-dessus : le renommer (supprimer), renommer ce qu'il contient (supprimer un enfant), changer les
 /// droits ou le propriétaire. Y créer un dossier ne suffit pas (c'est le droit de tous à la racine de C:).
 const ABOVE_RIGHTS: u32 = 0x40 | 0x1_0000 | 0x4_0000 | 0x8_0000 | 0x1000_0000;
 /// Supprimer : la racine d'un disque ne se renomme pas.
 const DELETE_RIGHT: u32 = 0x1_0000;
+
+/// Autant de liens que Windows en suit pour ouvrir un chemin : au-delà, refusé.
+const MAX_LINKS: usize = 63;
+/// FILE_ATTRIBUTE_REPARSE_POINT : un lien, une jonction, ou un fichier que Windows lit autrement (compressé, OneDrive).
+const REPARSE_POINT: u32 = 0x400;
 
 /// ACCESS_ALLOWED_ACE_TYPE.
 const ALLOWED: u8 = 0x0;
@@ -101,18 +108,72 @@ pub fn levels(exe: &Path) -> Vec<(PathBuf, u32)> {
     levels
 }
 
-/// Les niveaux de `exe` tel qu'écrit, puis ceux de son vrai chemin ([`real_path`]) qui n'y sont pas déjà
-/// (`checkedLevels`). Windows lit les droits d'une jonction, pas ceux du dossier où elle mène : sans le vrai chemin, ce
-/// dossier et ceux au-dessus de lui échapperaient ; sans le chemin écrit, la jonction elle-même, qu'un autre compte
-/// pourrait remplacer.
+/// Les niveaux de `exe` tel qu'écrit, puis, lien par lien, ceux du chemin où mène le premier lien ou jonction depuis
+/// la racine ([`link_target`], suivi comme Windows le suit), puis ceux du vrai chemin ([`real_path`]), sans doublon
+/// (`checkedLevels`). Windows lit les droits d'un lien, pas ceux du dossier où il mène : sans les chemins suivis, ce
+/// dossier, ceux au-dessus de lui et les liens de sa propre cible échapperaient. Un point d'analyse (lien, jonction) a
+/// les droits de [`WRITE_RIGHTS`] : qui peut l'écrire le fait mener ailleurs sans le renommer.
+#[cfg(windows)]
 pub fn checked_levels(exe: &Path) -> Result<Vec<(PathBuf, u32)>, String> {
-    let mut checked = levels(exe);
-    for level in levels(&real_path(exe)?) {
+    use std::os::windows::fs::MetadataExt;
+    let mut checked = Vec::new();
+    let mut add = |level| {
         if !checked.contains(&level) {
             checked.push(level);
         }
+    };
+    let mut path = exe.to_path_buf();
+    for _ in 0..=MAX_LINKS {
+        let mut link = None;
+        for (level, rights) in levels(&path) {
+            let meta = std::fs::symlink_metadata(&level)
+                .map_err(|e| format!("attributs de {} illisibles : {e}", level.display()))?;
+            let rights = if meta.file_attributes() & REPARSE_POINT != 0 { WRITE_RIGHTS } else { rights };
+            // Du fichier à la racine : le dernier trouvé est le premier que Windows suit.
+            if meta.file_type().is_symlink() {
+                link = Some(level.clone());
+            }
+            add((level, rights));
+        }
+        let Some(link) = link else {
+            levels(&real_path(exe)?).into_iter().for_each(add);
+            return Ok(checked);
+        };
+        let rest = path.strip_prefix(&link).map_err(|e| format!("{} : {e}", path.display()))?.to_path_buf();
+        path = link_target(&link)?;
+        if !rest.as_os_str().is_empty() {
+            path.push(rest);
+        }
     }
-    Ok(checked)
+    Err(format!("{} : plus de {MAX_LINKS} liens à suivre", exe.display()))
+}
+
+/// Où mène `link`, jonction ou lien symbolique, lu sans le suivre (`read_link`) : une cible absolue sans `\\?\` quand
+/// c'est possible ([`win32_path`] ; `read_link` la rend avec ou sans) ; relative, elle l'est au dossier du lien, `..`
+/// compris (`linkTarget`).
+#[cfg(windows)]
+fn link_target(link: &Path) -> Result<PathBuf, String> {
+    use std::path::{Component, Prefix};
+    let target = std::fs::read_link(link).map_err(|e| format!("lien {} illisible : {e}", link.display()))?;
+    let text = target.to_str().ok_or_else(|| format!("lien {} : cible illisible", link.display()))?;
+    let verbatim = match target.components().next() {
+        Some(Component::Prefix(p)) => match p.kind() {
+            Prefix::Disk(_) => PathBuf::from(format!(r"\\?\{text}")),
+            Prefix::UNC(..) => PathBuf::from(format!(r"\\?\UNC\{}", &text[2..])),
+            _ => target,
+        },
+        _ => {
+            let mut path = PathBuf::new();
+            for c in link.parent().unwrap_or(link).join(&target).components() {
+                match c {
+                    Component::ParentDir => _ = path.pop(),
+                    c => path.push(c),
+                }
+            }
+            return Ok(path);
+        }
+    };
+    Ok(win32_path(&verbatim).unwrap_or(verbatim))
 }
 
 /// Le vrai chemin de `path`, jonctions et liens résolus : `canonicalize`, soit GetFinalPathNameByHandleW sur un
@@ -300,6 +361,19 @@ mod tests {
     fn icacls(path: &Path, args: &[&str]) {
         let out = std::process::Command::new("icacls").arg(path).args(args).output().unwrap();
         assert!(out.status.success(), "icacls {args:?} : {}", String::from_utf8_lossy(&out.stdout));
+    }
+
+    /// La jonction `link`, qui mène à `target` (sans droits d'administrateur).
+    fn junction(link: &Path, target: &Path) {
+        let made =
+            std::process::Command::new("cmd").args(["/c", "mklink", "/J"]).arg(link).arg(target).output().unwrap();
+        assert!(made.status.success(), "mklink /J : {made:?}");
+    }
+
+    /// Le dossier `dir` et un eyrie.exe vide dedans.
+    fn eyrie_in(dir: &Path) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("eyrie.exe"), b"").unwrap();
     }
 
     /// Du fichier à la racine du disque, comme le veilleur : la racine ne se renomme pas.
@@ -490,19 +564,74 @@ mod tests {
     fn a_junction_does_not_hide_the_real_folder() {
         let tmp = tempfile::tempdir().unwrap();
         let real = tmp.path().join("disque").join("Outils");
-        std::fs::create_dir_all(real.join("Eyrie")).unwrap();
-        std::fs::write(real.join("Eyrie").join("eyrie.exe"), b"").unwrap();
-        let junction = tmp.path().join("Outils");
-        let made =
-            std::process::Command::new("cmd").args(["/c", "mklink", "/J"]).arg(&junction).arg(&real).output().unwrap();
-        assert!(made.status.success(), "mklink /J : {made:?}");
-        let exe = junction.join("Eyrie").join("eyrie.exe");
+        eyrie_in(&real.join("Eyrie"));
+        junction(&tmp.path().join("Outils"), &real);
+        let exe = tmp.path().join("Outils").join("Eyrie").join("eyrie.exe");
         assert_eq!(check(&exe), Ok(()));
         icacls(&real, &["/grant", "*S-1-5-11:(DE)"]);
         let refused = check(&exe);
         icacls(&real, &["/remove:g", "*S-1-5-11"]);
         let err = refused.unwrap_err();
         assert!(err.contains(r"\disque\Outils peut") && !err.starts_with(r"\\?\") && err.contains("S-1-5-11"), "{err}");
+    }
+
+    /// Une jonction se fait mener ailleurs, sur place, par qui peut en écrire les données ou les attributs
+    /// (FSCTL_SET_REPARSE_POINT), sans la renommer. Sous `ProgramData`, qui donne ces droits aux utilisateurs
+    /// authentifiés sur ce qu'on y crée, la jonction `Outils` est refusée ; le dossier lui-même, où ils ne font que
+    /// créer, ne l'est pas.
+    #[test]
+    fn a_junction_others_can_repoint_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().join("ProgramData");
+        std::fs::create_dir(&data).unwrap();
+        icacls(&data, &["/grant", "*S-1-5-11:(CI)(WD,AD,WEA,WA)"]);
+        assert_eq!(other_writer(&read_rights(&data).unwrap(), &user_sid().unwrap(), ABOVE_RIGHTS), None);
+        eyrie_in(&tmp.path().join("sur").join("Eyrie"));
+        let link = data.join("Outils");
+        junction(&link, &tmp.path().join("sur"));
+        let err = check(&link.join("Eyrie").join("eyrie.exe")).unwrap_err();
+        assert!(err.starts_with(&format!("{} peut", link.display())) && err.contains("S-1-5-11"), "{err}");
+    }
+
+    /// Deux jonctions à la suite (`Outils` mène à `disque\Partage`, où `Eyrie` mène à `sur\Eyrie`) : `disque\Partage`,
+    /// traversé entre les deux, n'est ni sur le chemin écrit ni sur le vrai. Un autre compte qui peut le renommer y
+    /// mettrait le sien : il est refusé aussi.
+    #[test]
+    fn the_folder_between_two_junctions_is_checked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let partage = tmp.path().join("disque").join("Partage");
+        std::fs::create_dir_all(&partage).unwrap();
+        let sur = tmp.path().join("sur").join("Eyrie");
+        eyrie_in(&sur);
+        junction(&partage.join("Eyrie"), &sur);
+        junction(&tmp.path().join("Outils"), &partage);
+        let exe = tmp.path().join("Outils").join("Eyrie").join("eyrie.exe");
+        assert_eq!(check(&exe), Ok(()));
+        icacls(&partage, &["/grant", "*S-1-5-11:(DE)"]);
+        let refused = check(&exe);
+        icacls(&partage, &["/remove:g", "*S-1-5-11"]);
+        let err = refused.unwrap_err();
+        assert!(err.contains(r"\disque\Partage peut") && err.contains("S-1-5-11"), "{err}");
+    }
+
+    /// Une jonction dont la cible passe par une autre (`Outils` mène à `X\L\Eyrie`, où `L` mène à `Z`) : Windows suit
+    /// `L` en ouvrant la cible d'`Outils`, et traverse `X`, que ni le chemin écrit ni le vrai ne contiennent. Un autre
+    /// compte qui peut le renommer est refusé.
+    #[test]
+    fn a_link_in_a_junction_target_is_followed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let x = tmp.path().join("X");
+        std::fs::create_dir(&x).unwrap();
+        eyrie_in(&tmp.path().join("Z").join("Eyrie"));
+        junction(&x.join("L"), &tmp.path().join("Z"));
+        junction(&tmp.path().join("Outils"), &x.join("L").join("Eyrie"));
+        let exe = tmp.path().join("Outils").join("eyrie.exe");
+        assert_eq!(check(&exe), Ok(()));
+        icacls(&x, &["/grant", "*S-1-5-11:(DE)"]);
+        let refused = check(&exe);
+        icacls(&x, &["/remove:g", "*S-1-5-11"]);
+        let err = refused.unwrap_err();
+        assert!(err.starts_with(&format!("{} peut", x.display())) && err.contains("S-1-5-11"), "{err}");
     }
 
     /// Le vrai chemin perd son `\\?\` quand Windows lit chaque niveau pareil sans ; pas quand il en changerait un

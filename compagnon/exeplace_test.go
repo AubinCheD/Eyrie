@@ -21,6 +21,25 @@ func icacls(t *testing.T, path string, args ...string) {
 	}
 }
 
+// junction crée la jonction `link`, qui mène à `target` (sans droits d'administrateur).
+func junction(t *testing.T, link, target string) {
+	t.Helper()
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", link, target).CombinedOutput(); err != nil {
+		t.Fatalf("mklink /J : %v\n%s", err, out)
+	}
+}
+
+// eyrieIn crée le dossier `dir` et un eyrie.exe vide dedans.
+func eyrieIn(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "eyrie.exe"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // Un dossier du profil est à l'abri ; ouvert en écriture aux utilisateurs authentifiés, il ne l'est plus, ni
 // l'exécutable qu'il contient.
 func TestAFolderOthersCanWriteToIsRefused(t *testing.T) {
@@ -82,17 +101,9 @@ func TestAFolderAboveOthersCanRenameIsRefused(t *testing.T) {
 func TestAJunctionDoesNotHideTheRealFolder(t *testing.T) {
 	tmp := t.TempDir()
 	real := filepath.Join(tmp, "disque", "Outils")
-	if err := os.MkdirAll(filepath.Join(real, "Eyrie"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(real, "Eyrie", "eyrie.exe"), nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	junction := filepath.Join(tmp, "Outils")
-	if out, err := exec.Command("cmd", "/c", "mklink", "/J", junction, real).CombinedOutput(); err != nil {
-		t.Fatalf("mklink /J : %v\n%s", err, out)
-	}
-	exe := filepath.Join(junction, "Eyrie", "eyrie.exe")
+	eyrieIn(t, filepath.Join(real, "Eyrie"))
+	junction(t, filepath.Join(tmp, "Outils"), real)
+	exe := filepath.Join(tmp, "Outils", "Eyrie", "eyrie.exe")
 	if err := exePlaceCheck(exe); err != nil {
 		t.Fatal(err)
 	}
@@ -102,6 +113,79 @@ func TestAJunctionDoesNotHideTheRealFolder(t *testing.T) {
 	var place *unsafePlace
 	if !errors.As(err, &place) || !strings.HasSuffix(place.path, `\disque\Outils`) ||
 		strings.HasPrefix(place.path, `\\?\`) || place.who != "S-1-5-11" {
+		t.Fatalf("refus : %v", err)
+	}
+}
+
+// Une jonction se fait mener ailleurs, sur place, par qui peut en écrire les données ou les attributs
+// (FSCTL_SET_REPARSE_POINT), sans la renommer. Sous `ProgramData`, qui donne ces droits aux utilisateurs authentifiés
+// sur ce qu'on y crée, la jonction `Outils` est refusée ; le dossier lui-même, où ils ne font que créer, ne l'est pas.
+func TestAJunctionOthersCanRepointIsRefused(t *testing.T) {
+	tmp := t.TempDir()
+	data := filepath.Join(tmp, "ProgramData")
+	if err := os.Mkdir(data, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	icacls(t, data, "/grant", "*S-1-5-11:(CI)(WD,AD,WEA,WA)")
+	if who, err := writableByOthers(data, aboveRights); err != nil || who != "" {
+		t.Fatalf("ProgramData : %q %v", who, err)
+	}
+	eyrieIn(t, filepath.Join(tmp, "sur", "Eyrie"))
+	link := filepath.Join(data, "Outils")
+	junction(t, link, filepath.Join(tmp, "sur"))
+	err := exePlaceCheck(filepath.Join(link, "Eyrie", "eyrie.exe"))
+	var place *unsafePlace
+	if !errors.As(err, &place) || place.path != link || place.who != "S-1-5-11" {
+		t.Fatalf("refus : %v", err)
+	}
+}
+
+// Deux jonctions à la suite (`Outils` mène à `disque\Partage`, où `Eyrie` mène à `sur\Eyrie`) : `disque\Partage`,
+// traversé entre les deux, n'est ni sur le chemin écrit ni sur le vrai. Un autre compte qui peut le renommer y
+// mettrait le sien : il est refusé aussi.
+func TestTheFolderBetweenTwoJunctionsIsChecked(t *testing.T) {
+	tmp := t.TempDir()
+	partage := filepath.Join(tmp, "disque", "Partage")
+	if err := os.MkdirAll(partage, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	eyrieIn(t, filepath.Join(tmp, "sur", "Eyrie"))
+	junction(t, filepath.Join(partage, "Eyrie"), filepath.Join(tmp, "sur", "Eyrie"))
+	junction(t, filepath.Join(tmp, "Outils"), partage)
+	exe := filepath.Join(tmp, "Outils", "Eyrie", "eyrie.exe")
+	if err := exePlaceCheck(exe); err != nil {
+		t.Fatal(err)
+	}
+	icacls(t, partage, "/grant", "*S-1-5-11:(DE)")
+	defer icacls(t, partage, "/remove:g", "*S-1-5-11")
+	err := exePlaceCheck(exe)
+	var place *unsafePlace
+	if !errors.As(err, &place) || !strings.HasSuffix(place.path, `\disque\Partage`) || place.who != "S-1-5-11" {
+		t.Fatalf("refus : %v", err)
+	}
+}
+
+// Une jonction dont la cible passe par une autre (`Outils` mène à `X\L\Eyrie`, où `L` mène à `Z`) : Windows suit `L`
+// en ouvrant la cible d'`Outils`, et traverse `X`, que ni le chemin écrit ni le vrai ne contiennent. Un autre compte
+// qui peut le renommer est refusé.
+func TestALinkInAJunctionTargetIsFollowed(t *testing.T) {
+	tmp := t.TempDir()
+	x := filepath.Join(tmp, "X")
+	if err := os.Mkdir(x, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	eyrieIn(t, filepath.Join(tmp, "Z", "Eyrie"))
+	junction(t, filepath.Join(x, "L"), filepath.Join(tmp, "Z"))
+	junction(t, filepath.Join(tmp, "Outils"), filepath.Join(x, "L", "Eyrie"))
+	exe := filepath.Join(tmp, "Outils", "eyrie.exe")
+	if err := exePlaceCheck(exe); err != nil {
+		t.Fatal(err)
+	}
+	icacls(t, x, "/grant", "*S-1-5-11:(DE)")
+	defer icacls(t, x, "/remove:g", "*S-1-5-11")
+	err := exePlaceCheck(exe)
+	var place *unsafePlace
+	if !errors.As(err, &place) || !strings.HasSuffix(place.path, `\X`) || place.who != "S-1-5-11" {
 		t.Fatalf("refus : %v", err)
 	}
 }
