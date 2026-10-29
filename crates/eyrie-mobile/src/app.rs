@@ -1023,9 +1023,13 @@ impl Controller {
     }
 
     /// Un accueil du PC, à la connexion ou pendant (le veilleur activé ou coupé sur le PC, sa clé changée) : ses
-    /// droits, son nom, et la clé de démarrage, remplacée (ou retirée) à chaque fois.
+    /// droits, son nom, et la clé de démarrage, remplacée (ou retirée) à chaque fois. Sans « Terminaux », le micro du
+    /// terminal disparaît : son écoute s'abandonne.
     fn welcomed(&mut self, w: Welcome) {
         self.rights = w.rights;
+        if !self.rights.terminals {
+            self.drop_dictation(Some(true));
+        }
         self.pc_name = w.pc;
         self.eyrie = w.eyrie;
         let wake = w.wake.as_ref().map(Wake::from_key);
@@ -1672,6 +1676,10 @@ impl Controller {
             None => ui.set_term_cursor_row(-1),
         }
         ui.set_term_ended(self.term.ended);
+        // Le programme est terminé : plus de saisie, ni de micro ; l'écoute en cours s'abandonne avec lui.
+        if self.term.ended {
+            self.drop_dictation(Some(true));
+        }
         ui.set_term_waiting(self.term.waiting);
         let replies: Vec<SharedString> = self.term.replies.iter().map(|r| r.label.as_str().into()).collect();
         ui.set_term_replies(ModelRc::new(VecModel::from(replies)));
@@ -2335,7 +2343,9 @@ impl Controller {
         let Some(ui) = self.ui() else { return };
         match target {
             dictee::Target::Term { module, id } => {
-                if self.followed_term().as_ref() != Some(&(module.clone(), id.clone())) {
+                // Plus de saisie possible (pas de micro alors) : l'écoute aurait dû s'abandonner, rien ne s'ajoute.
+                let typable = self.rights.terminals && !self.term.ended && !ui.get_term_masked();
+                if !typable || self.followed_term().as_ref() != Some(&(module.clone(), id.clone())) {
                     return;
                 }
                 let draft = dictee::append(&ui.get_term_draft(), text);
@@ -3544,5 +3554,42 @@ mod tests {
         });
         assert_eq!(ui.get_term_draft().as_str(), "non, relis d'abord le diff", "pas parti dans le choix");
         assert!(ui.get_toast_text().contains("Claude attend un choix"), "{}", ui.get_toast_text());
+    }
+
+    /// La saisie n'est plus possible pendant l'écoute (la session se termine, le PC retire « Terminaux ») : le micro
+    /// disparaît, l'écoute s'abandonne avec lui ; ce qu'elle dit ensuite ne va pas dans la saisie.
+    #[test]
+    fn dictation_stops_when_the_terminal_can_no_longer_be_typed_into() {
+        use suite_mobile::term::{Line, TermFrame, TermView};
+        let ui = dictating_terminal("dictee-fin");
+        let frame = |ended: bool| {
+            let view = TermView { cols: 52, rows: 20, lines: vec![Line::plain("> exit")], ended, ..Default::default() };
+            ToPhone::Term(TermFrame::full("fawkes", "3", &view))
+        };
+        let listen = || {
+            with(|c| {
+                c.term_dictate();
+                let seq = c.dictation.seq();
+                c.on_heard(seq, Heard::Ready);
+                seq
+            })
+            .unwrap()
+        };
+        with(|c| c.on_message(frame(false)));
+        let seq = listen();
+        assert!(ui.get_term_listening());
+        with(|c| c.on_message(frame(true)));
+        assert!(ui.get_term_ended() && !ui.get_term_listening(), "la session est finie : plus de micro, plus d'écoute");
+        with(|c| c.on_heard(seq, Heard::Final("trop tard".into())));
+        assert_eq!(ui.get_term_draft().as_str(), "");
+
+        with(|c| c.on_message(frame(false)));
+        let seq = listen();
+        let rights = Rights { terminals: false, ..Default::default() };
+        let welcome = ToPhone::Welcome { protocol: 1, pc: "PC".into(), eyrie: "x".into(), rights, wake: None };
+        with(|c| c.on_message(welcome));
+        assert!(!ui.get_term_can_type() && !ui.get_term_listening(), "« Terminaux » retiré");
+        with(|c| c.on_heard(seq, Heard::Final("trop tard".into())));
+        assert_eq!(ui.get_term_draft().as_str(), "");
     }
 }
