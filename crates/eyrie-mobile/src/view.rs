@@ -42,6 +42,8 @@ pub struct Local {
     pub search: String,
     /// Les lignes des diffs passent à la ligne (sinon elles sont coupées, à chasse fixe et de hauteur égale).
     pub wrap: bool,
+    /// L'écran (module, chemin), que ses actions portent.
+    pub screen: (String, String),
 }
 
 impl Local {
@@ -76,6 +78,8 @@ pub fn act_in(a: &Act, local: &Local) -> UiAct {
         open: a.open.clone().unwrap_or_default().into(),
         busy: local.busy(a),
         folder: input.folder.is_some(),
+        module: local.screen.0.as_str().into(),
+        path: local.screen.1.as_str().into(),
     }
 }
 

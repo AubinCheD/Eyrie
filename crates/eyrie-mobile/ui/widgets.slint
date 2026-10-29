@@ -23,6 +23,10 @@ export struct UiAct {
     busy: bool,
     // La saisie est un dossier du PC : le sélecteur de dossiers plutôt qu'un champ de texte.
     folder: bool,
+    // L'écran du module qui l'offre (vide : action du téléphone) : confirmée quand un autre est affiché, elle ne part
+    // pas.
+    module: string,
+    path: string,
 }
 
 // Une étiquette d'une ligne (branche, étiquette git, HEAD) ; `strong` : mise en avant (pleine).

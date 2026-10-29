@@ -232,6 +232,17 @@ export component AppWindow inherits Window {
         root.run-act(a, input);
     }
 
+    // Un autre écran (ouvert par le PC : le retour les ferme d'abord) : le menu, la confirmation ou la saisie ouverts
+    // pour une action de l'écran d'avant se ferment sans rien envoyer ; `true` : l'un d'eux l'était.
+    public function close-overlays() -> bool {
+        let open = root.sheet-visible || root.confirm-visible || root.input-visible;
+        root.sheet-visible = false;
+        root.confirm-visible = false;
+        root.has-chosen = false;
+        root.cancel-input();
+        return open;
+    }
+
     // --- Ce qui passe par-dessus ---
     property <bool> sheet-visible;
     property <string> sheet-title;

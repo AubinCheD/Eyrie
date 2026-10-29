@@ -514,6 +514,8 @@ pub struct Controller {
     holds: Holds,
     /// Le sélecteur de dossiers ouvert, et l'action qui l'a demandé ; le filtre part au PC quand la saisie s'arrête.
     picker: Option<(Picker, UiAct)>,
+    /// L'écran affiché au dernier rafraîchissement : un autre ferme le menu, la confirmation ou la saisie ouverts.
+    overlays_for: Option<(String, String)>,
     filter_timer: slint::Timer,
     target: Option<Target>,
     /// Ce qui a déjà été signalé (bulle ou notification du système) : rien deux fois, et rien à la première connexion
@@ -661,6 +663,7 @@ impl Controller {
             pendings: Pendings::default(),
             holds: Holds::default(),
             picker: None,
+            overlays_for: None,
             filter_timer: slint::Timer::default(),
             target: None,
             signalled: Signalled::default(),
@@ -1318,7 +1321,12 @@ impl Controller {
     /// devient plus grave se rouvre (« l'alerte gagne »), un bandeau plié qui se calme retient son nouveau ton (la
     /// prochaine alerte le rouvrira) : ces changements sont retenus.
     fn local(&mut self, key: &(String, String)) -> view::Local {
-        let mut local = view::Local { pending: self.pendings.acts(key), wrap: self.diff_wrap, ..Default::default() };
+        let mut local = view::Local {
+            pending: self.pendings.acts(key),
+            wrap: self.diff_wrap,
+            screen: key.clone(),
+            ..Default::default()
+        };
         if self.screens.get(key).is_some_and(|s| !s.search.is_empty()) {
             local.search = self.nav.search_of(key);
         }
@@ -1514,6 +1522,13 @@ impl Controller {
         if self.picker.as_ref().is_some_and(|(p, _)| !self.nav.is_shown(&(p.module.clone(), p.path.clone()))) {
             self.close_picker();
         }
+        // Le menu, la confirmation ou la saisie d'une action aussi : le retour les ferme avant de changer d'écran, un
+        // autre écran sous eux vient du PC (le résultat d'une action), et leur « oui » vaudrait pour lui.
+        let key = self.nav.key();
+        if self.overlays_for.as_ref().is_some_and(|k| *k != key) && ui.invoke_close_overlays() {
+            self.toast("L'écran a changé : rien n'est parti.", 3);
+        }
+        self.overlays_for = Some(key);
     }
 
     /// Les lignes de l'écran affiché (`None` : pas d'écran de module en liste), mises à jour sur place.
@@ -1739,6 +1754,12 @@ impl Controller {
             return;
         }
         let (module, path) = self.nav.key();
+        // Offerte par un autre écran que celui affiché (le PC en a ouvert un autre pendant la confirmation) : le même
+        // identifiant n'y vise pas la même chose (« tout-annuler » sur un autre dépôt).
+        if !a.module.is_empty() && (a.module.as_str(), a.path.as_str()) != (module.as_str(), path.as_str()) {
+            self.toast("L'écran a changé : rien n'est parti.", 3);
+            return;
+        }
         // Une seule fois tant que le PC n'a pas répondu.
         let Some(req) = self.pendings.send(&module, &path, &a.id) else { return };
         self.hold_bands(&module, &path, &a.id);
@@ -2732,6 +2753,57 @@ mod tests {
 
     fn note(title: &str, body: &str, tone: Tone, at: u64) -> Note {
         Note { module: "patronus".into(), title: title.into(), body: body.into(), tone, at, read: false, path: None }
+    }
+
+    /// Une fenêtre sans écran (rendu logiciel) : le contrôleur s'y installe comme sur le téléphone.
+    struct Headless;
+
+    impl slint::platform::Platform for Headless {
+        fn create_window_adapter(&self) -> Result<Rc<dyn slint::platform::WindowAdapter>, slint::PlatformError> {
+            use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
+            Ok(MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer))
+        }
+    }
+
+    /// Le contrôleur, sans PC appairé, ses données dans un dossier temporaire à lui. La plateforme de Slint et le
+    /// contrôleur sont propres au fil : un essai par fil, comme le lance `cargo test`.
+    fn headless(name: &str) -> AppWindow {
+        slint::platform::set_platform(Box::new(Headless)).expect("une plateforme par fil d'essai");
+        let ui = AppWindow::new().expect("fenêtre sans écran");
+        let dir = std::env::temp_dir().join(format!("eyrie-mobile-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        Controller::install(&ui, Store::open(&dir), false);
+        ui
+    }
+
+    /// Une confirmation ouverte sur un écran vaut pour lui. Le PC en ouvre un autre (le résultat d'une action) : elle
+    /// se ferme, et la bulle dit que rien n'est parti. Confirmée quand même (une course), l'action ne part pas sur
+    /// l'écran affiché, même s'il offre la même ; offerte par lui, elle part.
+    #[test]
+    fn a_confirmation_does_not_follow_the_pc_to_another_screen() {
+        let ui = headless("ecran-change");
+        let cancel = Act::new("tout-annuler", "Tout annuler").danger().confirm("Annuler toutes les modifications ?");
+        let on_a = with(|c| {
+            c.online = true;
+            c.open_module_path("dragontree", "depot/a");
+            view::act_in(&cancel, &c.local(&key("dragontree", "depot/a")))
+        })
+        .unwrap();
+        ui.invoke_finish_act(on_a.clone(), SharedString::new());
+        with(|c| {
+            c.on_message(ToPhone::Open { module: "dragontree".into(), path: "depot/b".into() });
+            let screen = Screen::new("B").act(cancel.clone());
+            c.on_message(ToPhone::Screen { module: "dragontree".into(), path: "depot/b".into(), screen });
+        });
+        assert!(!ui.invoke_close_overlays(), "la confirmation s'est fermée avec l'écran");
+        assert_eq!(ui.get_toast_text(), "L'écran a changé : rien n'est parti.");
+
+        with(|c| c.run_act(&on_a, ""));
+        with(|c| assert!(c.pendings.sent.is_empty(), "rien n'est parti pour depot/b"));
+        let on_b = with(|c| view::act_in(&cancel, &c.local(&key("dragontree", "depot/b")))).unwrap();
+        with(|c| c.run_act(&on_b, ""));
+        let sent = with(|c| c.pendings.acts(&key("dragontree", "depot/b"))).unwrap();
+        assert_eq!(sent, HashSet::from(["tout-annuler".to_string()]));
     }
 
     /// Les bulles passent l'une après l'autre, sans doublon ; quand trop attendent, les plus anciennes cèdent leur
