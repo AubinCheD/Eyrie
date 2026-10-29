@@ -592,7 +592,8 @@ export component MorePage inherits Rectangle {
                                 }
                                 Rectangle { }
                             }
-                            Text {
+                            // Sans état (un module qui n'en donne pas) : le nom seul, centré.
+                            if (m.running ? (m.status != "" ? m.status : m.summary) : m.status) != "": Text {
                                 text: m.running ? (m.status != "" ? m.status : m.summary) : m.status;
                                 color: Theme.text-dim;
                                 font-size: 12.5px;
