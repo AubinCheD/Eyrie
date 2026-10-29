@@ -4,9 +4,9 @@
 //! mis dans la boîte de réception, que l'hôte vide à chaque image (`mobile::poll`).
 
 use std::collections::VecDeque;
-use std::io::Read;
+use std::io::{ErrorKind, Read};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -50,11 +50,31 @@ pub struct PairRequest {
     pub sas: String,
     pub at: Instant,
     reply: mpsc::Sender<bool>,
+    /// [`WAITING`], [`ACCEPTED`] ou [`CLOSED`] : le premier qui la tranche, du PC ou du fil, l'emporte.
+    state: Arc<AtomicU8>,
 }
+
+/// La demande attend le clic sur le PC.
+const WAITING: u8 = 0;
+/// Acceptée sur le PC.
+const ACCEPTED: u8 = 1;
+/// Close par son fil : le téléphone est parti, ou le délai est passé.
+const CLOSED: u8 = 2;
 
 impl PairRequest {
     pub fn answer(&self, yes: bool) {
         let _ = self.reply.send(yes);
+    }
+
+    /// Retient l'accord du PC, si la demande attend encore ; `false` si son fil l'a close (téléphone parti, délai
+    /// passé) : rien n'est alors à appairer.
+    pub fn accept(&self) -> bool {
+        self.state.compare_exchange(WAITING, ACCEPTED, Ordering::AcqRel, Ordering::Acquire).is_ok()
+    }
+
+    /// Le téléphone ne l'attend plus (parti, ou délai passé).
+    pub fn closed(&self) -> bool {
+        self.state.load(Ordering::Acquire) == CLOSED
     }
 }
 
@@ -78,6 +98,10 @@ pub enum Inbound {
         reason: String,
     },
     Pair(PairRequest),
+    /// Le téléphone est parti (retour, autre QR) pendant que sa demande d'appairage attendait : son fil l'a close.
+    PairAbandoned {
+        device: String,
+    },
     /// À écrire au journal (refus, erreurs).
     Log {
         device: String,
@@ -293,6 +317,40 @@ const OPENING: Duration = Duration::from_secs(10);
 const IDLE: Duration = Duration::from_secs(45);
 /// Le clic sur le PC est attendu au plus deux minutes.
 pub const DECISION: Duration = Duration::from_secs(120);
+/// Pendant cette attente, le PC regarde à ce pas si le téléphone est encore là.
+const WATCH: Duration = Duration::from_millis(200);
+
+/// Attend le clic sur le PC (`Some`), en regardant si le téléphone est parti (`None` : retour, autre QR, il a fermé
+/// sa connexion). Le premier des deux tranche la demande : close, un accord arrivé ensuite n'appaire rien. Au bout de
+/// [`DECISION`], elle est close aussi, et vaut un refus.
+fn wait_decision(decision: &mpsc::Receiver<bool>, state: &AtomicU8, stream: &TcpStream) -> Option<bool> {
+    // Une copie à elle : sous Windows, son délai court ne touche pas la lecture des messages ; ailleurs, il est commun
+    // à toutes les copies, d'où le délai d'ouverture rendu à la fin.
+    let Ok(watch) = stream.try_clone() else { return Some(false) };
+    let _ = watch.set_read_timeout(Some(Duration::from_millis(1)));
+    let deadline = Instant::now() + DECISION;
+    let mut byte = [0u8; 1];
+    let answer = loop {
+        match decision.recv_timeout(WATCH) {
+            Ok(yes) => break Some(yes),
+            // La demande a disparu du PC sans réponse (accès coupé, délai passé) : non.
+            Err(mpsc::RecvTimeoutError::Disconnected) => break Some(false),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        // Regardé sans être lu : ce que le téléphone aurait déjà envoyé reste aux messages.
+        let gone = match watch.peek(&mut byte) {
+            Ok(n) => n == 0,
+            Err(e) => !matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut),
+        };
+        let late = Instant::now() >= deadline;
+        // Acceptée entre-temps, la demande ne se ferme plus : la réponse arrive au tour suivant.
+        if (gone || late) && state.compare_exchange(WAITING, CLOSED, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+            break if gone { None } else { Some(false) };
+        }
+    };
+    let _ = watch.set_read_timeout(Some(OPENING));
+    answer
+}
 
 fn serve(mut stream: TcpStream, shared: Arc<Shared>) {
     // Sous Windows, une connexion acceptée par une écoute non bloquante l'est aussi.
@@ -419,26 +477,34 @@ fn serve(mut stream: TcpStream, shared: Arc<Shared>) {
                     return;
                 }
                 let (reply, decision) = mpsc::channel();
+                let state = Arc::new(AtomicU8::new(WAITING));
                 let name = device.trim().chars().take(60).collect::<String>();
+                let name = if name.is_empty() { "Téléphone".to_string() } else { name };
                 shared.push(Inbound::Pair(PairRequest {
-                    name: if name.is_empty() { "Téléphone".into() } else { name },
+                    name: name.clone(),
                     model: model.chars().take(80).collect(),
                     key: peer.key,
                     identity: identity.clone(),
                     sas,
                     at: Instant::now(),
                     reply,
+                    state: state.clone(),
                 }));
 
-                match decision.recv_timeout(DECISION) {
-                    Ok(true) => {
+                match wait_decision(&decision, &state, &stream) {
+                    Some(true) => {
                         if tx.send(&ToPhone::Paired { pc: shared.pc_name.clone() }).is_err() {
                             return;
                         }
                         // Le téléphone enchaîne avec `Hello` sur la même connexion (ou se reconnecte).
                     }
-                    _ => {
+                    Some(false) => {
                         refuse(&mut tx, "Appairage refusé sur le PC.");
+                        return;
+                    }
+                    None => {
+                        shared.push(Inbound::PairAbandoned { device: name });
+                        let _ = stream.shutdown(Shutdown::Both);
                         return;
                     }
                 }
@@ -495,6 +561,9 @@ mod tests {
         let decider = std::thread::spawn(move || {
             let Inbound::Pair(req) = wait_inbox(&s2, |i| matches!(i, Inbound::Pair(_))) else { unreachable!() };
             assert_eq!(req.name, "Pixel");
+            // Quelques tours de surveillance du téléphone avant le clic : sa connexion reste bonne pour la suite.
+            std::thread::sleep(WATCH * 3);
+            assert!(req.accept(), "le téléphone attend encore");
             // Ce que fait l'hôte au clic : l'appareil d'abord, la réponse ensuite.
             s2.set_devices(vec![DeviceAuth {
                 id: "a1".into(),
@@ -643,6 +712,26 @@ mod tests {
         let mut c = open(&server, &Keypair::generate());
         client::pair(&mut c, &secret, None, "x", "y").unwrap();
         assert!(client::wait_paired(&mut c).unwrap_err().to_string().contains("refusé"));
+    }
+
+    /// Le téléphone ferme sa connexion pendant que le PC attend le clic : le fil le voit, clôt la demande (un accord
+    /// ensuite n'y fait rien) et le dit à l'hôte.
+    #[test]
+    fn a_phone_leaving_closes_its_pairing_request() {
+        let s = shared(None);
+        let server = Server::start(s.clone(), 0).unwrap();
+        let secret = pairing::new_secret();
+        s.add_ticket(std::slice::from_ref(&secret), Duration::from_secs(60));
+        let mut c = open(&server, &Keypair::generate());
+        client::pair(&mut c, &secret, None, "Pixel", "y").unwrap();
+        let Inbound::Pair(req) = wait_inbox(&s, |i| matches!(i, Inbound::Pair(_))) else { unreachable!() };
+        drop(c);
+        let Inbound::PairAbandoned { device } = wait_inbox(&s, |i| matches!(i, Inbound::PairAbandoned { .. })) else {
+            unreachable!()
+        };
+        assert_eq!(device, "Pixel");
+        assert!(req.closed());
+        assert!(!req.accept(), "trop tard");
     }
 
     #[test]

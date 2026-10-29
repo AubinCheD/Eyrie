@@ -280,6 +280,10 @@ impl Bridge {
             return;
         }
         let r = self.requests.remove(index);
+        // Close par son fil entre-temps (téléphone parti, délai passé) : rien n'est appairé.
+        if yes && !r.accept() {
+            return;
+        }
         if yes {
             self.store.add(&r.name, &r.model, &r.key, &r.identity.login, &r.identity.node);
             self.devices_changed();

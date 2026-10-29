@@ -329,6 +329,53 @@ fn turning_access_off_closes_everything() {
     assert!(m.new_ticket(None).is_err(), "pas de ticket sans accès");
 }
 
+/// Un téléphone qui a demandé l'appairage et dont la demande attend le clic sur le PC.
+fn pairing_waits(h: &mut Harness<'static, Suite>) -> client::Connection {
+    h.state_mut().core.mobile.new_ticket(None).unwrap();
+    let uri = h.state().core.mobile.ticket.as_ref().unwrap().uri.clone();
+    let ticket = Ticket::from_uri(&uri).unwrap();
+    let mut c = client::open(&ticket.addresses(), &Keypair::generate(), Duration::from_secs(5)).unwrap();
+    client::pair(&mut c, &ticket.secret, Some(&ticket.key), "Pixel", "Google Pixel 8").unwrap();
+    spin(h, |h| !h.state().core.mobile.requests.is_empty());
+    c
+}
+
+/// Un appairage abandonné sur le téléphone (retour, autre QR : sa connexion se ferme) pendant que le PC attend le
+/// clic : la demande disparaît du PC, et sa confirmation avec ; le journal et une bulle le disent.
+#[test]
+fn a_pairing_the_phone_abandons_is_withdrawn_on_the_pc() {
+    let mut h = suite();
+    let c = pairing_waits(&mut h);
+    drop(c);
+    spin(&mut h, |h| h.state().core.mobile.requests.is_empty());
+    let s = h.state();
+    let journal = s.core.mobile.store.read_journal(50);
+    assert!(journal.iter().any(|l| l.kind == "appairage" && l.text == "abandonné par le téléphone"), "{journal:?}");
+    assert!(s.core.notes.toasts.iter().any(|(n, _)| n.body.contains("abandonné")), "bulle sur le PC");
+    h.state_mut().core.mobile.decide(0, true);
+    assert!(h.state().core.mobile.store.devices.is_empty());
+}
+
+/// « Appairer » cliqué après le départ du téléphone, avant même que la demande ne disparaisse du PC : rien n'est
+/// appairé, le fil qui attendait le clic a déjà clos la demande.
+#[test]
+fn a_late_accept_pairs_nothing_once_the_phone_has_left() {
+    let mut h = suite();
+    let c = pairing_waits(&mut h);
+    drop(c);
+    // Sans image : la confirmation est encore là.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !h.state().core.mobile.requests[0].closed() {
+        assert!(Instant::now() < deadline, "le départ du téléphone n'a pas été vu");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    h.state_mut().core.mobile.decide(0, true);
+    assert!(h.state().core.mobile.store.devices.is_empty(), "un accord trop tard n'appaire rien");
+    spin(&mut h, |h| h.state().core.mobile.store.read_journal(50).iter().any(|l| l.text.contains("abandonné")));
+    let journal = h.state().core.mobile.store.read_journal(50);
+    assert!(!journal.iter().any(|l| l.text.starts_with("appairé")), "{journal:?}");
+}
+
 /// Un téléphone appairé à la suite, qui fait `phone` dans son fil une fois connecté ; `paired` agit sur le PC juste
 /// après l'appairage, avant que la connexion du téléphone n'y soit reçue.
 fn with_phone<T: Send + 'static>(

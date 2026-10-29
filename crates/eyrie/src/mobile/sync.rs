@@ -218,9 +218,10 @@ pub fn poll(core: &mut Core, frame: &mut eframe::Frame, ctx: &egui::Context) -> 
     for i in inbound {
         receive(core, i, frame, ctx, &mut commands);
     }
-    // Une demande d'appairage sans réponse au bout du délai tombe (le fil a déjà répondu non au téléphone).
+    // Une demande d'appairage sans réponse au bout du délai tombe (le fil a déjà répondu non au téléphone), comme celle
+    // que le téléphone a abandonnée : sa confirmation disparaît.
     let mobile = &mut core.mobile;
-    mobile.requests.retain(|r| r.at.elapsed() < super::server::DECISION);
+    mobile.requests.retain(|r| !r.closed() && r.at.elapsed() < super::server::DECISION);
     if mobile.ticket.as_ref().is_some_and(|t| t.remaining().is_zero()) {
         mobile.cancel_ticket();
     }
@@ -249,6 +250,10 @@ fn receive(
             core.mobile.store.journal(&r.name, "appairage", format!("demandé depuis {}", r.identity.node));
             ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Critical));
             core.mobile.requests.push(r);
+        }
+        Inbound::PairAbandoned { device } => {
+            core.mobile.store.journal(&device, "appairage", "abandonné par le téléphone");
+            mirror(core, &device, "appairage abandonné");
         }
         Inbound::Connected { session, device, model, app, identity, sender, stream } => {
             let Some(d) = core.mobile.store.device_mut(&device) else {

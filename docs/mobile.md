@@ -151,7 +151,9 @@ Autres règles :
   le PC se prouvent mutuellement le secret (MAC BLAKE2s sur le hachage de la poignée de main), et le téléphone vérifie
   la clé du PC lue dans le QR. **Code à saisir** en secours : dix caractères (alphabet sans ambiguïté), plus le nom du
   PC sur le tailnet. Un appairage abandonné (retour, autre QR) ferme sa connexion et ne parle plus à la place du
-  suivant.
+  suivant. Le PC regarde cette connexion pendant qu'il attend le clic : fermée, la demande est close, sa confirmation
+  disparaît (« abandonné par le téléphone » au journal, et une bulle), et un « Appairer » cliqué trop tard n'appaire
+  rien.
 - **Droits par appareil** : *voir* ; *agir* (actions des modules et commandes, et démarrer Eyrie fermée : seul un
   appareil qui peut agir en reçoit le secret, et le veilleur refuse les autres) ; *terminaux* (saisir dans un terminal,
   en ouvrir un : shell, session Claude, « Nouveau terminal » ; Remote Control) ; *dossiers du PC* (parcourir les
@@ -386,7 +388,7 @@ fusionnées dans leur `main`). La passe d'ergonomie (28-29/10) est sur la branch
 | Pièce | Vérifié par |
 |---|---|
 | Protocole `suite-mobile` | ticket et code, preuves, code de vérification, canal Noise (trame altérée, requête HTTP refusées), messages, différences de terminal, réponses rapides ; défi du veilleur (vecteurs partagés avec le Go) ; dossiers protégés |
-| Pont (`eyrie`) | appairage confirmé ou refusé, code faux ou expiré, cinq essais puis ticket brûlé, appareil inconnu, autre compte Tailscale, jeton du compagnon faux, clé du PC du QR ; bout en bout avec un module factice (écran, action proposée ou non, terminal et saisie, journal, bulle) ; interrupteur ; chaque droit sur ses chemins (*terminaux*, *dossiers du PC*, secret de démarrage selon *agir*), refus au journal ; dossiers (formes, lecteurs, liens, noms courts, zones, racine et récents) ; notifications qui mènent à leur écran ; veilleur sur un faux système (valeur Run, DPAPI, élévation, Gestionnaire des tâches, rattachement, compagnon lent), le vrai tube sur des noms propres à l'essai |
+| Pont (`eyrie`) | appairage confirmé ou refusé, abandonné par le téléphone pendant que le PC attend (demande retirée, accord trop tard sans effet), code faux ou expiré, cinq essais puis ticket brûlé, appareil inconnu, autre compte Tailscale, jeton du compagnon faux, clé du PC du QR ; bout en bout avec un module factice (écran, action proposée ou non, terminal et saisie, journal, bulle) ; interrupteur ; chaque droit sur ses chemins (*terminaux*, *dossiers du PC*, secret de démarrage selon *agir*), refus au journal ; dossiers (formes, lecteurs, liens, noms courts, zones, racine et récents) ; notifications qui mènent à leur écran ; veilleur sur un faux système (valeur Run, DPAPI, élévation, Gestionnaire des tâches, rattachement, compagnon lent), le vrai tube sur des noms propres à l'essai |
 | Écrans des modules | un crate d'essais par module (`suite-fawkes`, `suite-patronus`, `suite-owlery`, `suite-menagerie`, `suite-dragontree`, `suite-grimoire`, `suite-gringotts`, `suite-carnet`) : chemins, liste blanche, bandeaux, menus ; DragonTree sur de vrais dépôts temporaires (chaque écran atteignable depuis la liste existe sur le PC, clonage, onglets refermés, branche distante supprimée, pull requests) |
 | Application (`eyrie-mobile`) | mise à jour sur place, pliage, navigation et liens, actions en cours, sélecteur (réponses du pont), veilleur (échange, secret oublié, liaison abandonnée), touches du terminal, texte à copier ; captures de toutes les scènes de démonstration, dans les deux thèmes |
 | Compagnon (`go test`) | relais et en-tête, un compagnon par nœud, tube (nom tiré, client vérifié, un autre compte), port 4748 (preuves, droits, limites, journal), emplacement d'Eyrie, élévation, arrêt |
