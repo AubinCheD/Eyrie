@@ -2,7 +2,8 @@
 //! `ensemble`, `fawkes`, `recherche`, `terminal`, `patronus`, `depots` (la liste de DragonTree), `depot`, `menu`,
 //! `erreur`, `erreur-lue`, `erreur-longue`, `historique`, `branches`, `diff`, `diff-retour`, `plus`, `notes`,
 //! `reglages`, `attente`, `injoignable`, `refus`, `accueil`,
-//! `commandes`, `accueil-tailscale`, `code`, `appairage`, `hors-ligne`, `lien` (l'écran d'un autre module) ; le
+//! `commandes`, `accueil-tailscale`, `code`, `appairage`, `hors-ligne`, `lien` (l'écran d'un autre module),
+//! `ecran:<module>:<fichier.json>[@<chemin>]` (un écran enregistré par l'essai d'un module) ; le
 //! sélecteur de dossiers du PC : `dossiers` (un dossier quelconque, une page sur plusieurs), `dossiers-racine`,
 //! `dossiers-depot` (un dépôt existant), `dossiers-clone` et `dossiers-clone-pris` (où cloner), `dossiers-erreur`,
 //! `dossiers-attente`, `dossiers-silence`, `dossiers-refus` (le PC refuse de lister), `dossiers-texte` (puis le
@@ -153,7 +154,7 @@ fn fawkes_home() -> Screen {
     s.row(Row::new("Nouveau terminal").glyph("➕").subtitle("Shell ou Claude, dans un dossier récent").open("nouveau"));
     let eyrie = group_menu("g1");
     s.band(
-        Band { title: "Eyrie".into(), aside: "✳️1 · 3".into(), ..eyrie }
+        Band { title: "Eyrie".into(), aside: "1 Claude · 3".into(), ..eyrie }
             .color(0x5b8def)
             .badge("1 attend")
             .tone(Tone::Warn),
@@ -179,7 +180,7 @@ fn fawkes_home() -> Screen {
     );
     s.row(Row::new("PowerShell").subtitle("Shell · …\\TestAubin\\Eyrie").glyph("›_").color(0x5b8def).open("t/5"));
     let ozmo = group_menu("g2");
-    s.band(Band { title: "Ozmo".into(), aside: "✳️1 · 2".into(), ..ozmo }.color(0x4cb872));
+    s.band(Band { title: "Ozmo".into(), aside: "1 Claude · 2".into(), ..ozmo }.color(0x4cb872));
     s.row(
         Row::new("Claude · revue de code")
             .subtitle("Claude travaille · …\\DEV\\Ozmo")
@@ -279,33 +280,61 @@ fn depot(title: &str) -> Screen {
     tabs(s)
 }
 
-/// Un dépôt de DragonTree, onglet État : l'opération en cours, les gestes, les modifications.
+/// Un dépôt de DragonTree, onglet État, comme DragonTree l'envoie (`depot::overview`) : l'opération en cours, la
+/// branche et son suivi en une ligne, les gestes (la branche a divergé : deux façons de tirer, le push forcé au menu),
+/// les fichiers par leur nom, leur dossier dessous.
 fn depot_state() -> Screen {
     let mut s = depot("Eyrie");
+    s.acts
+        .push(Act::new("push-force", "Push forcé…").glyph("⚠️").danger().confirm("Écraser origin/mobile-ergonomie ?"));
     s.progress("Pull depuis origin… 42 %", Some(42), Some(Act::new("annuler", "Annuler").glyph("×")));
+    s.row(
+        Row::new("mobile-ergonomie")
+            .key("branche")
+            .full()
+            .subtitle("suit origin/mobile-ergonomie")
+            .detail("↑2 ↓1")
+            .tone(Tone::Warn)
+            .open("depot/eyrie/branche/c0ffee"),
+    );
     s.buttons(vec![
-        Act::new("fetch", "Fetch").glyph("↓"),
-        Act::new("pull", "Pull (fusion)").glyph("↓"),
+        Act::new("fetch", "Fetch").glyph("📥"),
+        Act::new("pull-fusion", "Pull (fusion)").glyph("🔀"),
         Act::new("pull-rebase", "Pull (rebase)").glyph("↓"),
-        Act::new("push", "Push").glyph("↑").primary(),
-        Act::new("push-force", "Push forcé").glyph("↑").danger().confirm("Pousser en forçant (avec bail) ?"),
     ]);
-    s.section("Modifications", "3");
+    s.band(Band::new("indexe", "Indexé").aside("1"));
     s.row(
-        Row::new("crates/eyrie-mobile/src/view.rs")
-            .subtitle("modifié")
+        Row::new("view.rs")
+            .subtitle("crates/eyrie-mobile/src")
             .glyph("M")
-            .key("f/view")
-            .open("depot/eyrie/fichier/view"),
+            .key("i:view")
+            .open("depot/eyrie/fichier/view")
+            .act(Act::new("desindexer:view", "Désindexer").glyph("➖")),
+    );
+    s.band(Band::new("non-indexe", "Non indexé").aside("3"));
+    s.row(
+        Row::new("pages.slint")
+            .subtitle("crates/eyrie-mobile/ui")
+            .glyph("M")
+            .key("w:pages")
+            .open("depot/eyrie/fichier/pages")
+            .act(Act::new("indexer:pages", "Indexer").glyph("➕")),
     );
     s.row(
-        Row::new("crates/eyrie-mobile/ui/pages.slint")
-            .subtitle("modifié")
-            .glyph("M")
-            .key("f/pages")
-            .open("depot/eyrie/fichier/pages"),
+        Row::new("icons.slint")
+            .subtitle("crates/eyrie-mobile/ui")
+            .glyph("A")
+            .key("w:icons")
+            .open("depot/eyrie/fichier/icons"),
     );
-    s.row(Row::new("lib.rs").subtitle("nouveau").glyph("?").key("f/lib").open("depot/eyrie/fichier/lib"));
+    s.row(
+        Row::new("ancien.rs")
+            .subtitle("crates/eyrie-mobile/src")
+            .glyph("D")
+            .key("w:ancien")
+            .open("depot/eyrie/fichier/ancien"),
+    );
+    s.buttons(vec![Act::new("valider", "Valider…").glyph("✅").primary()]);
     s
 }
 
@@ -417,11 +446,10 @@ fn clone_act() -> Act {
 fn repo(title: &str, key: &str, state: &str, tone: Tone) -> Row {
     Row::new(title)
         .key(key)
-        .glyph("🌿")
         .open(format!("depot/{key}"))
         .subtitle(state)
         .tone(tone)
-        .act(Act::new(format!("fetch:{key}"), "Fetch").glyph("⬇️"))
+        .act(Act::new(format!("fetch:{key}"), "Fetch").glyph("📥"))
         .act(Act::new(format!("pull:{key}"), "Pull").glyph("↓"))
         .act(
             Act::new(format!("push:{key}"), "Push")
@@ -443,20 +471,20 @@ fn dragontree_home() -> Screen {
     s.note("Ozmo · DEV : Fetch terminé", Tone::Ok);
     s.band(Band::new("ouverts", "Ouverts sur le PC").glyph("🖥️").aside("2"));
     let eyrie = repo("Eyrie", "eyrie", "mobile-ergonomie · ↑2 ↓1 · 3 modifications", Tone::Warn);
-    s.row(eyrie.color(0x5b8def).badge("affiché"));
-    s.row(repo("Ozmo · DEV", "ozmo", "main · ↑2 · propre", Tone::Ok).color(0x4cb872));
+    s.row(eyrie.badge("affiché"));
+    s.row(repo("Ozmo · DEV", "ozmo", "main · ↑2 · propre", Tone::Ok));
     s.band(Band::new("epingles", "Épinglés").glyph("📌").aside("1"));
-    let dragontree = repo("DragonTree", "dragontree", "suite/mobile-ergonomie · ↓4 · propre", Tone::Warn);
+    let dragontree = repo("DragonTree", "dragontree", "suite/mobile-ergonomie · ↓4 · propre", Tone::Ok);
     s.row(dragontree.badge("en cours").progress(Some(35)));
     s.band(Band::new("racine/5e0c1a", "TestAubin").glyph("📁").aside("4"));
     s.row(repo("Fawkes", "fawkes", "suite/mobile-ergonomie · propre", Tone::Ok));
-    s.row(repo("Owlery", "owlery", "main · ↑1 · 1 modification", Tone::Warn));
+    s.row(repo("Owlery", "owlery", "main · ↑1 · 1 modification", Tone::Ok));
     s.row(repo("Menagerie", "menagerie", "HEAD détachée · propre", Tone::Ok));
     s.row(repo("Grimoire", "grimoire", "Dépôt illisible : .git/HEAD manquant", Tone::Danger));
     s.band(Band::new("racine/a41f07", "Clients").glyph("📁").aside("23").open(false));
     s.row(repo("Ozmo · Clients", "ozmo-clients", "main · propre", Tone::Ok));
     s.band(Band::new("recents", "Récents").glyph("🕘").aside("1"));
-    s.row(repo("Ballon", "ballon", "main · ↓2 · propre", Tone::Warn));
+    s.row(repo("Ballon", "ballon", "main · ↓2 · propre", Tone::Ok));
     s
 }
 
@@ -466,7 +494,6 @@ fn branch(name: &str, key: &str, sub: &str) -> Row {
     let current = "mobile-ergonomie";
     Row::new(name)
         .key(key)
-        .glyph("🌿")
         .subtitle(sub)
         .open(format!("depot/eyrie/branche/{key}"))
         .act(Act::new(format!("basculer:{name}"), "Basculer").glyph("↪️").confirm(format!("Basculer sur {name} ?")))
@@ -499,8 +526,6 @@ fn depot_branches() -> Screen {
     s.row(
         Row::new("mobile-ergonomie")
             .key("c0ffee")
-            .glyph("🌿")
-            .badge("courante")
             .tone(Tone::Ok)
             .subtitle("origin/mobile-ergonomie · ↑2 ↓1 · il y a 1 h")
             .open("depot/eyrie/branche/c0ffee")
@@ -1258,12 +1283,16 @@ pub fn play(ui: &AppWindow, scene: &str) {
         s if s.starts_with("ecran:") => {
             let mut parts = s.splitn(3, ':');
             let (_, module, file) = (parts.next(), parts.next().unwrap_or("fawkes"), parts.next().unwrap_or(""));
+            // `<fichier>@<chemin>` : l'écran à ce chemin (`@` seul : l'accueil du module, ses onglets actifs).
+            let (file, path) = file.rsplit_once('@').unwrap_or((file, "apercu"));
             let screen: Option<Screen> = std::fs::read(file).ok().and_then(|b| serde_json::from_slice(&b).ok());
             if let Some(screen) = screen {
-                feed(ToPhone::Screen { module: module.into(), path: "apercu".into(), screen });
+                feed(ToPhone::Screen { module: module.into(), path: path.into(), screen });
                 with(|c| {
                     c.nav_select(module);
-                    c.open_path("apercu");
+                    if !path.is_empty() {
+                        c.open_path(path);
+                    }
                 });
             }
         }

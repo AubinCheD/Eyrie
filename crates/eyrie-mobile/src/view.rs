@@ -142,6 +142,18 @@ pub fn mark(glyph: &str) -> &str {
     if short && glyph.chars().all(|c| c.is_ascii_alphanumeric() || "?!".contains(c)) { glyph } else { "" }
 }
 
+/// Le ton de la lettre d'état d'un fichier : ajouté (vert), supprimé ou en conflit (rouge), modifié (orange), renommé
+/// ou copié (bleu) ; non suivi (« ? ») sans couleur (0).
+pub fn mark_tone(mark: &str) -> i32 {
+    match mark.chars().next() {
+        Some('A') => 2,
+        Some('D') | Some('U') | Some('!') => 4,
+        Some('M') => 3,
+        Some('?') | None => 0,
+        _ => 1,
+    }
+}
+
 /// L'icône d'un module (barre du bas, cartes, « Plus ») ; vide pour un module que le téléphone ne connaît pas (son
 /// logo, sinon son initiale).
 pub fn module_icon(id: &str) -> &'static str {
@@ -158,12 +170,12 @@ pub fn module_icon(id: &str) -> &'static str {
     }
 }
 
-/// L'icône d'une action : celle de son glyphe ([`icon_for`]) ; ✅ marque lue une entrée, sauf sur tout un groupe
-/// (« Tout marquer lu »), ● la marque non lue ; 🌐 et un lien s'ouvrent ailleurs.
+/// L'icône d'une action : celle de son glyphe ([`icon_for`]) ; ✅ marque lue une entrée d'Owlery (`lu`, `lu:<id>`),
+/// tout un groupe (« Tout marquer lu »), sinon valide ; ● la marque non lue ; 🌐 et un lien s'ouvrent ailleurs.
 pub fn material_icon(a: &Act) -> &'static str {
     match a.glyph.trim_end_matches('\u{fe0f}') {
         "✅" if a.id.starts_with("tout") => "done-all",
-        "✅" => "mark-read",
+        "✅" if a.id == "lu" || a.id.starts_with("lu:") => "mark-read",
         "●" => "mark-unread",
         "☑" => "check",
         "🌐" => "open-in-new",
@@ -562,6 +574,7 @@ fn row(r: &Row, first: bool, last: bool, local: &Local) -> UiRow {
         glyph: r.glyph.as_str().into(),
         icon: icon_for(&r.glyph).into(),
         mark: mark(&r.glyph).into(),
+        mark_tone: mark_tone(mark(&r.glyph)),
         unread: r.unread,
         color: r.color.map(rgb).unwrap_or_default(),
         has_color: r.color.is_some(),
@@ -1269,6 +1282,8 @@ mod tests {
     fn top_bar_glyphs_become_material_icons() {
         let icon = |id: &str, glyph: &str| act(&Act::new(id, "x").glyph(glyph)).icon.to_string();
         assert_eq!(icon("lu", "✅"), "mark-read");
+        assert_eq!(icon("lu:42", "✅"), "mark-read");
+        assert_eq!(icon("valider", "✅"), "check-circle", "valider un commit");
         assert_eq!(icon("tout-lu:contoso/web", "✅"), "done-all");
         assert_eq!(icon("tout_lu", "✅"), "done-all");
         assert_eq!(icon("non-lu", "⚪"), "mark-unread");

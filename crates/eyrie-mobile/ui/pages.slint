@@ -83,6 +83,10 @@ export component ScreenPage inherits Rectangle {
             tabs: root.tabs;
             selected(p) => { root.select-tab(p); }
         }
+        // Un peu d'air entre les onglets et la première carte.
+        if root.tabs.length > 0 && root.search-hint == "": Rectangle {
+            height: 8px;
+        }
         if root.search-hint != "": SearchField {
             hint: root.search-hint;
             text <=> root.search-text;

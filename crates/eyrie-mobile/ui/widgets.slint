@@ -69,6 +69,8 @@ export struct UiRow {
     // l'une ni l'autre, un glyphe qui reste en texte, ou rien.
     icon: string,
     mark: string,
+    // Le ton de `mark` (`view::mark_tone`) : 0 neutre, sinon celui de `Theme.tone`.
+    mark-tone: int,
     // Une entrée non lue : titre en gras et point de couleur.
     unread: bool,
     color: color,
@@ -871,10 +873,10 @@ component RowLead inherits Rectangle {
         y: (parent.height - self.height) / 2;
         height: 22px;
         border-radius: 6px;
-        background: Theme.tone(item.tone > 0 ? item.tone : 1).with-alpha(Theme.dark ? 0.24 : 0.13);
+        background: item.mark-tone == 0 ? Theme.surface-2 : Theme.tone(item.mark-tone).with-alpha(Theme.dark ? 0.24 : 0.13);
         Text {
             text: item.mark;
-            color: item.tone > 0 ? Theme.tone-ink(item.tone) : Theme.accent-ink;
+            color: item.mark-tone == 0 ? Theme.text-dim : Theme.tone-ink(item.mark-tone);
             font-size: 12px;
             font-weight: 700;
             horizontal-alignment: center;
