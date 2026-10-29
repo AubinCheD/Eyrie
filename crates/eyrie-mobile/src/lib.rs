@@ -6,6 +6,7 @@
 //! - [`tailnet`] : le nœud Tailscale de l'application, par où passent les connexions (Android) ;
 //! - [`termbuf`], [`view`] : ce que le PC envoie, prêt à dessiner ;
 //! - [`termkeys`] : ce que le téléphone envoie au terminal (touches, Ctrl et Alt collés, saisie, collage) ;
+//! - [`termscroll`] : le terminal suit sa sortie tant que l'utilisateur ne l'a pas remonté ;
 //! - [`dictee`] : la dictée (reconnaissance vocale du téléphone), ajoutée à la saisie du terminal ou d'une action ;
 //! - [`picker`] : le sélecteur de dossiers du PC (une action qui demande un dossier) ;
 //! - [`store`] : identité, PC appairés, préférences ;
@@ -26,6 +27,7 @@ pub mod store;
 pub mod tailnet;
 pub mod termbuf;
 pub mod termkeys;
+pub mod termscroll;
 pub mod veilleur;
 pub mod view;
 

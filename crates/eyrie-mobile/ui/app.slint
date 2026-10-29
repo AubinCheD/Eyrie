@@ -214,6 +214,8 @@ export component AppWindow inherits Window {
     callback term-paste-confirmed();
     callback term-copy(int);
     callback term-copied(bool);
+    // La liste du terminal suit-elle encore le bas après ce mouvement (voir `TermView.follows`) ?
+    callback term-follows(bool, bool, length, length, length, bool) -> bool;
     // Le micro du terminal, ou d'une saisie (l'action qui l'a ouverte), touché ; l'écoute à abandonner (`true` : celle
     // du terminal, `false` : celle de la saisie) ; « Envoyer la dictée aussitôt ».
     callback term-dictate();
@@ -233,6 +235,11 @@ export component AppWindow inherits Window {
 
     public function term-scroll-to-end() {
         term.scroll-to-end();
+    }
+
+    // La liste du terminal reste en bas si elle le suit (la sortie qui arrive, une fois mise en page).
+    public function term-stick-to-end() {
+        term.stick-to-end();
     }
 
     // Le menu ⋯ de l'écran (démonstration, captures).
@@ -641,6 +648,9 @@ export component AppWindow inherits Window {
                         paste(t) => { root.term-paste(t); }
                         copy(i) => { root.term-copy(i); }
                         copied(all) => { root.term-copied(all); }
+                        follows(follow, user, up, gap, row, fits) => {
+                            root.term-follows(follow, user, up, gap, row, fits)
+                        }
                         reply(i) => { root.term-reply(i); }
                         zoomed(z) => { root.term-zoomed(z); }
                         haptic => { root.haptic(); }

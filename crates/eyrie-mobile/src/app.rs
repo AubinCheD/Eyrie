@@ -21,6 +21,7 @@ use crate::store::{self, Pc, Store, Wake};
 use crate::tailnet::{self, Tailnet};
 use crate::termbuf::{self, TermBuf};
 use crate::termkeys::{self, Latch, Paste, Typed};
+use crate::termscroll;
 use crate::veilleur::{self, Away, Shown, Start};
 use crate::{
     AppWindow, CommandItem, ModuleItem, NavItem, NoteItem, PcItem, PickCrumb, PickRow, PickerState, TabItem, TermRow,
@@ -1648,7 +1649,6 @@ impl Controller {
         let Some(ui) = self.ui() else { return };
         let dark = ui.global::<Theme>().get_dark();
         let p = if dark { &termbuf::DARK } else { &termbuf::LIGHT };
-        let at_bottom = ui.get_term_follow() || change.full;
         let target = self.term.visible_len();
         let model = &self.term_model;
         if change.full || self.term_dark != Some(dark) {
@@ -1687,13 +1687,18 @@ impl Controller {
         ui.set_term_waiting(self.term.waiting);
         let replies: Vec<SharedString> = self.term.replies.iter().map(|r| r.label.as_str().into()).collect();
         ui.set_term_replies(ModelRc::new(VecModel::from(replies)));
-        if at_bottom {
-            // Après la mise en page des nouvelles lignes (la hauteur de la liste n'est connue qu'au dessin suivant).
+        if change.full {
+            // Un autre terminal : il s'ouvre sur son bas, qu'il suit.
+            ui.invoke_term_scroll_to_end();
+        }
+        if ui.get_term_follow() {
+            // La liste suit le bas : elle y reste, une fois les nouvelles lignes mises en page (la hauteur de la liste
+            // n'est connue qu'au dessin suivant). Remontée entre-temps par l'utilisateur, elle ne bouge plus.
             for delay in [0, 60, 200] {
                 let weak = self.ui.clone();
                 slint::Timer::single_shot(Duration::from_millis(delay), move || {
                     if let Some(ui) = weak.upgrade() {
-                        ui.invoke_term_scroll_to_end();
+                        ui.invoke_term_stick_to_end();
                     }
                 });
             }
@@ -3018,6 +3023,9 @@ fn wire(ui: &AppWindow) {
     });
     ui.on_term_zoomed(|zoom| {
         with(|c| c.term_zoomed(zoom));
+    });
+    ui.on_term_follows(|follow, user, up, gap, row, fits| {
+        termscroll::follows(follow, termscroll::Move { user, up, gap, row, fits })
     });
     ui.on_term_reply(|i| {
         with(|c| c.term_reply(i.max(0) as usize));

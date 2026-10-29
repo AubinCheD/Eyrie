@@ -249,10 +249,10 @@ export component TermView inherits Rectangle {
     in property <string> heard;
     in property <float> level;
     in property <bool> sends;
-    // Le bas de la liste est visible.
-    out property <bool> at-bottom: list.content-y <= list.visible-height - root.content-h + 2 * root.ch;
     // La liste suit le bas tant que l'utilisateur ne l'a pas remontée : la sortie qui arrive y reste collée, et le bas
-    // reste en vue quand la hauteur change (clavier du téléphone qui s'ouvre, réponses rapides, zoom).
+    // reste en vue quand la hauteur change (clavier du téléphone qui s'ouvre, réponses rapides, zoom). Seuls ses gestes
+    // en décident (`follows`, voir `termscroll.rs`) : remonter, même d'une ligne, arrête de suivre ; ramener la vue en
+    // bas, ou « Revenir en bas », reprend. Ce qui arrive pendant qu'on relit ne bouge pas la vue.
     out property <bool> follow: true;
     // La hauteur des barres sous la liste : les bulles se posent au-dessus.
     out property <length> bars-height: (root.waiting && root.replies.length > 0 ? 56px : 0) + 56px + listen-bar.height + root.input-h + 16px;
@@ -274,6 +274,10 @@ export component TermView inherits Rectangle {
     // Le micro touché ; l'écoute à abandonner (la saisie s'est masquée).
     callback dictate();
     callback dictation-cancel();
+    // La liste suit-elle encore le bas après ce mouvement (`termscroll::follows`) : elle le suivait, le doigt l'a fait
+    // bouger, de combien elle est montée, ce qui reste sous la vue, la hauteur d'une ligne, toute la sortie tient dans
+    // la vue.
+    callback follows(follow: bool, user: bool, up: length, gap: length, row: length, fits: bool) -> bool;
 
     // Ajusté à la largeur : la police mono (Hack) avance de 0,602 em par caractère.
     property <length> fit-font: (root.width - 30px) / (max(root.cols, 20) * 0.602);
@@ -281,13 +285,47 @@ export component TermView inherits Rectangle {
     out property <length> cw: root.fs * 0.602;
     out property <length> ch: ceil(root.fs * 1.22 / 1px) * 1px;
     property <length> content-h: root.rows.length * root.ch;
-    property <length> list-h: list.visible-height;
+    // La position de la liste quand le bas de la sortie est en vue : d'après la hauteur que la liste a donnée à ses
+    // lignes une fois mises en page (elle ne va jamais plus bas).
+    property <length> end-y: min(0px, list.visible-height - list.content-height);
+    // La position de la liste au dernier mouvement vu : le suivant dit dans quel sens elle a bougé.
+    property <length> seen-y;
+    // Suivies seulement quand le terminal se montre (caché, il n'a rien à garder en vue) : la hauteur de la sortie
+    // mise en page, celle de la liste, sa position. Il se montre : la liste reprend le bas si elle le suivait.
+    property <length> shown-content-h: root.visible ? list.content-height : -1px;
+    property <length> shown-list-h: root.visible ? list.visible-height : -1px;
+    property <length> shown-y: root.visible ? list.content-y : 1px;
     // Le champ de saisie grandit avec ses lignes, jusqu'à cinq environ.
     property <length> input-h: min(116px, max(42px, input.preferred-height + 20px));
 
+    // La liste a bougé (`user` : le doigt l'a fait) : suit-elle encore le bas ?
+    function moved(user: bool) {
+        let up = list.content-y - root.seen-y;
+        root.seen-y = list.content-y;
+        root.follow = root.follows(root.follow, user, up, list.content-y - root.end-y, root.ch, list.content-height <= list.visible-height);
+    }
+
+    // La liste suit le bas : elle y reste (une sortie qui arrive, une autre hauteur). Remontée, elle ne bouge pas.
+    public function stick-to-end() {
+        if root.follow {
+            list.content-y = root.end-y;
+            root.seen-y = list.content-y;
+        }
+    }
+
+    // « Revenir en bas », ou un autre terminal : la liste suit de nouveau le bas.
     public function scroll-to-end() {
         root.follow = true;
-        list.content-y = min(0px, list.visible-height - root.content-h);
+        root.stick-to-end();
+    }
+
+    // Une autre hauteur (de la sortie, de la liste), ou la liste a bougé d'elle-même (l'élan d'un lancer ; des lignes
+    // tombées de l'historique, qu'elle compense pour garder les mêmes en vue) : elle reste en bas si elle le suivait.
+    function settle() {
+        if root.visible {
+            root.moved(false);
+            root.stick-to-end();
+        }
     }
 
     // Un autre zoom : la liste garde le bas qu'elle suivait, sinon la ligne et la colonne du haut.
@@ -296,7 +334,7 @@ export component TermView inherits Rectangle {
         let left = -list.content-x / root.cw;
         root.zoom = max(0.6, min(3.0, z));
         if root.follow {
-            root.scroll-to-end();
+            root.stick-to-end();
         } else {
             list.content-y = max(min(0px, list.visible-height - root.content-h), -top * root.ch);
         }
@@ -311,20 +349,15 @@ export component TermView inherits Rectangle {
         clip.text = "";
     }
 
-    changed content-h => {
-        if root.follow {
-            root.scroll-to-end();
-        }
+    changed shown-content-h => {
+        root.settle();
     }
-    changed list-h => {
-        if root.follow {
-            root.scroll-to-end();
-        }
+    changed shown-list-h => {
+        root.settle();
     }
-    changed at-bottom => {
-        if root.at-bottom {
-            root.follow = true;
-        }
+    // La liste a bougé : d'elle-même, ou par le doigt (qui, lui, l'a déjà dit : `scrolled`, `scroll-event`).
+    changed shown-y => {
+        root.settle();
     }
 
     // Ctrl ou Alt collé : la touche suivante tapée au clavier du téléphone arrive dans `catcher` (qui ouvre le clavier
@@ -421,10 +454,12 @@ export component TermView inherits Rectangle {
                     width: parent.width;
                     height: parent.height;
                     content-width: root.cols * root.cw + 12px > self.visible-width + 1px ? root.cols * root.cw + 12px : self.visible-width;
+                    // La souris la fait défiler comme le doigt (bureau : essais, démonstration ; on n'y sélectionne
+                    // rien, le texte à copier s'ouvre à part).
+                    mouse-drag-pan-enabled: true;
+                    // Le doigt a fait bouger la liste (glissé, barre de défilement), ou vient de la lancer.
                     scrolled => {
-                        if !root.at-bottom {
-                            root.follow = false;
-                        }
+                        root.moved(true);
                     }
                     for row[i] in root.rows: line := Rectangle {
                         // L'appui long a déjà ouvert le texte à copier : relâcher ne fait rien de plus.
@@ -464,6 +499,12 @@ export component TermView inherits Rectangle {
                                     line.held = false;
                                 }
                             }
+                            // La molette (bureau) : la liste ne bougera qu'à l'image suivante (son défilement est
+                            // animé), son sens se lit ici. Elle défile ensuite comme d'habitude.
+                            scroll-event(e) => {
+                                root.follow = root.follows(root.follow, true, e.delta-y, list.content-y - root.end-y, root.ch, list.content-height <= list.visible-height);
+                                reject
+                            }
                         }
                         Timer {
                             interval: 520ms;
@@ -496,7 +537,7 @@ export component TermView inherits Rectangle {
                 }
             }
             // Revenir en bas, quand on a remonté l'historique.
-            if !root.at-bottom: Rectangle {
+            if !root.follow: Rectangle {
                 x: parent.width - 60px;
                 y: parent.height - 60px;
                 width: 44px;

@@ -336,15 +336,17 @@ La passe d'ergonomie, avec l'accord du 28/10, en ajoute d'autres, un commit par 
   coupure : « Réessayer », et la demande perdue repart au retour du PC. Sans *dossiers du PC*, ou avec un PC qui ne
   liste pas, un champ de texte, avec la raison.
 - **Terminal** : plein écran, police à chasse fixe ; zoom au pincement ou par A− / A+, gardé ; défilement de
-  l'historique ; le bas reste en vue quand le clavier s'ouvre, tant qu'on n'a pas remonté. Barre de touches : Ctrl et
-  Alt collants pour la touche suivante (Ctrl + lettre ; Alt et le caractère partent d'un seul envoi, pour ne pas
-  interrompre Claude par un Échap seul), relâchés par la touche suivante, Retour, un toucher du champ, et par
-  « Coller », A− et A+ ; Échap, Tab, flèches, Entrée. « Coller » envoie le presse-papiers en collage (demandé d'abord
-  s'il fait plusieurs lignes ou cache des touches, §5). « Copier », ou un appui long sur une ligne, ouvre le texte
-  montré et l'historique gardé dans un champ figé, sans retour à la ligne (les colonnes sont gardées, il défile de
-  côté) : sélection d'Android, « Copier », « Tout copier ». Le champ de saisie va à la ligne (cinq lignes environ) ;
-  sur plusieurs lignes, il part en collage puis Entrée ; ni majuscule ni correction automatiques. Réponses rapides
-  quand Claude attend.
+  l'historique. Le bas reste en vue (la sortie qui arrive, le clavier qui s'ouvre) tant qu'on n'a pas remonté : remonter
+  (glisser, lancer), même d'une ligne, arrête aussitôt de suivre, et ce qui arrive ensuite ne bouge plus la vue, même
+  quand les plus vieilles lignes tombent de l'historique ; ramener la vue en bas, ou « Revenir en bas », reprend le
+  suivi (`termscroll.rs`). Barre de touches : Ctrl et Alt collants pour la touche suivante (Ctrl + lettre ; Alt et le
+  caractère partent d'un seul envoi, pour ne pas interrompre Claude par un Échap seul), relâchés par la touche suivante,
+  Retour, un toucher du champ, et par « Coller », A− et A+ ; Échap, Tab, flèches, Entrée. « Coller » envoie le
+  presse-papiers en collage (demandé d'abord s'il fait plusieurs lignes ou cache des touches, §5). « Copier », ou un
+  appui long sur une ligne, ouvre le texte montré et l'historique gardé dans un champ figé, sans retour à la ligne (les
+  colonnes sont gardées, il défile de côté) : sélection d'Android, « Copier », « Tout copier ». Le champ de saisie va à
+  la ligne (cinq lignes environ) ; sur plusieurs lignes, il part en collage puis Entrée ; ni majuscule ni correction
+  automatiques. Réponses rapides quand Claude attend.
 - **Dictée** (« parler directement dans une session Claude », 29/10) : un micro à côté d'Envoyer dans la saisie d'un
   terminal (une session Claude de Fawkes, ou tout terminal où le téléphone écrit), et sous le champ d'une saisie sur
   plusieurs lignes (la consigne de Patronus…) ; jamais dans une saisie d'une ligne (nom, chemin), à la place du
