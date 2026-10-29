@@ -1195,7 +1195,7 @@ mod system_tests {
         let me = exeplace::user_sid().unwrap();
         let mut refused = Vec::new();
         for exe in std::env::split_paths(&list) {
-            for (path, rights) in exeplace::levels(&exe) {
+            for (path, rights) in exeplace::checked_levels(&exe).unwrap() {
                 let read = exeplace::read_rights(&path);
                 let who = read.as_ref().map(|r| exeplace::other_writer(r, &me, rights));
                 eprintln!("{}\n\t{read:?}\n\tdroits {rights:#x} : autre compte {who:?}", path.display());

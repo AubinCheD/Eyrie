@@ -3,8 +3,8 @@
 //! de la démarrer, et ne garde pas une commande inscrite moins sûre. Un autre compte du poste qui pourrait remplacer
 //! l'exécutable, déposer une DLL dans son dossier ou renommer un dossier au-dessus (pour mettre le sien à la place)
 //! ferait lancer son code sous le compte de l'utilisateur à un appui sur le téléphone. Le propriétaire de chacun compte
-//! aussi : il peut toujours en changer les droits. `fawkes::exeplace::check` ne lit que les droits de l'exécutable et
-//! de son dossier ; Eyrie fait les deux.
+//! aussi : il peut toujours en changer les droits. Le chemin écrit et le vrai sont contrôlés : une jonction mène
+//! ailleurs. `fawkes::exeplace::check` applique les mêmes règles à ses démarrages : les changer ensemble.
 #![cfg_attr(not(windows), allow(dead_code))]
 
 use std::path::{Path, PathBuf};
@@ -57,8 +57,9 @@ pub struct Rights {
 }
 
 /// Rend une erreur, en français, si l'exécutable `exe` ou son dossier peut être modifié par un autre compte que
-/// l'utilisateur, SYSTEM, les administrateurs ou TrustedInstaller, ou un dossier au-dessus renommé par lui, si `exe`
-/// n'existe pas ou si leurs droits sont illisibles (`exePlaceCheck`).
+/// l'utilisateur, SYSTEM, les administrateurs ou TrustedInstaller, ou un dossier au-dessus renommé par lui, par le
+/// chemin écrit comme par le vrai ([`checked_levels`]), si `exe` n'existe pas ou si leurs droits sont illisibles
+/// (`exePlaceCheck`).
 #[cfg(windows)]
 pub fn check(exe: &Path) -> Result<(), String> {
     if let Err(e) = std::fs::metadata(exe)
@@ -67,7 +68,7 @@ pub fn check(exe: &Path) -> Result<(), String> {
         return Err(format!("{} introuvable", exe.display()));
     }
     let me = user_sid()?;
-    for (path, wanted) in levels(exe) {
+    for (path, wanted) in checked_levels(exe)? {
         if let Some(who) = other_writer(&read_rights(&path)?, &me, wanted) {
             return Err(format!(
                 "{} peut être modifié par un autre compte du poste ({who}) : le veilleur lancerait ce qu'il y dépose. \
@@ -98,6 +99,44 @@ pub fn levels(exe: &Path) -> Vec<(PathBuf, u32)> {
         levels.push((path.to_path_buf(), rights));
     }
     levels
+}
+
+/// Les niveaux de `exe` tel qu'écrit, puis ceux de son vrai chemin ([`real_path`]) qui n'y sont pas déjà
+/// (`checkedLevels`). Windows lit les droits d'une jonction, pas ceux du dossier où elle mène : sans le vrai chemin, ce
+/// dossier et ceux au-dessus de lui échapperaient ; sans le chemin écrit, la jonction elle-même, qu'un autre compte
+/// pourrait remplacer.
+pub fn checked_levels(exe: &Path) -> Result<Vec<(PathBuf, u32)>, String> {
+    let mut checked = levels(exe);
+    for level in levels(&real_path(exe)?) {
+        if !checked.contains(&level) {
+            checked.push(level);
+        }
+    }
+    Ok(checked)
+}
+
+/// Le vrai chemin de `path`, jonctions et liens résolus : `canonicalize`, soit GetFinalPathNameByHandleW sur un
+/// handle ouvert avec FILE_FLAG_BACKUP_SEMANTICS. Sans le préfixe `\\?\` quand c'est possible ([`win32_path`])
+/// (`realPath`).
+fn real_path(path: &Path) -> Result<PathBuf, String> {
+    let real = std::fs::canonicalize(path).map_err(|e| format!("chemin réel de {} illisible : {e}", path.display()))?;
+    Ok(win32_path(&real).unwrap_or(real))
+}
+
+/// `\\?\C:\…` en `C:\…`, `\\?\UNC\serveur\…` en `\\serveur\…`, si Windows lit chaque niveau pareil sans le préfixe
+/// (GetFullPathNameW, par `std::path::absolute`) ; sinon `None`. Sans lui, Windows retire un point ou une espace en fin
+/// de nom (`Outils.` devient `Outils`) et prend `NUL` pour un périphérique : un autre chemin serait contrôlé
+/// (`winPath`).
+fn win32_path(real: &Path) -> Option<PathBuf> {
+    let real = real.to_str()?;
+    let short = match real.strip_prefix(r"\\?\UNC\") {
+        Some(rest) => PathBuf::from(format!(r"\\{rest}")),
+        None => PathBuf::from(real.strip_prefix(r"\\?\")?),
+    };
+    short
+        .ancestors()
+        .all(|path| std::path::absolute(path).is_ok_and(|full| full.as_os_str() == path.as_os_str()))
+        .then_some(short)
 }
 
 /// Le propriétaire de `rights`, s'il n'est ni l'utilisateur `me` ni le système (« propriétaire <SID> »), sinon le
@@ -442,6 +481,49 @@ mod tests {
         let created = check(&exe);
         icacls(&above, &["/remove:g", "*S-1-5-11"]);
         assert_eq!(created, Ok(()), "créer un dossier au-dessus");
+    }
+
+    /// Une jonction dans le chemin (`Outils` qui mène à `disque\Outils`) : Windows en lit les droits à elle, pas ceux
+    /// du dossier où elle mène. Ce vrai dossier, qu'un autre compte peut renommer, est refusé aussi à travers elle, et
+    /// nommé sans `\\?\`.
+    #[test]
+    fn a_junction_does_not_hide_the_real_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("disque").join("Outils");
+        std::fs::create_dir_all(real.join("Eyrie")).unwrap();
+        std::fs::write(real.join("Eyrie").join("eyrie.exe"), b"").unwrap();
+        let junction = tmp.path().join("Outils");
+        let made =
+            std::process::Command::new("cmd").args(["/c", "mklink", "/J"]).arg(&junction).arg(&real).output().unwrap();
+        assert!(made.status.success(), "mklink /J : {made:?}");
+        let exe = junction.join("Eyrie").join("eyrie.exe");
+        assert_eq!(check(&exe), Ok(()));
+        icacls(&real, &["/grant", "*S-1-5-11:(DE)"]);
+        let refused = check(&exe);
+        icacls(&real, &["/remove:g", "*S-1-5-11"]);
+        let err = refused.unwrap_err();
+        assert!(err.contains(r"\disque\Outils peut") && !err.starts_with(r"\\?\") && err.contains("S-1-5-11"), "{err}");
+    }
+
+    /// Le vrai chemin perd son `\\?\` quand Windows lit chaque niveau pareil sans ; pas quand il en changerait un
+    /// (point ou espace final retiré, `NUL` pris pour un périphérique) : un autre dossier serait contrôlé.
+    #[test]
+    fn the_real_path_drops_the_prefix_only_when_windows_reads_it_the_same() {
+        for (real, short) in [
+            (r"\\?\C:\Outils\Eyrie\eyrie.exe", r"C:\Outils\Eyrie\eyrie.exe"),
+            (r"\\?\UNC\serveur\partage\eyrie.exe", r"\\serveur\partage\eyrie.exe"),
+        ] {
+            assert_eq!(win32_path(Path::new(real)).as_deref(), Some(Path::new(short)), "{real}");
+        }
+        for real in [
+            r"C:\Outils\Eyrie\eyrie.exe",
+            r"\\?\C:\Outils.\Eyrie\eyrie.exe",
+            r"\\?\C:\Outils\Eyrie \eyrie.exe",
+            r"\\?\C:\Outils\NUL\eyrie.exe",
+            r"\\?\Volume{0a1b2c3d}\Outils\eyrie.exe",
+        ] {
+            assert_eq!(win32_path(Path::new(real)), None, "{real}");
+        }
     }
 
     #[test]

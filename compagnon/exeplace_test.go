@@ -76,6 +76,54 @@ func TestAFolderAboveOthersCanRenameIsRefused(t *testing.T) {
 	}
 }
 
+// Une jonction dans le chemin (`Outils` qui mène à `disque\Outils`) : Windows en lit les droits à elle, pas ceux du
+// dossier où elle mène. Ce vrai dossier, qu'un autre compte peut renommer, est refusé aussi à travers elle, et nommé
+// sans `\\?\`.
+func TestAJunctionDoesNotHideTheRealFolder(t *testing.T) {
+	tmp := t.TempDir()
+	real := filepath.Join(tmp, "disque", "Outils")
+	if err := os.MkdirAll(filepath.Join(real, "Eyrie"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "Eyrie", "eyrie.exe"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	junction := filepath.Join(tmp, "Outils")
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", junction, real).CombinedOutput(); err != nil {
+		t.Fatalf("mklink /J : %v\n%s", err, out)
+	}
+	exe := filepath.Join(junction, "Eyrie", "eyrie.exe")
+	if err := exePlaceCheck(exe); err != nil {
+		t.Fatal(err)
+	}
+	icacls(t, real, "/grant", "*S-1-5-11:(DE)")
+	defer icacls(t, real, "/remove:g", "*S-1-5-11")
+	err := exePlaceCheck(exe)
+	var place *unsafePlace
+	if !errors.As(err, &place) || !strings.HasSuffix(place.path, `\disque\Outils`) ||
+		strings.HasPrefix(place.path, `\\?\`) || place.who != "S-1-5-11" {
+		t.Fatalf("refus : %v", err)
+	}
+}
+
+// Le vrai chemin perd son `\\?\` quand Windows lit chaque niveau pareil sans ; pas quand il en changerait un (point
+// ou espace final retiré, `NUL` pris pour un périphérique) : un autre dossier serait contrôlé.
+func TestTheRealPathDropsThePrefixOnlyWhenWindowsReadsItTheSame(t *testing.T) {
+	for real, want := range map[string]string{
+		`\\?\C:\Outils\Eyrie\eyrie.exe`:         `C:\Outils\Eyrie\eyrie.exe`,
+		`\\?\UNC\serveur\partage\eyrie.exe`:     `\\serveur\partage\eyrie.exe`,
+		`C:\Outils\Eyrie\eyrie.exe`:             `C:\Outils\Eyrie\eyrie.exe`,
+		`\\?\C:\Outils.\Eyrie\eyrie.exe`:        `\\?\C:\Outils.\Eyrie\eyrie.exe`,
+		`\\?\C:\Outils\Eyrie \eyrie.exe`:        `\\?\C:\Outils\Eyrie \eyrie.exe`,
+		`\\?\C:\Outils\NUL\eyrie.exe`:           `\\?\C:\Outils\NUL\eyrie.exe`,
+		`\\?\Volume{0a1b2c3d}\Outils\eyrie.exe`: `\\?\Volume{0a1b2c3d}\Outils\eyrie.exe`,
+	} {
+		if got := winPath(real); got != want {
+			t.Errorf("%s : %s", real, got)
+		}
+	}
+}
+
 // Le propriétaire peut toujours se donner tous les droits : seuls l'utilisateur et le système sont des propriétaires
 // sûrs (un compte ordinaire ne peut pas donner un fichier à un autre ; l'essai ne peut donc que les comparer).
 func TestOnlyTheUserOrTheSystemOwnsASafePlace(t *testing.T) {
@@ -143,8 +191,8 @@ func TestAConditionalGrantCounts(t *testing.T) {
 
 // Contrôle à la main de la vraie Eyrie, en lecture seule (droits et propriétaires : rien n'est lancé ni écrit).
 // EYRIE_PLACE_REELLE nomme les exécutables, séparés par « ; ». Pour chacun, chaque chemin contrôlé, du fichier à la
-// racine du disque : ses droits (SDDL, propriétaire compris), ceux qu'un autre compte ne doit pas avoir, et lequel
-// les a. Le même contrôle côté Eyrie : `real_place_of_eyrie_is_safe` (crates/eyrie/src/veille.rs).
+// racine du disque, par le chemin écrit puis par le vrai : ses droits (SDDL, propriétaire compris), ceux qu'un autre
+// compte ne doit pas avoir, et lequel les a. Le même contrôle côté Eyrie : `real_place_of_eyrie_is_safe` (crates/eyrie/src/veille.rs).
 //
 //	$env:EYRIE_PLACE_REELLE = "C:\…\eyrie.exe;C:\…\eyrie-tailnet.exe"; go test -run TestTheRealEyrieIsInASafePlace -v
 func TestTheRealEyrieIsInASafePlace(t *testing.T) {
@@ -153,7 +201,12 @@ func TestTheRealEyrieIsInASafePlace(t *testing.T) {
 		t.Skip("contrôle à la main : EYRIE_PLACE_REELLE nomme les exécutables à contrôler")
 	}
 	for _, exe := range filepath.SplitList(list) {
-		for _, l := range placeLevels(exe) {
+		levels, err := checkedLevels(exe)
+		if err != nil {
+			t.Errorf("%s : %v", exe, err)
+			continue
+		}
+		for _, l := range levels {
 			sd, err := windows.GetNamedSecurityInfo(l.path, windows.SE_FILE_OBJECT,
 				windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
 			if err != nil {

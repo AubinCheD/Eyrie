@@ -98,8 +98,10 @@ Mac sera disponible.
   - Il y faut l'Eyrie de tous les jours (une Eyrie d'essai ne touche pas à la valeur Run) et `eyrie-tailnet.exe` à
     côté d'`eyrie.exe`, à l'abri des autres comptes du poste : propriétaire l'utilisateur, SYSTEM, les administrateurs
     ou TrustedInstaller ; ni l'exécutable ni son dossier modifiables par un autre compte, ni les dossiers au-dessus
-    renommables. Eyrie le contrôle avec les règles du veilleur (`veille/exeplace.rs`, repris d'`exeplace.go`) avant de
-    l'inscrire ou de garder la commande déjà inscrite ; le veilleur le refait avant chaque lancement.
+    renommables, par le chemin écrit comme par le vrai (une jonction du chemin mène ailleurs : le dossier où elle mène
+    et ceux au-dessus de lui sont contrôlés aussi). Eyrie le contrôle avec les règles du veilleur (`veille/exeplace.rs`,
+    repris d'`exeplace.go`) avant de l'inscrire ou de garder la commande déjà inscrite ; le veilleur le refait avant
+    chaque lancement.
   - **Jamais élevé** : une Eyrie lancée en administrateur ne lance pas le veilleur (elle prend son compagnon, la page
     dit pourquoi ; la valeur Run reste, il démarrera sans élévation à la session suivante). Un veilleur élevé refuse de
     tourner, quel que soit qui l'a lancé : il démarrerait Eyrie en administrateur sans invite.

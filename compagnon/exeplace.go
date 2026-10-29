@@ -8,9 +8,9 @@ package main
 // racine d'un disque (`C:\Outils`), qui hérite d'un droit de modification pour tous les utilisateurs authentifiés ;
 // `%LOCALAPPDATA%\Programs` et `Program Files` sont sûrs. Le propriétaire de chacun compte aussi (il peut toujours
 // changer les droits), et les dossiers au-dessus ne doivent pas pouvoir être renommés par un autre (il mettrait le
-// sien à la place). Repris de ../Fawkes/src/exeplace.rs, plus le propriétaire et les dossiers au-dessus ; refait
-// avant chaque lancement. Eyrie applique les mêmes règles avant d'inscrire le veilleur
-// (crates/eyrie/src/veille/exeplace.rs) : les changer ensemble.
+// sien à la place), par le chemin écrit comme par le vrai (une jonction mène ailleurs). Repris de
+// ../Fawkes/src/exeplace.rs ; refait avant chaque lancement. Fawkes pour ses démarrages, et Eyrie avant d'inscrire le
+// veilleur (crates/eyrie/src/veille/exeplace.rs), appliquent les mêmes règles : les changer ensemble.
 
 import (
 	"errors"
@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -62,13 +63,18 @@ func (e *unsafePlace) Error() string {
 }
 
 // exePlaceCheck rend une erreur, en français, si l'exécutable `exe` ou son dossier peut être modifié par un autre
-// compte que l'utilisateur, SYSTEM, les administrateurs ou TrustedInstaller, ou un dossier au-dessus renommé par lui
-// (*unsafePlace), si `exe` n'existe pas (fs.ErrNotExist) ou si leurs droits sont illisibles.
+// compte que l'utilisateur, SYSTEM, les administrateurs ou TrustedInstaller, ou un dossier au-dessus renommé par lui,
+// par le chemin écrit comme par le vrai (checkedLevels) (*unsafePlace), si `exe` n'existe pas (fs.ErrNotExist) ou si
+// leurs droits sont illisibles.
 func exePlaceCheck(exe string) error {
 	if _, err := os.Stat(exe); errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("%s introuvable : %w", exe, fs.ErrNotExist)
 	}
-	for _, l := range placeLevels(exe) {
+	levels, err := checkedLevels(exe)
+	if err != nil {
+		return err
+	}
+	for _, l := range levels {
 		who, err := writableByOthers(l.path, l.rights)
 		if err != nil {
 			return err
@@ -100,6 +106,72 @@ func placeLevels(exe string) []placeLevel {
 		levels = append(levels, placeLevel{path, rights})
 	}
 	return levels
+}
+
+// checkedLevels : les niveaux de `exe` tel qu'écrit, puis ceux de son vrai chemin (realPath) qui n'y sont pas déjà.
+// Windows lit les droits d'une jonction, pas ceux du dossier où elle mène : sans le vrai chemin, ce dossier et ceux
+// au-dessus de lui échapperaient ; sans le chemin écrit, la jonction elle-même, qu'un autre compte pourrait remplacer.
+func checkedLevels(exe string) ([]placeLevel, error) {
+	real, err := realPath(exe)
+	if err != nil {
+		return nil, fmt.Errorf("chemin réel de %s illisible : %w", exe, err)
+	}
+	levels := placeLevels(exe)
+	for _, l := range placeLevels(real) {
+		if !slices.Contains(levels, l) {
+			levels = append(levels, l)
+		}
+	}
+	return levels, nil
+}
+
+// realPath : le vrai chemin de `path`, jonctions et liens résolus, par GetFinalPathNameByHandleW sur un handle ouvert
+// avec FILE_FLAG_BACKUP_SEMANTICS (un dossier aussi) ; filepath.EvalSymlinks ne suit pas toujours les jonctions.
+// Sans le préfixe `\\?\` quand c'est possible (winPath).
+func realPath(path string) (string, error) {
+	name, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return "", err
+	}
+	h, err := windows.CreateFile(name, 0, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil, windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
+	if err != nil {
+		return "", err
+	}
+	defer windows.CloseHandle(h)
+	buf := make([]uint16, windows.MAX_LONG_PATH)
+	// VOLUME_NAME_DOS | FILE_NAME_NORMALIZED (0) : `\\?\C:\…`.
+	n, err := windows.GetFinalPathNameByHandle(h, &buf[0], uint32(len(buf)), 0)
+	if err != nil {
+		return "", err
+	}
+	if n >= uint32(len(buf)) {
+		return "", windows.ERROR_NOT_ENOUGH_MEMORY
+	}
+	return winPath(windows.UTF16ToString(buf[:n])), nil
+}
+
+// winPath : `\\?\C:\…` en `C:\…`, `\\?\UNC\serveur\…` en `\\serveur\…`, si Windows lit chaque niveau pareil sans le
+// préfixe ; sinon `real` tel quel. Sans lui, Windows retire un point ou une espace en fin de nom (`Outils.` devient
+// `Outils`) et prend `NUL` pour un périphérique : un autre chemin serait contrôlé.
+func winPath(real string) string {
+	var short string
+	switch {
+	case strings.HasPrefix(real, `\\?\UNC\`):
+		short = `\\` + real[len(`\\?\UNC\`):]
+	case strings.HasPrefix(real, `\\?\`):
+		short = real[len(`\\?\`):]
+	default:
+		return real
+	}
+	for path := short; ; path = filepath.Dir(path) {
+		if full, err := windows.FullPath(path); err != nil || full != path {
+			return real
+		}
+		if filepath.Dir(path) == path {
+			return short
+		}
+	}
 }
 
 // writableByOthers : le propriétaire de `path`, s'il n'est ni l'utilisateur ni le système (« propriétaire <SID> »),
