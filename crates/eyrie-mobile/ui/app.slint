@@ -364,19 +364,31 @@ export component AppWindow inherits Window {
         root.haptic();
     }
 
+    // Retour : ce qui passe par-dessus se ferme ; `true` : il y en avait. La question du téléchargement de la langue
+    // se ferme seule : la saisie d'où l'on dictait reste, avec ce qu'on y a tapé.
+    function back-overlays() -> bool {
+        if root.dictation-download-visible {
+            root.dictation-download-visible = false;
+            return true;
+        }
+        if root.sheet-visible || root.confirm-visible || root.input-visible || root.forget-visible || root.logout-visible || root.start-visible || root.term-paste-visible {
+            root.sheet-visible = false;
+            root.confirm-visible = false;
+            root.has-chosen = false;
+            root.cancel-input();
+            root.forget-visible = false;
+            root.logout-visible = false;
+            root.start-visible = false;
+            root.term-paste-visible = false;
+            return true;
+        }
+        return false;
+    }
+
     focus := FocusScope {
         key-pressed(e) => {
             if e.text == Key.Back || e.text == Key.Escape {
-                if root.sheet-visible || root.confirm-visible || root.input-visible || root.forget-visible || root.logout-visible || root.start-visible || root.term-paste-visible || root.dictation-download-visible {
-                    root.sheet-visible = false;
-                    root.confirm-visible = false;
-                    root.has-chosen = false;
-                    root.cancel-input();
-                    root.forget-visible = false;
-                    root.logout-visible = false;
-                    root.start-visible = false;
-                    root.term-paste-visible = false;
-                    root.dictation-download-visible = false;
+                if root.back-overlays() {
                     return accept;
                 }
                 // Le texte à copier se ferme ; Ctrl ou Alt collé se relâche.
@@ -770,16 +782,6 @@ export component AppWindow inherits Window {
             }
         }
     }
-    if root.dictation-download-visible: ConfirmDialog {
-        text: root.dictation-download-text;
-        ok-text: root.dictation-download-ok;
-        answered(yes) => {
-            root.dictation-download-visible = false;
-            if yes {
-                root.dictation-download();
-            }
-        }
-    }
     if root.logout-visible: ConfirmDialog {
         text: "Déconnecter ce téléphone de Tailscale\u{202f}? Il ne joindra plus le PC avant de se reconnecter à votre compte.";
         ok-text: "Déconnecter";
@@ -838,6 +840,14 @@ export component AppWindow inherits Window {
                         wrap: root.pending.multiline ? TextWrap.word-wrap : TextWrap.no-wrap;
                         accepted => { root.submit-input(); }
                         init => { self.focus(); }
+                        // Le champ a la main : Retour ne va qu'à lui (et à ce qui le contient), pas au FocusScope de la
+                        // fenêtre. Il ferme d'abord ce qui est par-dessus (la question du téléchargement de la langue).
+                        key-pressed(e) => {
+                            if (e.text == Key.Back || e.text == Key.Escape) && root.back-overlays() {
+                                return accept;
+                            }
+                            reject
+                        }
                     }
                     if root.input-text == "": Text {
                         x: 12px;
@@ -887,6 +897,18 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
+            }
+        }
+    }
+    // La question du téléchargement de la langue de la dictée : par-dessus la saisie d'où l'on dictait, qui reste
+    // ouverte dessous.
+    if root.dictation-download-visible: ConfirmDialog {
+        text: root.dictation-download-text;
+        ok-text: root.dictation-download-ok;
+        answered(yes) => {
+            root.dictation-download-visible = false;
+            if yes {
+                root.dictation-download();
             }
         }
     }

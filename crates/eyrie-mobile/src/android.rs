@@ -2,7 +2,7 @@
 //! code (caméra du NDK, `camera2ndk` et `mediandk`, décodage par `rqrr`), et la dictée (la reconnaissance vocale
 //! d'Android, par notre classe Java `Dictee`).
 
-use std::ffi::{CStr, c_void};
+use std::ffi::{CStr, CString, c_void};
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::ptr::null_mut;
@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
+use jni::objects::{GlobalRef, JClass, JObject, JString, JThrowable, JValue};
 use jni::sys::{jfloat, jint};
 use jni::{JNIEnv, JavaVM, NativeMethod};
 use slint::android::AndroidApp;
@@ -26,16 +26,65 @@ pub fn init(app: AndroidApp) {
 
 /// Appelle Java dans le fil courant, avec l'activité ; une exception Java est effacée et vaut `None`.
 fn with_java<R>(f: impl FnOnce(&mut jni::JNIEnv, &JObject) -> jni::errors::Result<R>) -> Option<R> {
-    let app = APP.get()?;
+    java(None, f)
+}
+
+/// Comme `with_java`, pour la dictée (`what` : l'appel) : ce qui échoue va à son journal, l'exception Java avec sa
+/// classe et son message (son `toString`), sinon l'erreur de JNI.
+fn dictee_java<R>(what: &str, f: impl FnOnce(&mut jni::JNIEnv, &JObject) -> jni::errors::Result<R>) -> Option<R> {
+    java(Some(what), f)
+}
+
+fn java<R>(what: Option<&str>, f: impl FnOnce(&mut jni::JNIEnv, &JObject) -> jni::errors::Result<R>) -> Option<R> {
+    let failed = |why: &str| {
+        if let Some(what) = what {
+            dictation_warn(&format!("JNI {what} : {why}"));
+        }
+    };
+    let Some(app) = APP.get() else {
+        failed("pas d'activité");
+        return None;
+    };
     // SAFETY : pointeurs donnés par android-activity, valables tant que l'application vit.
-    let vm = unsafe { JavaVM::from_raw(app.vm_as_ptr() as *mut _) }.ok()?;
-    let mut env = vm.attach_current_thread().ok()?;
+    let vm = match unsafe { JavaVM::from_raw(app.vm_as_ptr() as *mut _) } {
+        Ok(vm) => vm,
+        Err(e) => {
+            failed(&format!("JavaVM : {e}"));
+            return None;
+        }
+    };
+    let mut env = match vm.attach_current_thread() {
+        Ok(env) => env,
+        Err(e) => {
+            failed(&format!("fil pas attaché à Java : {e}"));
+            return None;
+        }
+    };
     let activity = unsafe { JObject::from_raw(app.activity_as_ptr() as jni::sys::jobject) };
     let r = f(&mut env, &activity);
     if env.exception_check().unwrap_or(false) {
+        // Lue avant d'être effacée (seulement pour le journal), puis décrite : plus rien n'est en cours alors.
+        let thrown = what.and_then(|_| env.exception_occurred().ok());
         let _ = env.exception_clear();
+        if let Some(thrown) = thrown {
+            failed(&thrown_text(&mut env, &thrown));
+        }
+    } else if let Err(e) = &r {
+        failed(&e.to_string());
     }
     r.ok()
+}
+
+/// Une exception Java, dite par son `toString` (sa classe et son message).
+fn thrown_text(env: &mut JNIEnv, thrown: &JThrowable) -> String {
+    let text = env
+        .call_method(thrown, "toString", "()Ljava/lang/String;", &[])
+        .and_then(|v| v.l())
+        .and_then(|s| Ok(String::from(env.get_string(&JString::from(s))?)));
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
+    }
+    text.unwrap_or_else(|_| "une exception Java (illisible)".into())
 }
 
 pub fn data_dir() -> PathBuf {
@@ -374,7 +423,7 @@ pub fn asking_mic() -> bool {
 fn dictee_class() -> Option<&'static GlobalRef> {
     DICTEE_CLASS
         .get_or_init(|| {
-            with_java(|env, activity| {
+            dictee_java("chargement de Dictee et de ses fonctions natives", |env, activity| {
                 let loader = env.call_method(activity, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])?.l()?;
                 let name = env.new_string(DICTEE)?;
                 let class = env
@@ -406,7 +455,7 @@ fn dictee_class() -> Option<&'static GlobalRef> {
 /// La reconnaissance vocale du téléphone : la sienne (sans Internet), son service par défaut, ou aucune.
 pub fn recognizer() -> Recognizer {
     let Some(class) = dictee_class() else { return Recognizer::Missing };
-    with_java(|env, activity| {
+    dictee_java("Dictee.disponible, Dictee.service", |env, activity| {
         const CTX: &str = "(Landroid/content/Context;)";
         let kind = env.call_static_method(class, "disponible", format!("{CTX}I"), &[JValue::Object(activity)])?.i()?;
         Ok(match kind {
@@ -491,13 +540,20 @@ extern "system" fn modele<'l>(mut env: JNIEnv<'l>, _: JClass<'l>, state: jint, c
 }
 
 /// Une étape de la dictée au journal d'Android, sous l'étiquette de `Dictee.java` (`adb logcat -s EyrieDictee`) :
-/// jamais ce qui a été dit.
+/// jamais ce qui a été dit. Écrite directement (liblog), même quand la classe `Dictee` ne se charge pas.
 pub fn dictation_log(step: &str) {
-    let Some(class) = dictee_class() else { return };
-    with_java(|env, _| {
-        let s = env.new_string(step)?;
-        env.call_static_method(class, "journal", "(Ljava/lang/String;)V", &[JValue::Object(&s)]).map(|_| ())
-    });
+    android_log(ndk_sys::android_LogPriority::ANDROID_LOG_INFO, step);
+}
+
+/// Un échec de la dictée (un appel à Java), au même journal, en avertissement.
+fn dictation_warn(step: &str) {
+    android_log(ndk_sys::android_LogPriority::ANDROID_LOG_WARN, step);
+}
+
+fn android_log(priority: ndk_sys::android_LogPriority, text: &str) {
+    let text = CString::new(text.replace('\0', " ")).unwrap_or_default();
+    // SAFETY : deux chaînes C terminées par zéro, valables pendant l'appel.
+    unsafe { ndk_sys::__android_log_write(priority.0 as i32, c"EyrieDictee".as_ptr(), text.as_ptr()) };
 }
 
 /// Écoute (`on_device` : la reconnaissance du téléphone lui-même), après la permission du micro, demandée la première
@@ -534,7 +590,7 @@ pub fn start_dictation(seq: u32, on_device: bool, heard: HeardSink) {
         // `ecouter` ne fait que poster à Android : vite fait, verrou tenu.
         let started = DICTATING.open_if(seq, || {
             dictee_class().and_then(|class| {
-                with_java(|env, activity| {
+                dictee_java("Dictee.ecouter", |env, activity| {
                     env.call_static_method(
                         class,
                         "ecouter",
@@ -576,7 +632,9 @@ fn ask_mic(still: &dyn Fn() -> bool) -> Option<bool> {
 
 fn dictee_call(method: &str) {
     if let Some(class) = dictee_class() {
-        with_java(|env, _| env.call_static_method(class, method, "()V", &[]).map(|_| ()));
+        dictee_java(&format!("Dictee.{method}"), |env, _| {
+            env.call_static_method(class, method, "()V", &[]).map(|_| ())
+        });
     }
 }
 
@@ -594,7 +652,7 @@ pub fn cancel_dictation() {
 /// (« fr-FR ») et qui fait son modèle (« Google », vide s'il ne se lit pas).
 pub fn language_download() -> Option<(String, String)> {
     let class = dictee_class()?;
-    with_java(|env, activity| {
+    dictee_java("Dictee.peutTelecharger, langue, auteur", |env, activity| {
         const CTX: &str = "(Landroid/content/Context;)";
         if !env.call_static_method(class, "peutTelecharger", format!("{CTX}Z"), &[JValue::Object(activity)])?.z()? {
             return Ok(None);
@@ -614,7 +672,7 @@ pub fn download_language(done: DownloadSink) {
         *sink = Some(done);
     }
     let called = dictee_class().and_then(|class| {
-        with_java(|env, activity| {
+        dictee_java("Dictee.telecharger", |env, activity| {
             env.call_static_method(class, "telecharger", "(Landroid/content/Context;)V", &[JValue::Object(activity)])
                 .map(|_| ())
         })

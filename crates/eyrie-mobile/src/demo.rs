@@ -20,7 +20,8 @@
 //! dictée : `terminal-dictee` (le micro écoute, le texte provisoire au-dessus de la saisie), `terminal-dictee-instant`
 //! (le micro touché, pas encore ouvert : « Un instant… »), `terminal-dictee-langue` (la reconnaissance du téléphone
 //! n'a pas le français : « Télécharger le français »), `saisie-dictee` (une consigne de Patronus, sur plusieurs
-//! lignes, dictée). Suffixe `+clair` ou `+sombre` : le thème (sinon celui du système).
+//! lignes, dictée), `saisie-dictee-langue` (la même, sans le français : la question par-dessus la saisie). Suffixe
+//! `+clair` ou `+sombre` : le thème (sinon celui du système).
 
 use slint::ComponentHandle;
 use suite_mobile::msg::{
@@ -1095,6 +1096,21 @@ pub fn play(ui: &AppWindow, scene: &str) {
                 c.demo_heard(Heard::Ready);
                 c.demo_heard(Heard::Partial("le module de facturation et les avoirs du mois dernier".into()));
                 c.demo_heard(Heard::Level(0.4));
+            });
+        }
+        // La même consigne dictée, la reconnaissance du téléphone sans le français (ERROR_LANGUAGE_UNAVAILABLE) : la
+        // question du téléchargement passe par-dessus la saisie, qui reste ouverte dessous.
+        "saisie-dictee-langue" => {
+            with(|c| {
+                c.demo_recognizer(Recognizer::OnDevice);
+                c.nav_select("patronus");
+            });
+            let local = crate::view::Local { screen: ("patronus".into(), String::new()), ..Default::default() };
+            let act = UiAct { input_value: "Regarde surtout".into(), ..crate::view::act_in(&note_act(), &local) };
+            ui.invoke_open_act(act.clone());
+            with(|c| {
+                c.input_dictate(&act);
+                c.demo_heard(Heard::Error(13));
             });
         }
         // Un Fetch envoyé, sans réponse encore (rien ne part en démonstration).

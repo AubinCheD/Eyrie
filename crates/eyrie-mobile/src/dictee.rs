@@ -42,6 +42,10 @@ pub const NOT_STARTED: i32 = -1;
 pub const NO_PERMISSION: i32 = 9;
 
 pub const NOTHING_HEARD: &str = "Rien entendu.";
+/// La fin demandée, sans texte final à temps (voir [`STOP_WITHIN`]) : le texte provisoire s'est ajouté à la saisie.
+pub const PARTIAL_KEPT: &str = "Le texte final n'est pas arrivé : le texte provisoire est gardé, relisez-le.";
+/// La fin demandée, sans texte final à temps ni texte provisoire.
+pub const NO_FINAL: &str = "La reconnaissance vocale n'a pas rendu le texte à temps : réessayez.";
 /// Finie, ou abandonnée (voir [`OPEN_WITHIN`]), sans que le micro se soit jamais dit ouvert : on n'a pas été invité à
 /// parler.
 pub const NOT_OPENED: &str =
@@ -49,9 +53,9 @@ pub const NOT_OPENED: &str =
 
 /// `SpeechRecognizer.ERROR_SPEECH_TIMEOUT`, `ERROR_NO_MATCH` : rien de reconnu.
 const SILENCE: [i32; 2] = [6, 7];
-/// `SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED`, `ERROR_LANGUAGE_UNAVAILABLE` (Android 12 et suivants) : la
-/// reconnaissance n'a pas (encore) la langue.
-const NO_LANGUAGE: [i32; 2] = [12, 13];
+/// `SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE` (Android 12 et suivants) : la reconnaissance connaît la langue, mais
+/// ne l'a pas encore (pas téléchargée). `ERROR_LANGUAGE_NOT_SUPPORTED` (12), elle ne la connaît pas : une bulle.
+const LANGUAGE_UNAVAILABLE: i32 = 13;
 
 /// Où en est l'écoute.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -90,8 +94,8 @@ pub enum Outcome {
     Text(Target, String),
     /// Finie sans texte : ce qu'il faut dire (une bulle) et son ton.
     Failed(String, i32),
-    /// Finie : la reconnaissance n'a pas la langue de la dictée (son erreur) ; celle du téléphone peut peut-être la
-    /// télécharger (voir [`download_question`]).
+    /// Finie : la reconnaissance connaît la langue de la dictée sans l'avoir encore (son erreur) ; celle du téléphone
+    /// peut peut-être la télécharger (voir [`download_question`]).
     NoLanguage(i32),
 }
 
@@ -171,7 +175,7 @@ impl Dictation {
             }
             Heard::Error(code) => {
                 self.cancel();
-                if NO_LANGUAGE.contains(&code) {
+                if code == LANGUAGE_UNAVAILABLE {
                     return Outcome::NoLanguage(code);
                 }
                 if unopened && SILENCE.contains(&code) {
@@ -205,9 +209,15 @@ impl Dictation {
         !(asking && self.phase == Phase::Starting) && self.cancel()
     }
 
-    /// La fin demandée n'a rien donné à temps (voir [`STOP_WITHIN`]) : abandonnée. `true` : c'était le cas.
-    pub fn stop_timed_out(&mut self, seq: u32) -> bool {
-        seq == self.seq && self.phase == Phase::Stopping && self.cancel()
+    /// La fin demandée n'a rien donné à temps (voir [`STOP_WITHIN`]) : abandonnée. Si c'était le cas, sa cible et
+    /// son dernier texte provisoire (vide s'il n'y en a pas eu), qui ne part pas avec elle : il était à l'écran.
+    pub fn stop_timed_out(&mut self, seq: u32) -> Option<(Target, String)> {
+        if seq != self.seq || self.phase != Phase::Stopping {
+            return None;
+        }
+        let (target, partial) = (self.target.take(), std::mem::take(&mut self.partial));
+        self.cancel();
+        target.map(|target| (target, partial.trim().to_string()))
     }
 
     /// Le micro, demandé à Android ([`Heard::Opening`]), ne s'est pas ouvert à temps (voir [`OPEN_WITHIN`]) :
@@ -217,8 +227,9 @@ impl Dictation {
     }
 }
 
-/// Le texte final attendu après « finir », au plus.
-pub const STOP_WITHIN: Duration = Duration::from_secs(5);
+/// Le texte final attendu après « finir », au plus : la reconnaissance du téléphone relit tout ce qui a été dit, plus
+/// lentement la première fois (son modèle tout juste chargé).
+pub const STOP_WITHIN: Duration = Duration::from_secs(10);
 
 /// Le micro ouvert après la demande à Android, au plus : la première fois, la reconnaissance du téléphone se lie à son
 /// service et charge son modèle (plusieurs secondes) ; au-delà, elle ne répond plus.
@@ -254,8 +265,10 @@ pub fn error_text(code: i32) -> (String, i32) {
         NO_PERMISSION => ("Autorisez le micro pour Eyrie dans les réglages d'Android.", 3),
         // ERROR_NETWORK_TIMEOUT, ERROR_NETWORK.
         1 | 2 => ("La reconnaissance vocale de ce téléphone a besoin d'Internet.", 3),
-        // ERROR_LANGUAGE_NOT_SUPPORTED, ERROR_LANGUAGE_UNAVAILABLE (Android 12 et suivants).
-        12 | 13 => ("Cette langue n'est pas disponible pour la dictée sur ce téléphone.", 3),
+        // ERROR_LANGUAGE_NOT_SUPPORTED (Android 12 et suivants) : aucun téléchargement n'y ferait rien.
+        12 => ("La reconnaissance vocale de ce téléphone ne connaît pas votre langue : pas de dictée possible.", 3),
+        // ERROR_LANGUAGE_UNAVAILABLE : connue, pas encore là.
+        13 => ("Cette langue n'est pas disponible pour la dictée sur ce téléphone.", 3),
         // ERROR_RECOGNIZER_BUSY.
         8 => ("La reconnaissance vocale sert déjà ailleurs : réessayez dans un instant.", 3),
         // ERROR_AUDIO.
@@ -316,8 +329,17 @@ pub enum Download {
     Done,
     /// Android le fera plus tard (en Wi-Fi…).
     Scheduled,
-    /// Échoué (`SpeechRecognizer.ERROR_*` ; [`NOT_STARTED`] : pas même demandé).
+    /// Échoué (`SpeechRecognizer.ERROR_*` ; [`NOT_STARTED`] : pas même demandé, ou pas de réponse d'Android ; 12 : la
+    /// reconnaissance ne propose pas la langue ; 15 : demandé, mais Android n'en dira pas la fin).
     Failed(i32),
+}
+
+impl Download {
+    /// Demandé, ou prévu par Android : une langue toujours absente redit où il en est plutôt que de le proposer de
+    /// nouveau.
+    pub fn pending(&self) -> bool {
+        matches!(self, Download::Asked | Download::Scheduled)
+    }
 }
 
 /// La langue de la dictée (« fr-FR »), dite dans une phrase : « le français », sinon « la langue du téléphone (…) ».
@@ -360,6 +382,14 @@ pub fn download_text(download: &Download, lang: &str) -> (String, i32) {
             1,
         ),
         Download::Failed(NOT_STARTED) => (format!("Le téléchargement n'a pas pu être demandé à Android ({model})."), 3),
+        // ERROR_LANGUAGE_NOT_SUPPORTED : les langues de la reconnaissance du téléphone ne la comptent pas.
+        Download::Failed(12) => (
+            format!(
+                "La reconnaissance vocale du téléphone ne propose pas {} : rien à télécharger.",
+                language_said(lang)
+            ),
+            3,
+        ),
         Download::Failed(code) => (format!("Le téléchargement a échoué ({code}) : {model}."), 3),
     }
 }
@@ -545,22 +575,27 @@ mod tests {
         assert!(!d.active());
     }
 
-    /// La fin demandée sans texte final à temps : abandonnée ; pas une écoute suivante.
+    /// La fin demandée sans texte final à temps : abandonnée, mais le texte provisoire déjà montré est rendu (il ne
+    /// part pas avec elle) ; pas une écoute suivante. Le délai laisse au modèle du téléphone le temps de finir.
     #[test]
-    fn a_stop_that_never_ends_is_given_up() {
+    fn a_stop_that_never_ends_is_given_up_and_keeps_the_partial_text() {
         let mut d = Dictation::default();
         let Tap::Start(seq) = d.tap(term()) else { panic!("écoute") };
         d.heard(seq, Heard::Ready);
-        assert!(!d.stop_timed_out(seq), "pas de fin demandée");
+        d.heard(seq, Heard::Partial(" relis le diff ".into()));
+        assert_eq!(d.stop_timed_out(seq), None, "pas de fin demandée");
         d.tap(term());
-        assert!(!d.stop_timed_out(seq + 1));
-        assert!(d.stop_timed_out(seq));
+        assert_eq!(d.stop_timed_out(seq + 1), None);
+        assert_eq!(d.stop_timed_out(seq), Some((term(), "relis le diff".into())));
         assert!(!d.active());
-        let Tap::Start(next) = d.tap(term()) else { panic!("écoute") };
+        assert_eq!((d.partial.as_str(), d.target.clone()), ("", None));
+        let Tap::Start(next) = d.tap(input()) else { panic!("écoute") };
         d.heard(next, Heard::Ready);
-        d.tap(term());
-        assert!(!d.stop_timed_out(seq), "le délai d'une écoute d'avant");
+        d.tap(input());
+        assert_eq!(d.stop_timed_out(seq), None, "le délai d'une écoute d'avant");
         assert!(d.active());
+        assert_eq!(d.stop_timed_out(next), Some((input(), String::new())), "rien de provisoire");
+        assert!(STOP_WITHIN >= Duration::from_secs(10), "le modèle du téléphone finit son texte");
     }
 
     /// Android ne dit pas toujours « prêt » (`onReadyForSpeech`) : le son qui arrive dit aussi que le micro est ouvert
@@ -609,15 +644,29 @@ mod tests {
         assert_eq!(d.heard(seq, Heard::Error(6)), Outcome::Failed(NOTHING_HEARD.into(), 1), "ouvert : rien entendu");
     }
 
-    /// La reconnaissance sans la langue de la dictée (pas encore téléchargée) : pas une simple bulle, le contrôleur
-    /// peut proposer son téléchargement.
+    /// La reconnaissance qui connaît la langue de la dictée sans l'avoir encore (`ERROR_LANGUAGE_UNAVAILABLE`, 13) :
+    /// pas une simple bulle, le contrôleur peut proposer son téléchargement. Celle qui ne la connaît pas
+    /// (`ERROR_LANGUAGE_NOT_SUPPORTED`, 12) : une bulle, aucun téléchargement n'y ferait rien.
     #[test]
     fn a_missing_language_is_told_apart() {
         let mut d = Dictation::default();
-        for code in [12, 13] {
-            let Tap::Start(seq) = d.tap(term()) else { panic!("écoute") };
-            assert_eq!(d.heard(seq, Heard::Error(code)), Outcome::NoLanguage(code));
-            assert!(!d.active());
+        let Tap::Start(seq) = d.tap(term()) else { panic!("écoute") };
+        assert_eq!(d.heard(seq, Heard::Error(13)), Outcome::NoLanguage(13));
+        assert!(!d.active());
+        let Tap::Start(seq) = d.tap(term()) else { panic!("écoute") };
+        let (text, tone) = error_text(12);
+        assert_eq!(d.heard(seq, Heard::Error(12)), Outcome::Failed(text, tone));
+        assert!(!d.active());
+    }
+
+    /// Le téléchargement demandé, ou prévu par Android : une langue toujours absente redit où il en est plutôt que de
+    /// le proposer de nouveau ; fini ou échoué, il se propose encore.
+    #[test]
+    fn a_download_asked_or_scheduled_is_not_offered_again() {
+        assert!(Download::Asked.pending() && Download::Scheduled.pending());
+        assert!(!Download::Done.pending());
+        for code in [4, 12, 15, NOT_STARTED] {
+            assert!(!Download::Failed(code).pending(), "{code}");
         }
     }
 
@@ -650,6 +699,9 @@ mod tests {
         assert!(text.contains("demandé") && tone == 1, "{text}");
         let (text, tone) = download_text(&Download::Failed(NOT_STARTED), "fr-FR");
         assert!(text.contains("pas pu") && tone == 3, "{text}");
+        // ERROR_LANGUAGE_NOT_SUPPORTED : la reconnaissance du téléphone ne propose pas la langue.
+        let (text, tone) = download_text(&Download::Failed(12), "fr-FR");
+        assert!(text.contains("ne propose pas le français") && !text.contains("(12)") && tone == 3, "{text}");
     }
 
     #[test]
@@ -686,9 +738,9 @@ mod tests {
         for network in [1, 2] {
             assert_eq!(error_text(network).0, "La reconnaissance vocale de ce téléphone a besoin d'Internet.");
         }
-        for language in [12, 13] {
-            assert_eq!(error_text(language).0, "Cette langue n'est pas disponible pour la dictée sur ce téléphone.");
-        }
+        assert_eq!(error_text(13).0, "Cette langue n'est pas disponible pour la dictée sur ce téléphone.");
+        let (text, tone) = error_text(12);
+        assert!(text.contains("ne connaît pas") && !text.contains("Télécharg") && tone == 3, "{text}");
         for code in [3, 4, 5, 8, 10, 11, 14, NOT_STARTED, 99] {
             let (text, tone) = error_text(code);
             assert!(!text.is_empty() && (3..=4).contains(&tone), "{code} : {text}");

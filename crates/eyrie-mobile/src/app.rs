@@ -501,6 +501,8 @@ pub struct Controller {
     /// Quand la reconnaissance du téléphone sait télécharger une langue (Android 13 et suivants) : la langue de la
     /// dictée et qui fait son modèle (voir `dictee::download_question`) ; relues avec la reconnaissance.
     language_download: Option<(String, String)>,
+    /// Ce qu'est devenu le dernier téléchargement de la langue demandé (aucun : pas demandé depuis le lancement).
+    download: Option<dictee::Download>,
     /// Les listes de l'interface, mises à jour sur place (jamais remplacées) : une ligne touchée survit aux messages.
     models: Models,
     /// L'écran dont les lignes sont affichées, et leurs clés et empreintes (voir [`view::patch`]).
@@ -667,6 +669,7 @@ impl Controller {
             dictation: Dictation::default(),
             recognizer: Recognizer::default(),
             language_download: None,
+            download: None,
             models,
             shown_for: None,
             shown: Vec::new(),
@@ -1012,7 +1015,7 @@ impl Controller {
                 self.offline_text = format!("Hors ligne ({reason}) · nouvel essai dans {secs} s");
                 self.show_offline();
                 self.picker_offline();
-                self.drop_dictation(None);
+                self.drop_dictation(None, "liaison coupée");
             }
             NetEvent::Refused(reason) => {
                 self.online = false;
@@ -1020,7 +1023,7 @@ impl Controller {
                 self.start = Start::Idle;
                 self.set_link(3, &reason);
                 self.picker_offline();
-                self.drop_dictation(None);
+                self.drop_dictation(None, "liaison refusée par le PC");
             }
             NetEvent::Started(answer) => self.on_started(answer),
             NetEvent::Message(m) => self.on_message(*m),
@@ -1033,7 +1036,7 @@ impl Controller {
     fn welcomed(&mut self, w: Welcome) {
         self.rights = w.rights;
         if !self.rights.terminals {
-            self.drop_dictation(Some(true));
+            self.drop_dictation(Some(true), "le PC a retiré « Terminaux »");
         }
         self.pc_name = w.pc;
         self.eyrie = w.eyrie;
@@ -1562,7 +1565,7 @@ impl Controller {
                 self.toast("L'écran a changé : rien n'est parti.", 3);
             }
             // La saisie fermée l'a demandé, mais le contrôleur est ici occupé (`with`) : fait ici.
-            self.drop_dictation(Some(false));
+            self.drop_dictation(Some(false), "l'écran a changé, saisie fermée");
         }
         self.overlays_for = Some(key);
     }
@@ -1682,7 +1685,7 @@ impl Controller {
         ui.set_term_ended(self.term.ended);
         // Le programme est terminé : plus de saisie, ni de micro ; l'écoute en cours s'abandonne avec lui.
         if self.term.ended {
-            self.drop_dictation(Some(true));
+            self.drop_dictation(Some(true), "la session du terminal est finie");
         }
         ui.set_term_waiting(self.term.waiting);
         let replies: Vec<SharedString> = self.term.replies.iter().map(|r| r.label.as_str().into()).collect();
@@ -2170,7 +2173,7 @@ impl Controller {
             && let Some(ui) = self.ui()
         {
             ui.set_term_masked(true);
-            self.drop_dictation(Some(true));
+            self.drop_dictation(Some(true), "mot de passe demandé, saisie masquée");
         }
         self.term_secret = secret;
     }
@@ -2223,7 +2226,7 @@ impl Controller {
         self.set_latch(Latch::None);
         self.paste = None;
         self.term_secret = false;
-        self.drop_dictation(Some(true));
+        self.drop_dictation(Some(true), "autre terminal, ou plus de terminal");
         if let Some(ui) = self.ui() {
             ui.set_term_copy_visible(false);
             ui.set_term_paste_visible(false);
@@ -2318,16 +2321,7 @@ impl Controller {
                 platform::stop_dictation();
                 let seq = self.dictation.seq();
                 slint::Timer::single_shot(dictee::STOP_WITHIN, move || {
-                    with(|c| {
-                        if c.dictation.stop_timed_out(seq) {
-                            platform::dictation_log(&format!(
-                                "écoute {seq} : pas de texte final après la fin, abandonnée"
-                            ));
-                            platform::cancel_dictation();
-                            c.refresh_dictation();
-                            c.toast(dictee::NOTHING_HEARD, 1);
-                        }
-                    });
+                    with(|c| c.stop_late(seq));
                 });
             }
             Tap::Cancel => {
@@ -2340,6 +2334,26 @@ impl Controller {
         self.refresh_dictation();
     }
 
+    /// La fin de l'écoute `seq` demandée, sans texte final à temps ([`dictee::STOP_WITHIN`]) : abandonnée. Le texte
+    /// provisoire déjà montré s'ajoute à la saisie, jamais envoyé aussitôt (à relire : ce n'est pas le texte final) ;
+    /// sans lui, une bulle dit que la reconnaissance n'a pas répondu.
+    pub(crate) fn stop_late(&mut self, seq: u32) {
+        let Some((target, partial)) = self.dictation.stop_timed_out(seq) else { return };
+        let s = dictee::STOP_WITHIN.as_secs();
+        platform::dictation_log(&format!(
+            "écoute {seq} : pas de texte final {s} s après la fin, abandonnée (texte provisoire gardé, longueur {})",
+            partial.chars().count()
+        ));
+        platform::cancel_dictation();
+        self.refresh_dictation();
+        if partial.is_empty() {
+            self.toast(dictee::NO_FINAL, 3);
+        } else {
+            self.dictated(&target, &partial, false);
+            self.toast(dictee::PARTIAL_KEPT, 3);
+        }
+    }
+
     /// Ce qu'entend la reconnaissance, pour l'écoute `seq`.
     pub(crate) fn on_heard(&mut self, seq: u32, heard: Heard) {
         let starting = self.dictation.phase == dictee::Phase::Starting;
@@ -2349,6 +2363,7 @@ impl Controller {
             // Le micro s'est ouvert alors que l'application passait en arrière-plan : abandonné.
             Outcome::Update => {
                 if platform::in_background() && self.dictation.paused(platform::asking_mic()) {
+                    platform::dictation_log(&format!("écoute {seq} : abandonnée, application en arrière-plan"));
                     platform::cancel_dictation();
                 } else if opening {
                     self.open_deadline(seq);
@@ -2357,7 +2372,7 @@ impl Controller {
                     platform::haptic();
                 }
             }
-            Outcome::Text(target, text) => self.dictated(&target, &text),
+            Outcome::Text(target, text) => self.dictated(&target, &text, true),
             Outcome::Failed(why, tone) => self.toast(&why, tone),
             Outcome::NoLanguage(code) => self.language_missing(code),
         }
@@ -2380,13 +2395,19 @@ impl Controller {
         });
     }
 
-    /// La reconnaissance n'a pas la langue de la dictée (`code`) : celle du téléphone, quand Android le permet, propose
-    /// de la télécharger (le modèle de son fabricant, Google le plus souvent : la question le dit) ; sinon une bulle.
-    /// Jamais une autre reconnaissance à la place, qui pourrait envoyer le son sur Internet.
+    /// La reconnaissance connaît la langue de la dictée sans l'avoir encore (`code`) : celle du téléphone, quand
+    /// Android le permet, propose de la télécharger (le modèle de son fabricant, Google le plus souvent : la question
+    /// le dit) ; déjà demandé ou prévu par Android, une bulle dit où il en est ; sinon une bulle. Jamais une autre
+    /// reconnaissance à la place, qui pourrait envoyer le son sur Internet.
     fn language_missing(&self, code: i32) {
         let ui = self.ui();
-        match (&self.language_download, &ui) {
-            (Some((lang, maker)), Some(ui)) if self.recognizer == Recognizer::OnDevice => {
+        let pending = self.download.as_ref().filter(|d| d.pending());
+        match (&self.language_download, &ui, pending) {
+            (Some((lang, _)), Some(_), Some(download)) if self.recognizer == Recognizer::OnDevice => {
+                let (text, tone) = dictee::download_text(download, lang);
+                self.toast(&text, tone);
+            }
+            (Some((lang, maker)), Some(ui), _) if self.recognizer == Recognizer::OnDevice => {
                 let (text, ok) = dictee::download_question(lang, maker);
                 ui.set_dictation_download_text(view::tied(&text).into());
                 ui.set_dictation_download_ok(ok.into());
@@ -2400,23 +2421,28 @@ impl Controller {
     }
 
     /// « Télécharger le français » : demandé à la reconnaissance du téléphone ; ce qu'il en devient se dit en bulle.
-    fn download_language(&self) {
-        let Some((lang, _)) = self.language_download.clone() else { return };
-        let (text, tone) = dictee::download_text(&dictee::Download::Asked, &lang);
+    fn download_language(&mut self) {
+        let Some((lang, _)) = &self.language_download else { return };
+        let (text, tone) = dictee::download_text(&dictee::Download::Asked, lang);
+        self.download = Some(dictee::Download::Asked);
         self.toast(&text, tone);
-        platform::download_language(Box::new(move |news| {
-            let lang = lang.clone();
-            post(move |c| {
-                let (text, tone) = dictee::download_text(&news, &lang);
-                c.toast(&text, tone);
-            });
-        }));
+        platform::download_language(Box::new(|news| post(move |c| c.downloaded(news))));
+    }
+
+    /// Ce qu'est devenu le téléchargement de la langue, dit en bulle.
+    pub(crate) fn downloaded(&mut self, news: dictee::Download) {
+        if let Some((lang, _)) = &self.language_download {
+            let (text, tone) = dictee::download_text(&news, lang);
+            self.toast(&text, tone);
+        }
+        self.download = Some(news);
     }
 
     /// Le texte final, au bout de la saisie de sa cible si elle est toujours là : à relire, puis à envoyer ; dans le
-    /// terminal, envoyé aussitôt avec Entrée si l'utilisateur l'a choisi (« Envoyer la dictée aussitôt »), sauf quand
-    /// Claude attend un choix : Entrée y choisirait la réponse en surbrillance (« 1. Yes »), quoi qu'on ait dit.
-    fn dictated(&mut self, target: &dictee::Target, text: &str) {
+    /// terminal, envoyé aussitôt avec Entrée si l'utilisateur l'a choisi (« Envoyer la dictée aussitôt ») et que
+    /// `may_send` (pas un texte provisoire gardé), sauf quand Claude attend un choix : Entrée y choisirait la réponse en
+    /// surbrillance (« 1. Yes »), quoi qu'on ait dit.
+    fn dictated(&mut self, target: &dictee::Target, text: &str, may_send: bool) {
         let Some(ui) = self.ui() else { return };
         match target {
             dictee::Target::Term { module, id } => {
@@ -2427,7 +2453,7 @@ impl Controller {
                 }
                 let draft = dictee::append(&ui.get_term_draft(), text);
                 ui.set_term_draft(draft.as_str().into());
-                if dictee::sends_now(target, self.store.prefs.dictation_send) {
+                if may_send && dictee::sends_now(target, self.store.prefs.dictation_send) {
                     if self.term.replies.is_empty() {
                         self.term_send_line(&draft);
                     } else {
@@ -2445,13 +2471,15 @@ impl Controller {
     }
 
     /// L'écoute s'abandonne, si elle va au terminal (`Some(true)`), à une saisie (`Some(false)`) ou n'importe où
-    /// (`None`) : rien de ce qu'elle a entendu n'est gardé.
-    fn drop_dictation(&mut self, to_term: Option<bool>) {
+    /// (`None`) : rien de ce qu'elle a entendu n'est gardé. `why` : pourquoi, au journal de la dictée.
+    fn drop_dictation(&mut self, to_term: Option<bool>, why: &str) {
         let is_term = matches!(self.dictation.target, Some(dictee::Target::Term { .. }));
         if to_term.is_some_and(|t| t != is_term) {
             return;
         }
+        let seq = self.dictation.seq();
         if self.dictation.cancel() {
+            platform::dictation_log(&format!("écoute {seq} : abandonnée, {why}"));
             platform::cancel_dictation();
             self.refresh_dictation();
         }
@@ -2575,7 +2603,7 @@ impl Controller {
         self.pendings.sent.clear();
         self.holds = Holds::default();
         self.close_picker();
-        self.drop_dictation(None);
+        self.drop_dictation(None, "session avec le PC remise à zéro");
         self.followed = None;
         self.term = TermBuf::default();
         self.term_model.set_vec(Vec::new());
@@ -2763,7 +2791,9 @@ impl Controller {
     /// L'application passe en arrière-plan (Android) : l'écoute s'abandonne, sauf pendant la question du micro, qui
     /// cause cette pause.
     pub fn paused(&mut self) {
+        let seq = self.dictation.seq();
         if self.dictation.paused(platform::asking_mic()) {
+            platform::dictation_log(&format!("écoute {seq} : abandonnée, application en arrière-plan"));
             platform::cancel_dictation();
             self.refresh_dictation();
         }
@@ -3037,7 +3067,8 @@ fn wire(ui: &AppWindow) {
         with(|c| c.input_dictate(&a));
     });
     ui.on_dictation_cancel(|term| {
-        with(|c| c.drop_dictation(Some(term)));
+        let why = if term { "saisie du terminal masquée" } else { "saisie fermée ou envoyée" };
+        with(|c| c.drop_dictation(Some(term), why));
     });
     ui.on_dictation_download(|| {
         with(|c| c.download_language());
@@ -3505,6 +3536,11 @@ mod tests {
         assert_eq!(size_choice(1.52), -1);
     }
 
+    /// Les bulles montrées ou en attente oubliées : la suivante se montre aussitôt.
+    fn no_bubbles() {
+        with(|c| *c.bubbles.borrow_mut() = Bubbles::default());
+    }
+
     /// Un terminal de Fawkes ouvert, suivi par le téléphone, avec le droit « Terminaux » et une reconnaissance vocale.
     fn dictating_terminal(name: &str) -> AppWindow {
         let ui = headless(name);
@@ -3568,12 +3604,12 @@ mod tests {
         with(|c| c.on_heard(c.dictation.seq(), Heard::Ready));
         assert!(ui.get_term_listening() && !ui.get_dictation_starting(), "ouvert : on peut parler");
         with(|c| {
-            c.drop_dictation(None);
+            c.drop_dictation(None, "essai");
             c.term_dictate();
             c.on_heard(c.dictation.seq(), Heard::Partial("bonjour".into()));
         });
         assert!(ui.get_term_listening() && !ui.get_dictation_starting(), "un texte : le micro était ouvert");
-        with(|c| c.drop_dictation(None));
+        with(|c| c.drop_dictation(None, "essai"));
         assert!(!ui.get_term_listening() && !ui.get_dictation_starting());
     }
 
@@ -3592,6 +3628,15 @@ mod tests {
         assert_eq!(ui.get_dictation_download_ok().as_str(), "Télécharger le français");
         assert!(ui.get_dictation_download_text().contains("Google"), "{}", ui.get_dictation_download_text());
         ui.set_dictation_download_visible(false);
+        // ERROR_LANGUAGE_NOT_SUPPORTED : la reconnaissance ne connaît pas la langue, aucun téléchargement n'y ferait
+        // rien.
+        with(|c| {
+            c.term_dictate();
+            c.on_heard(c.dictation.seq(), Heard::Error(12));
+        });
+        assert!(!ui.get_dictation_download_visible(), "rien à télécharger");
+        assert!(ui.get_toast_text().contains("ne connaît pas"), "{}", ui.get_toast_text());
+        no_bubbles();
         with(|c| {
             c.language_download = None;
             c.term_dictate();
@@ -3599,6 +3644,105 @@ mod tests {
         });
         assert!(!ui.get_dictation_download_visible(), "Android ne sait pas la télécharger");
         assert!(ui.get_toast_text().contains("langue"), "{}", ui.get_toast_text());
+    }
+
+    /// Le téléchargement demandé, ou prévu par Android : la langue toujours absente, une bulle dit où il en est, la
+    /// question ne revient pas ; échoué, elle revient.
+    #[test]
+    fn a_download_under_way_is_told_rather_than_offered_again() {
+        let ui = dictating_terminal("dictee-telechargement");
+        let missing = || {
+            with(|c| {
+                c.term_dictate();
+                c.on_heard(c.dictation.seq(), Heard::Error(13));
+            })
+        };
+        with(|c| c.language_download = Some(("fr-FR".into(), "Google".into())));
+        missing();
+        assert!(ui.get_dictation_download_visible());
+        ui.set_dictation_download_visible(false);
+        ui.invoke_dictation_download();
+        assert!(ui.get_toast_text().contains("Téléchargement demandé"), "{}", ui.get_toast_text());
+        no_bubbles();
+        ui.set_toast_text("".into());
+        missing();
+        assert!(!ui.get_dictation_download_visible(), "déjà demandé");
+        assert!(ui.get_toast_text().contains("Téléchargement demandé"), "{}", ui.get_toast_text());
+        with(|c| c.downloaded(dictee::Download::Scheduled));
+        no_bubbles();
+        missing();
+        assert!(!ui.get_dictation_download_visible(), "prévu par Android");
+        assert!(ui.get_toast_text().contains("plus tard"), "{}", ui.get_toast_text());
+        with(|c| c.downloaded(dictee::Download::Failed(4)));
+        missing();
+        assert!(ui.get_dictation_download_visible(), "échoué : proposé de nouveau");
+    }
+
+    /// Dictée dans une saisie sur plusieurs lignes, la langue absente : la question du téléchargement passe par-dessus
+    /// la saisie, qui reste ouverte avec ce qu'on y a tapé ; Retour ne ferme que la question.
+    #[test]
+    fn the_download_question_shows_over_a_multiline_input_and_back_keeps_the_input() {
+        use slint::platform::{Key, WindowEvent};
+        let ui = dictating_terminal("dictee-saisie-langue");
+        let note = UiAct {
+            id: "lancer-note:revue".into(),
+            label: "Lancer".into(),
+            has_input: true,
+            multiline: true,
+            input_value: "Regarde".into(),
+            module: "patronus".into(),
+            ..Default::default()
+        };
+        ui.invoke_open_act(note.clone());
+        with(|c| {
+            c.language_download = Some(("fr-FR".into(), "Google".into()));
+            c.input_dictate(&note);
+            c.on_heard(c.dictation.seq(), Heard::Error(13));
+        });
+        assert!(ui.get_dictation_download_visible() && ui.get_input_visible());
+        ui.window().dispatch_event(WindowEvent::KeyPressed { text: Key::Escape.into() });
+        assert!(!ui.get_dictation_download_visible(), "Retour ferme la question");
+        assert!(ui.get_input_visible(), "la saisie reste ouverte");
+        assert_eq!(ui.get_input_text().as_str(), "Regarde");
+        // Le champ a toujours la main : un second Retour ferme la saisie (avant, il n'allait qu'au champ).
+        ui.window().dispatch_event(WindowEvent::KeyPressed { text: Key::Escape.into() });
+        assert!(!ui.get_input_visible());
+    }
+
+    /// La fin demandée, sans texte final à temps : le texte provisoire déjà montré s'ajoute à la saisie, sans partir
+    /// (même avec « Envoyer la dictée aussitôt ») : à relire ; le texte final trop tard ne s'y ajoute plus. Sans texte
+    /// provisoire, une bulle dit que la reconnaissance n'a pas répondu (pas « Rien entendu. »).
+    #[test]
+    fn a_late_final_text_keeps_the_partial_text_without_sending_it() {
+        let ui = dictating_terminal("dictee-fin-tardive");
+        ui.set_term_draft("relis".into());
+        let seq = with(|c| {
+            c.store.prefs.dictation_send = true;
+            c.term_dictate();
+            let seq = c.dictation.seq();
+            c.on_heard(seq, Heard::Ready);
+            c.on_heard(seq, Heard::Partial("le diff".into()));
+            c.term_dictate();
+            c.stop_late(seq);
+            seq
+        })
+        .unwrap();
+        assert_eq!(ui.get_term_draft().as_str(), "relis le diff", "gardé, pas parti");
+        assert!(!ui.get_term_listening());
+        assert!(ui.get_toast_text().contains("texte provisoire"), "{}", ui.get_toast_text());
+        with(|c| c.on_heard(seq, Heard::Final("le diff ci-dessus".into())));
+        assert_eq!(ui.get_term_draft().as_str(), "relis le diff", "le texte final trop tard ne s'ajoute pas");
+        no_bubbles();
+        with(|c| {
+            c.term_dictate();
+            let seq = c.dictation.seq();
+            c.on_heard(seq, Heard::Ready);
+            c.term_dictate();
+            c.stop_late(seq);
+        });
+        assert_eq!(ui.get_term_draft().as_str(), "relis le diff");
+        assert!(ui.get_toast_text().contains("à temps"), "{}", ui.get_toast_text());
+        assert!(ui.get_toast_text() != dictee::NOTHING_HEARD);
     }
 
     /// Une saisie masquée (un mot de passe demandé), la liaison coupée ou l'application en arrière-plan abandonnent

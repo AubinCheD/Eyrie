@@ -67,18 +67,27 @@ public final class Dictee implements RecognitionListener {
     private static SpeechRecognizer reconnaisseur;
     private static int numero;
 
+    private final Context ctx;
     private final int ecoute;
     private final SpeechRecognizer mien;
+    /** La reconnaissance du téléphone lui-même (pas son service par défaut). */
+    private final boolean surAppareil;
     private boolean finie;
-    /** Pour le journal : l'instant de startListening, ce qui est déjà arrivé ; le micro s'est dit ouvert. */
+    /**
+     * Pour le journal : l'instant de startListening, ce qui est déjà arrivé, le son le plus fort (dB) ; le micro s'est
+     * dit ouvert.
+     */
     private long depart;
     private int partiels;
     private int niveaux;
+    private float plusFort = -100f;
     private boolean ouvert;
 
-    private Dictee(int ecoute, SpeechRecognizer mien) {
+    private Dictee(Context ctx, int ecoute, SpeechRecognizer mien, boolean surAppareil) {
+        this.ctx = ctx;
         this.ecoute = ecoute;
         this.mien = mien;
+        this.surAppareil = surAppareil;
     }
 
     /** Une étape au journal d'Android (Rust y écrit aussi, par android.rs) : jamais ce qui a été dit. */
@@ -116,6 +125,7 @@ public final class Dictee implements RecognitionListener {
             paquet = c == null ? null : c.getPackageName();
         } catch (Throwable e) {
             // Réglage illisible pour une application (Android 12 et suivants) : le seul service installé, s'il l'est.
+            exception("service par défaut, réglage voice_recognition_service", e);
         }
         try {
             if (paquet == null) {
@@ -126,6 +136,7 @@ public final class Dictee implements RecognitionListener {
             }
             return paquet == null ? "" : String.valueOf(pm.getApplicationLabel(pm.getApplicationInfo(paquet, 0)));
         } catch (Throwable e) {
+            exception("service par défaut, nom de " + paquet, e);
             return "";
         }
     }
@@ -137,6 +148,7 @@ public final class Dictee implements RecognitionListener {
             int id = r.getIdentifier("config_defaultOnDeviceSpeechRecognitionService", "string", "android");
             return id == 0 ? "" : r.getString(id);
         } catch (Throwable e) {
+            exception("composant de la reconnaissance du téléphone", e);
             return "";
         }
     }
@@ -169,8 +181,9 @@ public final class Dictee implements RecognitionListener {
                     numero = ecoute;
                     journal("écoute " + ecoute + " : créée");
                     etape = "setRecognitionListener";
-                    Dictee d = new Dictee(ecoute, reconnaisseur);
+                    Dictee d = new Dictee(ctx, ecoute, reconnaisseur, appareil);
                     reconnaisseur.setRecognitionListener(d);
+                    journal("écoute " + ecoute + " : setRecognitionListener");
                     etape = "startListening";
                     d.depart = SystemClock.elapsedRealtime();
                     reconnaisseur.startListening(intention(ctx, langue));
@@ -276,7 +289,8 @@ public final class Dictee implements RecognitionListener {
 
     /**
      * Télécharge la langue de la dictée pour la reconnaissance du téléphone (Android 13 et suivants : son modèle, Google
-     * le plus souvent) ; ce qu'il en devient part à `modele`. Avant, ce que la reconnaissance a déjà va au journal.
+     * le plus souvent) ; ce qu'il en devient part à `modele`, une seule fois. Avant, ce que la reconnaissance a déjà va
+     * au journal, et décide : déjà installée, déjà en cours, ou pas proposée, rien n'est demandé.
      */
     public static void telecharger(final Context ctx) {
         PRINCIPAL.post(new Runnable() {
@@ -287,105 +301,282 @@ public final class Dictee implements RecognitionListener {
                     modele(2, -1);
                     return;
                 }
-                final String langue = langue();
-                journal("téléchargement de " + langue + " demandé (" + composantSurAppareil() + ")");
-                final SpeechRecognizer r;
-                try {
-                    r = SpeechRecognizer.createOnDeviceSpeechRecognizer(ctx);
-                } catch (Throwable e) {
-                    exception("téléchargement, création", e);
-                    modele(2, -1);
-                    return;
-                }
-                final Intent i = intention(ctx, langue);
-                // Un appel après l'autre : deux appels avant la liaison au service en feraient deux.
-                try {
-                    r.checkRecognitionSupport(i, ctx.getMainExecutor(), new RecognitionSupportCallback() {
-                        @Override
-                        public void onSupportResult(RecognitionSupport s) {
-                            journal("langues du téléphone : installées " + s.getInstalledOnDeviceLanguages()
-                                    + ", en cours " + s.getPendingOnDeviceLanguages()
-                                    + ", téléchargeables " + s.getSupportedOnDeviceLanguages()
-                                    + ", en ligne " + s.getOnlineLanguages());
-                            declencher(ctx, r, i);
-                        }
-
-                        @Override
-                        public void onError(int code) {
-                            journal("langues du téléphone : erreur " + code + " (" + nom(code) + ")");
-                            declencher(ctx, r, i);
-                        }
-                    });
-                } catch (Throwable e) {
-                    exception("téléchargement, checkRecognitionSupport", e);
-                    declencher(ctx, r, i);
-                }
+                Langues.demander(ctx, true);
             }
         });
     }
 
-    /** Le téléchargement lui-même ; la reconnaissance qui l'a demandé est détruite à sa fin. */
-    private static void declencher(Context ctx, final SpeechRecognizer r, Intent i) {
-        try {
-            if (Build.VERSION.SDK_INT >= 34) {
-                r.triggerModelDownload(i, ctx.getMainExecutor(), new ModelDownloadListener() {
-                    private int dit = -1;
+    /**
+     * Après une erreur de langue de la reconnaissance du téléphone, ce qu'elle a déjà et ce qu'elle propose, au journal
+     * seulement (Android 13 et suivants) : « ne connaît pas » (12) se vérifie là.
+     */
+    private static void journalDesLangues(final Context ctx) {
+        if (Build.VERSION.SDK_INT < 33) {
+            return;
+        }
+        PRINCIPAL.post(new Runnable() {
+            @Override
+            public void run() {
+                Langues.demander(ctx, false);
+            }
+        });
+    }
 
-                    @Override
-                    public void onProgress(int pourcent) {
-                        // Au journal de dix en dix.
-                        if (pourcent / 10 != dit) {
-                            dit = pourcent / 10;
-                            journal("téléchargement : " + pourcent + " %");
-                        }
-                    }
+    /**
+     * Les langues de la reconnaissance du téléphone (Android 13 et suivants) : ce qu'elle a et propose
+     * (checkRecognitionSupport), puis, pour `telecharger`, le téléchargement (triggerModelDownload). Sa reconnaissance a
+     * son RecognitionListener : sans lui, Android tait ce qui empêche la liaison au service (ERROR_CLIENT, trop de
+     * demandes), et rien ne répondrait. Sans réponse en 30 s avant le téléchargement, abandonné. Une seule fin
+     * (`dire`) ; tout se passe dans le fil principal.
+     */
+    private static final class Langues implements RecognitionListener {
+        private static final long REPONSE_EN = 30_000;
+        /** Après un téléchargement demandé sans suivi : la liaison reste le temps qu'il commence. */
+        private static final long LIAISON_GARDEE = 120_000;
 
-                    @Override
-                    public void onSuccess() {
-                        journal("téléchargement : fini");
-                        detruire(r);
-                        modele(0, 0);
-                    }
+        private final Context ctx;
+        private final boolean telecharger;
+        private final String langue;
+        private final Intent intention;
+        private SpeechRecognizer r;
+        /** Fini, dit à Rust (pour `telecharger`) ; triggerModelDownload appelé. */
+        private boolean dit;
+        private boolean declenche;
+        private final Runnable veille = new Runnable() {
+            @Override
+            public void run() {
+                if (!dit && !declenche) {
+                    journal(quoi() + " : pas de réponse de la reconnaissance en " + REPONSE_EN / 1000 + " s");
+                    dire(2, -1);
+                }
+            }
+        };
 
+        private Langues(Context ctx, boolean telecharger) {
+            this.ctx = ctx;
+            this.telecharger = telecharger;
+            this.langue = langue();
+            this.intention = intention(ctx, langue);
+        }
+
+        static void demander(Context ctx, boolean telecharger) {
+            Langues l = new Langues(ctx, telecharger);
+            journal((telecharger ? "téléchargement de " + l.langue + " demandé"
+                    : "langues du téléphone demandées, pour " + l.langue) + " (" + composantSurAppareil() + ")");
+            try {
+                l.r = SpeechRecognizer.createOnDeviceSpeechRecognizer(ctx);
+                l.r.setRecognitionListener(l);
+            } catch (Throwable e) {
+                exception(l.quoi() + ", création", e);
+                l.dire(2, -1);
+                return;
+            }
+            PRINCIPAL.postDelayed(l.veille, REPONSE_EN);
+            // Un appel après l'autre : deux appels avant la liaison au service en feraient deux.
+            try {
+                l.r.checkRecognitionSupport(l.intention, ctx.getMainExecutor(), new RecognitionSupportCallback() {
                     @Override
-                    public void onScheduled() {
-                        journal("téléchargement : prévu plus tard par Android");
-                        detruire(r);
-                        modele(1, 0);
+                    public void onSupportResult(RecognitionSupport s) {
+                        l.langues(s);
                     }
 
                     @Override
                     public void onError(int code) {
-                        journal("téléchargement : erreur " + code + " (" + nom(code) + ")");
-                        detruire(r);
-                        modele(2, code);
+                        journal("langues du téléphone : erreur " + code + " (" + nom(code) + ")");
+                        l.ensuite();
                     }
                 });
-            } else {
-                // Android 13 : demandé, sans nouvelles ensuite. La liaison reste le temps qu'il commence.
-                r.triggerModelDownload(i);
-                journal("téléchargement : demandé (Android 13, sans suivi)");
-                modele(2, SpeechRecognizer.ERROR_CANNOT_LISTEN_TO_DOWNLOAD_EVENTS);
-                PRINCIPAL.postDelayed(new Runnable() {
-                    @Override
-                    public void run() {
-                        detruire(r);
-                    }
-                }, 120_000);
+            } catch (Throwable e) {
+                exception(l.quoi() + ", checkRecognitionSupport", e);
+                l.ensuite();
             }
-        } catch (Throwable e) {
-            exception("téléchargement, triggerModelDownload", e);
-            detruire(r);
-            modele(2, -1);
         }
+
+        private String quoi() {
+            return telecharger ? "téléchargement" : "langues du téléphone";
+        }
+
+        /** Ce que la reconnaissance a et propose : installée, en cours, pas proposée, rien à demander. */
+        private void langues(RecognitionSupport s) {
+            List<String> installees = s.getInstalledOnDeviceLanguages();
+            List<String> enCours = s.getPendingOnDeviceLanguages();
+            List<String> proposees = s.getSupportedOnDeviceLanguages();
+            journal("langues du téléphone : installées " + installees + ", en cours " + enCours
+                    + ", téléchargeables " + proposees + ", en ligne " + s.getOnlineLanguages());
+            if (dit || !telecharger) {
+                dire(2, 0);
+            } else if (parmi(installees, langue)) {
+                journal("téléchargement : " + langue + " déjà installée");
+                dire(0, 0);
+            } else if (parmi(enCours, langue)) {
+                journal("téléchargement : " + langue + " déjà en cours");
+                dire(1, 0);
+            } else if (proposees != null && !proposees.isEmpty() && !parmi(proposees, langue)) {
+                // Des langues proposées, pas la sienne : un téléchargement n'y ferait rien.
+                journal("téléchargement : " + langue + " pas proposée");
+                dire(2, SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED);
+            } else {
+                ensuite();
+            }
+        }
+
+        /** Les langues lues (ou pas) : le téléchargement, pour `telecharger` ; sinon, fini. */
+        private void ensuite() {
+            if (telecharger) {
+                declencher();
+            } else {
+                dire(2, 0);
+            }
+        }
+
+        /** Le téléchargement lui-même. */
+        private void declencher() {
+            if (dit || declenche) {
+                return;
+            }
+            declenche = true;
+            PRINCIPAL.removeCallbacks(veille);
+            try {
+                if (Build.VERSION.SDK_INT >= 34) {
+                    r.triggerModelDownload(intention, ctx.getMainExecutor(), new ModelDownloadListener() {
+                        private int dizaine = -1;
+
+                        @Override
+                        public void onProgress(int pourcent) {
+                            // Au journal de dix en dix.
+                            if (pourcent / 10 != dizaine) {
+                                dizaine = pourcent / 10;
+                                journal("téléchargement : " + pourcent + " %");
+                            }
+                        }
+
+                        @Override
+                        public void onSuccess() {
+                            journal("téléchargement : fini");
+                            dire(0, 0);
+                        }
+
+                        @Override
+                        public void onScheduled() {
+                            journal("téléchargement : prévu plus tard par Android");
+                            dire(1, 0);
+                        }
+
+                        @Override
+                        public void onError(int code) {
+                            journal("téléchargement : erreur " + code + " (" + nom(code) + ")");
+                            if (code == SpeechRecognizer.ERROR_CANNOT_LISTEN_TO_DOWNLOAD_EVENTS) {
+                                // Le service ne sait télécharger que sans écouteur (celui qui en prend un, sans le
+                                // savoir, répond seulement 15) : redemandé ainsi.
+                                sansSuivi("sans suivi, redemandé sans écouteur");
+                            } else {
+                                dire(2, code);
+                            }
+                        }
+                    });
+                } else {
+                    sansSuivi("demandé (Android 13, sans suivi)");
+                }
+            } catch (Throwable e) {
+                exception("téléchargement, triggerModelDownload", e);
+                dire(2, -1);
+            }
+        }
+
+        /** Demandé sans écouteur : Android n'en dira pas la fin (15) ; la liaison reste le temps qu'il commence. */
+        private void sansSuivi(String etape) {
+            if (dit) {
+                return;
+            }
+            try {
+                r.triggerModelDownload(intention);
+            } catch (Throwable e) {
+                exception("téléchargement, triggerModelDownload sans écouteur", e);
+                dire(2, -1);
+                return;
+            }
+            journal("téléchargement : " + etape);
+            dit = true;
+            PRINCIPAL.removeCallbacks(veille);
+            final SpeechRecognizer gardee = r;
+            PRINCIPAL.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    detruire(gardee);
+                }
+            }, LIAISON_GARDEE);
+            modele(2, SpeechRecognizer.ERROR_CANNOT_LISTEN_TO_DOWNLOAD_EVENTS);
+        }
+
+        /** La fin, une seule fois : la reconnaissance détruite, et, pour `telecharger`, ce qu'il en devient à Rust. */
+        private void dire(int etat, int code) {
+            if (dit) {
+                return;
+            }
+            dit = true;
+            PRINCIPAL.removeCallbacks(veille);
+            if (r != null) {
+                detruire(r);
+            }
+            if (telecharger) {
+                modele(etat, code);
+            }
+        }
+
+        private void detruire(SpeechRecognizer r) {
+            try {
+                r.destroy();
+            } catch (Throwable e) {
+                exception(quoi() + ", destroy", e);
+            }
+        }
+
+        /** Ce que la liaison au service ne peut faire (ERROR_CLIENT, trop de demandes…) : la fin. */
+        @Override
+        public void onError(int code) {
+            journal(quoi() + " : erreur de la reconnaissance " + code + " (" + nom(code) + ")"
+                    + (dit ? ", déjà fini" : ""));
+            dire(2, code);
+        }
+
+        @Override
+        public void onReadyForSpeech(Bundle params) {}
+
+        @Override
+        public void onBeginningOfSpeech() {}
+
+        @Override
+        public void onRmsChanged(float rmsdB) {}
+
+        @Override
+        public void onBufferReceived(byte[] buffer) {}
+
+        @Override
+        public void onEndOfSpeech() {}
+
+        @Override
+        public void onResults(Bundle results) {}
+
+        @Override
+        public void onPartialResults(Bundle partialResults) {}
+
+        @Override
+        public void onEvent(int eventType, Bundle params) {}
     }
 
-    private static void detruire(SpeechRecognizer r) {
-        try {
-            r.destroy();
-        } catch (Throwable e) {
-            exception("téléchargement, destroy", e);
+    /** La langue `tag` (« fr-FR ») est-elle dans la liste, telle quelle ou sans région (« fr ») ? */
+    private static boolean parmi(List<String> liste, String tag) {
+        if (liste == null) {
+            return false;
         }
+        String seule = tag.split("-")[0];
+        for (String l : liste) {
+            String x = l == null ? "" : l.replace('_', '-');
+            if (x.equalsIgnoreCase(tag) || x.equalsIgnoreCase(seule)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Le nom d'une erreur de SpeechRecognizer, pour le journal. */
@@ -417,6 +608,15 @@ public final class Dictee implements RecognitionListener {
     private static String premier(Bundle b) {
         ArrayList<String> l = textes(b);
         return l == null || l.isEmpty() || l.get(0) == null ? "" : l.get(0);
+    }
+
+    /**
+     * Ce qui est arrivé de cette écoute, pour le journal d'une fin. Le son le plus fort dit si le micro a capté quelque
+     * chose : vers -2 dB, rien que du silence (le micro coupé par Android ou le fabricant, ou personne n'a parlé).
+     */
+    private String bilan() {
+        return "après " + partiels + " texte(s) provisoire(s) et " + niveaux + " niveau(x) du son"
+                + (niveaux > 0 ? ", le plus fort " + plusFort + " dB" : "") + (ouvert ? "" : ", sans « prêt »");
     }
 
     /** Une étape de cette écoute au journal, avec le temps depuis startListening. */
@@ -475,8 +675,7 @@ public final class Dictee implements RecognitionListener {
     public void onResults(Bundle results) {
         ArrayList<String> l = textes(results);
         note("onResults : " + (l == null ? 0 : l.size()) + " proposition(s), longueur " + premier(results).length()
-                + ", après " + partiels + " texte(s) provisoire(s) et " + niveaux + " niveau(x) du son"
-                + (ouvert ? "" : ", sans « prêt »"));
+                + ", " + bilan());
         if (!finie) {
             fin();
             resultat(ecoute, premier(results));
@@ -485,17 +684,23 @@ public final class Dictee implements RecognitionListener {
 
     @Override
     public void onError(int error) {
-        note("onError " + error + " (" + nom(error) + "), après " + partiels + " texte(s) provisoire(s) et " + niveaux
-                + " niveau(x) du son" + (ouvert ? "" : ", sans « prêt »"));
+        note("onError " + error + " (" + nom(error) + "), " + bilan());
         if (!finie) {
             fin();
             erreur(ecoute, error);
+            // La langue : ce que la reconnaissance du téléphone a et propose, au journal (après la fermeture de
+            // celle-ci, postée par `fin`).
+            if (surAppareil && (error == SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED
+                    || error == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE)) {
+                journalDesLangues(ctx);
+            }
         }
     }
 
     @Override
     public void onRmsChanged(float rmsdB) {
         niveaux++;
+        plusFort = Math.max(plusFort, rmsdB);
         if (niveaux == 1) {
             note("premier niveau du son, " + rmsdB + " dB");
         }
@@ -526,7 +731,7 @@ public final class Dictee implements RecognitionListener {
     /** Une session par segments finie : plus rien n'arrivera, l'écoute finit sans texte. */
     @Override
     public void onEndOfSegmentedSession() {
-        note("onEndOfSegmentedSession");
+        note("onEndOfSegmentedSession, " + bilan());
         if (!finie) {
             fin();
             resultat(ecoute, "");
