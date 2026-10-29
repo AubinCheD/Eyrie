@@ -97,8 +97,9 @@ Les sept prérequis de l'audit, et comment ils sont tenus :
    trame doit être un message Noise). Le port local n'écoute que 127.0.0.1 et exige le jeton du compagnon.
 5. **Confirmation sur le PC** : un appairage n'aboutit qu'après un clic sur le PC, qui affiche le nom de l'appareil, le
    compte Tailscale et un code à six chiffres que le téléphone affiche aussi (tiré du hachage de la poignée de main).
-6. **Journal persistant** : `mobile\journal.jsonl` (connexions, refus, appairages, actions ; jamais le texte saisi dans
-   un terminal, seulement sa longueur), lisible dans la page Téléphones.
+6. **Journal persistant** : `mobile\journal.jsonl` (connexions, refus, appairages, actions, notifications du PC
+   marquées lues depuis le téléphone ; jamais le texte saisi dans un terminal, seulement sa longueur), lisible dans la
+   page Téléphones.
 7. **Interrupteur** : « Accès depuis le téléphone » (page Téléphones, barre d'état, palette) coupe l'écoute, ferme
    toutes les connexions et retire le relais au compagnon ; « Couper tout accès à distance » arrête aussi le nœud.
 

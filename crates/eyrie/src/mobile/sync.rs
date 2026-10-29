@@ -337,7 +337,14 @@ fn message(
             }
             pump_folders(core, ctx);
         }
+        // Les notifications que le téléphone montre, lues sur le PC aussi : sans « Agir » (le téléphone ne fait que les
+        // lire), mais noté au journal quand il y en avait de non lues.
         ToPc::NotesRead => {
+            let unread = core.notes.unread();
+            if unread > 0 {
+                let text = format!("{unread} marquées lues depuis le téléphone");
+                core.mobile.store.journal(&name, "notifications", text);
+            }
             core.notes.mark_all_read();
             core.mobile.sync.at = None;
         }

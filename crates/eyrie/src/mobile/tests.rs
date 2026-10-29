@@ -638,6 +638,38 @@ fn a_waiting_folder_listing_is_refused_once_the_right_is_withdrawn() {
     assert!(l.error.contains("parcourir les dossiers") && l.entries.is_empty(), "{l:?}");
 }
 
+/// « Tout marquer lu » depuis le téléphone change l'état des notifications du PC : permis sans « Agir » (le téléphone
+/// les montre), mais noté au journal, une ligne quand il y en avait de non lues.
+#[test]
+fn notes_marked_read_from_the_phone_are_journaled() {
+    let mut h = suite();
+    let host = h.state().core.host.clone();
+    host.notify(Notification::new("factice", "Une chose attend", "à voir", Tone::Warn));
+    host.notify(Notification::new("factice", "Pour information", "", Tone::Info));
+    h.run_steps(2);
+    with_phone(
+        &mut h,
+        |s| {
+            let id = s.core.mobile.store.devices[0].id.clone();
+            s.core.mobile.set_rights(&id, suite_mobile::msg::Rights { act: false, ..Default::default() });
+        },
+        |c| {
+            until(c, |m| matches!(m, ToPhone::Notes { unread, .. } if unread >= 2).then_some(()));
+            c.tx.send(&ToPc::NotesRead).unwrap();
+            until(c, |m| matches!(m, ToPhone::Notes { unread: 0, .. }).then_some(()));
+            // Plus rien de non lu : rien de plus au journal.
+            c.tx.send(&ToPc::NotesRead).unwrap();
+            c.tx.send(&ToPc::Ping).unwrap();
+            until(c, |m| matches!(m, ToPhone::Pong).then_some(()));
+        },
+    );
+    assert_eq!(h.state().core.notes.unread(), 0, "lues sur le PC aussi");
+    let journal = h.state().core.mobile.store.read_journal(50);
+    let read: Vec<&str> = journal.iter().filter(|l| l.kind == "notifications").map(|l| l.text.as_str()).collect();
+    assert_eq!(read.len(), 1, "{journal:?}");
+    assert!(read[0].ends_with("marquées lues depuis le téléphone"), "{read:?}");
+}
+
 #[test]
 fn a_notification_leads_the_phone_to_its_screen() {
     let mut h = suite();
