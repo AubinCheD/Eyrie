@@ -171,28 +171,125 @@ pub struct Seg {
     pub underline: bool,
 }
 
+/// Hack, la police du terminal, dessine ces caractères sur une colonne : latin, grec, cyrillique, cadres et blocs.
+fn in_font(c: char) -> bool {
+    matches!(c, '\0'..='\u{4ff}' | '\u{2500}'..='\u{259f}')
+}
+
+/// Une marque sans largeur (accent combiné, sélecteur de variante, liant) : elle suit son caractère.
+fn zero_width(c: char) -> bool {
+    matches!(c, '\u{300}'..='\u{36f}' | '\u{200b}'..='\u{200f}' | '\u{2060}'..='\u{2064}' | '\u{20d0}'..='\u{20ff}')
+        || matches!(c, '\u{fe00}'..='\u{fe0f}' | '\u{fe20}'..='\u{fe2f}')
+}
+
+/// Deux colonnes sur le PC (ou peut-être : idéogrammes, emoji) ; la largeur de ce qui suit n'est plus sûre.
+fn wide(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x1100..=0x115f
+            | 0x231a..=0x231b
+            | 0x2329..=0x232a
+            | 0x23e9..=0x23ec
+            | 0x23f0
+            | 0x23f3
+            | 0x25fd..=0x25fe
+            | 0x2614..=0x2615
+            | 0x2648..=0x2653
+            | 0x267f
+            | 0x2693
+            | 0x26a1
+            | 0x26aa..=0x26ab
+            | 0x26bd..=0x26be
+            | 0x26c4..=0x26c5
+            | 0x26ce
+            | 0x26d4
+            | 0x26ea
+            | 0x26f2..=0x26f3
+            | 0x26f5
+            | 0x26fa
+            | 0x26fd
+            | 0x2705
+            | 0x270a..=0x270b
+            | 0x2728
+            | 0x274c
+            | 0x274e
+            | 0x2753..=0x2755
+            | 0x2757
+            | 0x2795..=0x2797
+            | 0x27b0
+            | 0x27bf
+            | 0x2b1b..=0x2b1c
+            | 0x2b50
+            | 0x2b55
+            | 0x2e80..=0xa4cf
+            | 0xac00..=0xd7a3
+            | 0xf900..=0xfaff
+            | 0xfe10..=0xfe19
+            | 0xfe30..=0xfe6f
+            | 0xff00..=0xff60
+            | 0xffe0..=0xffe6
+            | 0x1f000..
+    )
+}
+
+/// Le texte d'un segment en morceaux placés chacun à sa colonne : un caractère que Hack n'a pas (« ❯ », « ✻ » de
+/// Claude Code) vient d'une autre police, plus large ou plus étroite qu'une colonne ; seul, il ne décale pas ce qui
+/// le suit (le bord droit d'un cadre sortait de son segment et disparaissait). Après un caractère large, la suite
+/// reste d'un bloc : sa colonne n'est plus sûre.
+fn pieces(text: &str, col: u16) -> Vec<(u16, String)> {
+    let mut out = Vec::new();
+    let (mut start, mut at, mut cur) = (col, col, String::new());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if wide(c) {
+            cur.push(c);
+            cur.extend(chars);
+            break;
+        }
+        if zero_width(c) || in_font(c) {
+            cur.push(c);
+            at += u16::from(!zero_width(c));
+            continue;
+        }
+        if !cur.is_empty() {
+            out.push((start, std::mem::take(&mut cur)));
+        }
+        let mut one = c.to_string();
+        while let Some(z) = chars.next_if(|&z| zero_width(z)) {
+            one.push(z);
+        }
+        out.push((at, one));
+        at += 1;
+        start = at;
+    }
+    if !cur.is_empty() {
+        out.push((start, cur));
+    }
+    out
+}
+
 /// Les segments d'une ligne, couleurs résolues : inversion, atténuation, fond seulement s'il diffère du fond du
-/// terminal.
+/// terminal ; un caractère d'une autre police que Hack à part, à sa colonne (voir [`pieces`]).
 pub fn segments(line: &Line, p: &TermPalette) -> Vec<Seg> {
     line.runs
         .iter()
-        .map(|r| {
+        .flat_map(|r| {
             let mut fg = p.resolve(r.fg, p.fg);
             let mut bg = p.resolve(r.bg, p.bg);
             if r.flags & term::INVERSE != 0 {
                 std::mem::swap(&mut fg, &mut bg);
             }
             let alpha = if r.flags & term::DIM != 0 { 0x99 } else { 0xff };
-            Seg {
-                col: r.col,
-                len: r.text.chars().count() as u16,
-                text: r.text.clone(),
+            pieces(&r.text, r.col).into_iter().map(move |(col, text)| Seg {
+                col,
+                len: text.chars().count() as u16,
+                text,
                 fg: (alpha << 24) | fg,
                 bg: (bg != p.bg).then_some(0xff00_0000 | bg),
                 bold: r.flags & term::BOLD != 0,
                 italic: r.flags & term::ITALIC != 0,
                 underline: r.flags & (term::UNDERLINE | term::STRIKE) != 0,
-            }
+            })
         })
         .collect()
 }
@@ -282,6 +379,26 @@ mod tests {
         let mut b = TermBuf::default();
         b.apply(&TermFrame::full("fawkes", "1", &view(&["Password: "])));
         assert!(!b.asks_secret(), "sans curseur (caché) : rien");
+    }
+
+    #[test]
+    fn a_glyph_from_another_font_keeps_its_column() {
+        let pieces = |text: &str, col: u16| {
+            let line =
+                Line { runs: vec![Run { col, text: text.into(), fg: Color::Default, bg: Color::Default, flags: 0 }] };
+            segments(&line, &DARK).into_iter().map(|s| (s.col, s.text)).collect::<Vec<_>>()
+        };
+        let s = |c: u16, t: &str| (c, t.to_string());
+        // Le choix d'un dialogue de Claude Code : le cadre de droite reste à sa colonne.
+        assert_eq!(pieces("│ ❯ 1. Yes   │", 0), [s(0, "│ "), s(2, "❯"), s(3, " 1. Yes   │")]);
+        assert_eq!(pieces("✻ Welcome", 4), [s(4, "✻"), s(5, " Welcome")]);
+        // Latin (accents compris), cadres et blocs : Hack les dessine, rien ne se coupe.
+        assert_eq!(pieces("╭─ café █▌ ─╮", 0), [s(0, "╭─ café █▌ ─╮")]);
+        // Une marque sans largeur suit son caractère, sans compter de colonne.
+        assert_eq!(pieces("e\u{301}✔\u{fe0f} ok", 0), [s(0, "e\u{301}"), s(1, "✔\u{fe0f}"), s(2, " ok")]);
+        // Un caractère large (deux colonnes sur le PC) : la suite reste d'un bloc, comme avant.
+        assert_eq!(pieces("❯ 日本 ❯ x", 0), [s(0, "❯"), s(1, " 日本 ❯ x")]);
+        assert_eq!(pieces("ok ✅ ❯", 0), [s(0, "ok ✅ ❯")]);
     }
 
     #[test]
