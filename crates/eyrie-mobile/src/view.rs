@@ -439,7 +439,8 @@ fn row(r: &Row, first: bool, last: bool, local: &Local) -> UiRow {
     let mut ui = UiRow {
         kind: 1,
         title: r.title.as_str().into(),
-        subtitle: r.subtitle.as_str().into(),
+        // Le sous-titre passe à la ligne : « il y a 1 h » ne s'y coupe pas.
+        subtitle: tied(&r.subtitle).into(),
         detail: r.detail.as_str().into(),
         glyph: if r.glyph.is_empty() { "•".into() } else { r.glyph.as_str().into() },
         color: r.color.map(rgb).unwrap_or_default(),
@@ -624,13 +625,42 @@ pub fn note_key(at: u64, module: &str, title: &str) -> String {
     format!("{at}\u{1f}{module}\u{1f}{title}")
 }
 
-/// Les espaces que le français veut insécables (dans « », avant : ; ? !) : un texte qui passe à la ligne ne laisse
-/// pas un « » » ou un « : » seul en tête de ligne. L'espace fine insécable (U+202F), pas l'espace insécable
-/// (U+00A0) : quand celle-ci tombe au bord de la ligne, la mise en page de Slint (parley 0.11) y coupe quand même.
+/// Les espaces que le français veut insécables (dans « », avant : ; ? !, entre un nombre et son unité) et celles
+/// d'« il y a 3 h » : un texte qui passe à la ligne ne laisse pas un « » » ou un « : » seul en tête de ligne, ni
+/// « il » seul en fin de ligne. L'espace fine insécable (U+202F), pas l'espace insécable (U+00A0) : quand celle-ci
+/// tombe au bord de la ligne, la mise en page de Slint (parley 0.11) y coupe quand même.
 pub fn tied(text: &str) -> String {
     let mut out = text.replace("« ", "«\u{202f}");
     for mark in [" »", " :", " ;", " ?", " !"] {
         out = out.replace(mark, &mark.replacen(' ', "\u{202f}", 1));
+    }
+    durations(&out)
+}
+
+/// Les unités qu'une durée met après son nombre (« 3 min », « 2 h », « 4 j »).
+const UNITS: [&str; 3] = ["min", "h", "j"];
+
+/// Une durée d'un seul tenant : un nombre et son unité, « il y a » et le nombre qui le suit.
+fn durations(text: &str) -> String {
+    let w: Vec<&str> = text.split(' ').collect();
+    let unit = |s: &str| UNITS.iter().any(|u| s.strip_prefix(u).is_some_and(|r| !r.starts_with(char::is_alphanumeric)));
+    // « il y a 3 » commence au mot `j`.
+    let ago = |j: usize| {
+        w.get(j..j + 4).is_some_and(|s| {
+            s[0].eq_ignore_ascii_case("il")
+                && s[1] == "y"
+                && s[2] == "a"
+                && s[3].starts_with(|c: char| c.is_ascii_digit())
+        })
+    };
+    let mut out = String::with_capacity(text.len());
+    for (i, word) in w.iter().enumerate() {
+        if i > 0 {
+            let tie =
+                (w[i - 1].ends_with(|c: char| c.is_ascii_digit()) && unit(word)) || (i.saturating_sub(3)..i).any(ago);
+            out.push(if tie { '\u{202f}' } else { ' ' });
+        }
+        out.push_str(word);
     }
     out
 }
@@ -662,6 +692,23 @@ mod tests {
              vraiment\u{202f}? oui\u{202f}!"
         );
         assert_eq!(tied(r"C:\Users\aubin › Réglages"), r"C:\Users\aubin › Réglages", "rien d'autre ne change");
+    }
+
+    /// « il y a 1 h » ne se coupe pas : le sous-titre d'une branche laissait « il » seul en fin de ligne. Une durée
+    /// reste avec son unité, et « il y a » avec elle.
+    #[test]
+    fn a_duration_stays_in_one_piece() {
+        assert_eq!(tied("Vu il y a 12 min."), "Vu il\u{202f}y\u{202f}a\u{202f}12\u{202f}min.");
+        assert_eq!(
+            tied("Chaque jour à 8 h · Il y a 3 j"),
+            "Chaque jour à 8\u{202f}h · Il\u{202f}y\u{202f}a\u{202f}3\u{202f}j"
+        );
+        let same = "s'il y a lieu, 2 tests, en 3 heures, 5 hôtes";
+        assert_eq!(tied(same), same, "rien d'autre ne change");
+        let mut s = Screen::new("Branches");
+        s.row(Row::new("mobile-ergonomie").subtitle("origin/mobile-ergonomie · ↑2 ↓1 · il y a 1 h"));
+        let r = rows(&s, &Local::default());
+        assert_eq!(r[0].subtitle, "origin/mobile-ergonomie · ↑2 ↓1 · il\u{202f}y\u{202f}a\u{202f}1\u{202f}h");
     }
 
     #[test]
