@@ -80,6 +80,8 @@ const FOCUS_FOR: Duration = Duration::from_secs(3);
 const LOOK_AGAIN: Duration = Duration::from_secs(30);
 /// Le diff d'un fichier du dossier de travail est relu au plus toutes les 15 s tant qu'il est regardé.
 const DIFF_EVERY: Duration = Duration::from_secs(15);
+/// Commits et diffs lus pour le téléphone (qui choisit les chemins qu'il suit) gardés par dépôt, au plus.
+const KEPT_READS: usize = 64;
 /// Une opération attend au plus 30 s que DragonTree ait ouvert son dépôt.
 const OPEN_WAIT: Duration = Duration::from_secs(30);
 /// Dossiers de dépôts connus proposés en raccourcis du sélecteur, au plus.
@@ -233,6 +235,29 @@ struct Reads {
     /// Lecture → quand elle a été faite, et sur quoi ([`Load::stamp`]) ; en cours : présente dans `loading`.
     loaded: HashMap<String, (Instant, u64)>,
     loading: HashSet<String>,
+}
+
+impl Reads {
+    /// Oublie les lectures de commits et de diffs au-delà de [`KEPT_READS`], les plus anciennes d'abord, avec ce
+    /// qu'elles ont lu : relues si le téléphone y revient.
+    fn trim(&mut self) {
+        let chosen = |k: &String| ["commit:", "c:", "w:"].iter().any(|p| k.starts_with(p));
+        let mut kept: Vec<(Instant, String)> =
+            self.loaded.iter().filter(|(k, _)| chosen(k)).map(|(k, (at, _))| (*at, k.clone())).collect();
+        if kept.len() <= KEPT_READS {
+            return;
+        }
+        kept.sort();
+        let extra = kept.len() - KEPT_READS;
+        for (_, k) in kept.into_iter().take(extra) {
+            self.loaded.remove(&k);
+            if let Some(id) = k.strip_prefix("commit:") {
+                self.commits.remove(id);
+            } else {
+                self.diffs.remove(&k);
+            }
+        }
+    }
 }
 
 /// Par dépôt (clé).
@@ -1126,6 +1151,7 @@ impl Phone {
             if fresh.tips.is_some() {
                 r.tips = fresh.tips;
             }
+            r.trim();
         });
     }
 
@@ -1231,6 +1257,12 @@ impl Phone {
             count: self.pages.get(path).copied().unwrap_or(depot::PAGE),
             ..Default::default()
         };
+        // Un identifiant illisible (le téléphone choisit le chemin qu'il suit) n'est pas lu : l'écran le dit.
+        if let ["commit", id, ..] = parts
+            && let Err(e) = oid(id)
+        {
+            v.commits.insert(id.to_string(), Err(e));
+        }
         let all = lock(&self.reads);
         let Some(r) = all.get(key) else { return v };
         v.last_message = r.last_message.clone().unwrap_or_default();
@@ -1283,6 +1315,8 @@ impl Phone {
                         self.want(key, handle, Load::WorkDiff(f.to_string(), e.clone()));
                     }
                 }
+                // Un identifiant illisible n'est pas lu (et ne laisse rien derrière lui) : la vue le dit.
+                ["commit", id, ..] if oid(id).is_err() => {}
                 ["commit", id] => self.want(key, handle, Load::Commit(id.to_string())),
                 ["commit", id, f] => {
                     self.want(key, handle, Load::Commit(id.to_string()));
@@ -1614,6 +1648,30 @@ mod tests {
     use super::*;
 
     type H = Harness<'static, DragonTreeApp>;
+
+    /// Le téléphone choisit les chemins qu'il suit : les commits et les diffs lus pour lui sont gardés au plus
+    /// [`KEPT_READS`] par dépôt, les plus anciens oubliés d'abord, avec ce qu'ils ont lu ; le reste (dernier message,
+    /// historique) n'est pas compté.
+    #[test]
+    fn the_reads_chosen_by_the_phone_are_bounded() {
+        let mut r = Reads::default();
+        let start = Instant::now();
+        let ids: Vec<String> = (0..KEPT_READS + 36).map(|i| format!("{i:040x}")).collect();
+        for (i, id) in ids.iter().enumerate() {
+            let at = start + Duration::from_millis(i as u64);
+            r.loaded.insert(format!("commit:{id}"), (at, 0));
+            r.commits.insert(id.clone(), Err("absent".into()));
+            r.trim();
+        }
+        r.loaded.insert(format!("c:{}:f", ids[99]), (start + Duration::from_secs(1), 0));
+        r.diffs.insert(format!("c:{}:f", ids[99]), Ok(Vec::new()));
+        r.loaded.insert("message".into(), (start, 0));
+        r.trim();
+        assert_eq!((r.commits.len(), r.diffs.len()), (KEPT_READS - 1, 1));
+        assert!(!r.commits.contains_key(&ids[36]) && r.commits.contains_key(&ids[37]), "les plus anciens d'abord");
+        assert!(r.loaded.contains_key("message") && !r.loaded.contains_key(&format!("commit:{}", ids[36])));
+        assert_eq!(r.loaded.len(), KEPT_READS + 1);
+    }
 
     /// « Ajouter un dépôt existant… » ouvre le sélecteur de dossiers du PC sur un dépôt git, avec en raccourcis le
     /// dossier de clonage, les dossiers analysés et six dossiers de dépôts connus au plus, sans doublon ; les dépôts
@@ -2496,6 +2554,19 @@ mod tests {
         let diff = format!("{base}/commit/{}/{}", commits[1].key, file_key("lisez-moi.txt"));
         let d = wait_screen(&mut h, &mut phone, &diff, "+un");
         assert!(format!("{d:?}").contains("+un"), "{d:?}");
+        // Un identifiant de commit illisible, que le téléphone peut choisir à volonté, n'est ni lu ni gardé : l'écran le
+        // dit.
+        for i in 0..100 {
+            for path in [format!("{base}/commit/pas-un-commit-{i}"), format!("{base}/commit/pas-un-commit-{i}/f")] {
+                let s = phone.screen(h.state_mut(), &path).unwrap();
+                assert!(format!("{s:?}").contains("illisible"), "{s:?}");
+            }
+        }
+        let reads = lock(&phone.reads);
+        let r = &reads[&repo_key(&repo)];
+        let kept = r.loaded.keys().chain(r.loading.iter()).chain(r.commits.keys()).chain(r.diffs.keys());
+        assert_eq!(kept.filter(|k| k.contains("pas-un-commit")).count(), 0);
+        drop(reads);
 
         let all = wait_screen(&mut h, &mut phone, &format!("{base}/historique/tout"), "Sur une autre branche");
         assert!(format!("{all:?}").contains("Sur une autre branche"), "{all:?}");
