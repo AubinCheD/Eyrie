@@ -1132,7 +1132,7 @@ impl Controller {
             for w in waiting {
                 if !before.contains(&format!("{}\u{1f}{}", w.module, w.text)) {
                     let module = self.card(&w.module).map(|c| c.name.clone()).unwrap_or_else(|| w.module.clone());
-                    platform::notify(&format!("attente:{}:{}", w.module, w.text), &module, &w.text);
+                    platform::notify(&waiting_notice(&module, w));
                 }
             }
         }
@@ -1150,7 +1150,8 @@ impl Controller {
                     matches!(n.tone, suite_mobile::ui::Tone::Warn | suite_mobile::ui::Tone::Danger)
                         && n.module != "fawkes"
                 }) {
-                    platform::notify(&format!("note:{}:{}", n.at, n.title), &n.title, &n.body);
+                    let module = self.card(&n.module).map(|c| c.name.clone()).unwrap_or_else(|| n.module.clone());
+                    platform::notify(&note_notice(&module, n));
                 }
             } else if let Some((text, tone)) = notes_toast(&fresh) {
                 self.toast(&text, view::tone(Some(tone)));
@@ -2444,6 +2445,32 @@ fn find_act<'a>(screen: &'a Screen, id: &str) -> Option<&'a Act> {
     screen.acts.iter().chain(in_blocks).find(|a| a.id == id)
 }
 
+/// La notification du système de ce qui se met à attendre ; `module` : le nom du module.
+fn waiting_notice(module: &str, w: &Waiting) -> platform::Notice {
+    platform::Notice {
+        tag: format!("attente:{}:{}", w.module, w.text),
+        title: module.to_string(),
+        body: w.text.clone(),
+        discreet_title: module.to_string(),
+        discreet_body: "Quelque chose vous attend sur le PC.".into(),
+    }
+}
+
+/// La notification du système d'une notification du PC (attention ou échec) ; `module` : le nom du module.
+fn note_notice(module: &str, n: &Note) -> platform::Notice {
+    let discreet = match n.tone {
+        Tone::Danger => "Un échec à voir sur le PC.",
+        _ => "Un point d'attention à voir sur le PC.",
+    };
+    platform::Notice {
+        tag: format!("note:{}:{}", n.at, n.title),
+        title: n.title.clone(),
+        body: n.body.clone(),
+        discreet_title: module.to_string(),
+        discreet_body: discreet.into(),
+    }
+}
+
 /// La bulle pour les notifications arrivées (les plus récentes d'abord) : la notification elle-même, ou leur nombre et
 /// la plus récente, au ton de la plus grave.
 fn notes_toast(fresh: &[&Note]) -> Option<(String, Tone)> {
@@ -2924,6 +2951,32 @@ mod tests {
             notes_toast(&[&one, &failed, &info]),
             Some(("3 nouvelles notifications sur le PC · Build terminé".into(), Tone::Danger))
         );
+    }
+
+    /// Une notification du système a sa forme discrète, pour l'écran verrouillé : le nom du module et ce qui attend,
+    /// rien du texte du PC (titre de terminal, message d'erreur, nom de dépôt).
+    #[test]
+    fn a_system_notification_tells_the_lock_screen_nothing_from_the_pc() {
+        let w = Waiting { module: "fawkes".into(), text: "Claude attend : eyrie (main)".into(), path: None };
+        let n = waiting_notice("Terminaux", &w);
+        assert_eq!(n.tag, "attente:fawkes:Claude attend : eyrie (main)");
+        assert_eq!((n.title.as_str(), n.body.as_str()), ("Terminaux", "Claude attend : eyrie (main)"));
+        assert_eq!(
+            (n.discreet_title.as_str(), n.discreet_body.as_str()),
+            ("Terminaux", "Quelque chose vous attend sur le PC.")
+        );
+
+        let failed = note("Push refusé : eyrie", "remote: Permission to xelya/eyrie denied", Tone::Danger, 7);
+        let n = note_notice("DragonTree", &failed);
+        assert_eq!(n.tag, "note:7:Push refusé : eyrie");
+        assert_eq!(
+            (n.title.as_str(), n.body.as_str()),
+            ("Push refusé : eyrie", "remote: Permission to xelya/eyrie denied")
+        );
+        assert_eq!(n.discreet_title, "DragonTree");
+        assert!(!n.discreet_body.contains("eyrie") && n.discreet_body.ends_with("sur le PC."), "{}", n.discreet_body);
+        let warn = note_notice("DragonTree", &note("Branche en retard : eyrie", "", Tone::Warn, 8));
+        assert!(!warn.discreet_body.contains("eyrie") && warn.discreet_body != n.discreet_body, "le ton se lit");
     }
 
     /// Le zoom du terminal est gardé : celui du dernier pincement, sinon celui de la taille des réglages (des

@@ -4,6 +4,37 @@
 /// Une image de la caméra, prête pour l'interface.
 pub type Frame = slint::SharedPixelBuffer<slint::Rgba8Pixel>;
 
+/// Une notification du système (application en arrière-plan) ; la toucher rouvre l'application. Sa forme discrète, sans
+/// rien du texte du PC (le nom du module et ce qui attend), est la seule que lit qui tient le téléphone verrouillé.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Notice {
+    /// Une même étiquette remplace la notification précédente au lieu de s'ajouter.
+    pub tag: String,
+    pub title: String,
+    pub body: String,
+    pub discreet_title: String,
+    pub discreet_body: String,
+}
+
+/// La visibilité d'une notification sur l'écran verrouillé (les valeurs d'Android) : montrée telle quelle, ou pas du
+/// tout.
+pub const VISIBILITY_PUBLIC: i32 = 1;
+pub const VISIBILITY_SECRET: i32 = -1;
+
+impl Notice {
+    /// Ce que la notification montre, et sa visibilité sur l'écran verrouillé. Quelqu'un regarde le téléphone (écran
+    /// allumé, déverrouillé) : le détail, que l'écran verrouillé ne montrera pas ensuite. Sinon : la forme discrète,
+    /// même avec le réglage d'Android le plus courant (« afficher tout le contenu des notifications »), qui montrerait
+    /// le détail à qui tient le téléphone verrouillé.
+    pub fn shown(&self, looking: bool) -> (&str, &str, i32) {
+        if looking {
+            (&self.title, &self.body, VISIBILITY_SECRET)
+        } else {
+            (&self.discreet_title, &self.discreet_body, VISIBILITY_PUBLIC)
+        }
+    }
+}
+
 #[cfg(target_os = "android")]
 pub use crate::android::{
     ask_notifications, can_scan, data_dir, device_model, device_name, haptic, in_background, notify, open_url,
@@ -57,10 +88,31 @@ mod desktop {
         false
     }
 
-    pub fn notify(_tag: &str, _title: &str, _body: &str) {}
+    pub fn notify(_notice: &Notice) {}
 
     pub fn ask_notifications() {}
 }
 
 #[cfg(not(target_os = "android"))]
 pub use desktop::*;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Téléphone verrouillé ou écran éteint : la forme discrète, montrée sur l'écran verrouillé. Quelqu'un le regarde
+    /// déverrouillé : le détail, que l'écran verrouillé ne montrera pas une fois le téléphone reverrouillé.
+    #[test]
+    fn the_lock_screen_only_gets_the_discreet_form() {
+        let n = Notice {
+            tag: "attente:fawkes:Claude attend : eyrie".into(),
+            title: "Terminaux".into(),
+            body: "Claude attend : eyrie".into(),
+            discreet_title: "Terminaux".into(),
+            discreet_body: "Quelque chose vous attend sur le PC.".into(),
+        };
+        assert_eq!(n.shown(false), ("Terminaux", "Quelque chose vous attend sur le PC.", VISIBILITY_PUBLIC));
+        assert_eq!(n.shown(true), ("Terminaux", "Claude attend : eyrie", VISIBILITY_SECRET));
+        assert_eq!((VISIBILITY_PUBLIC, VISIBILITY_SECRET), (1, -1), "les valeurs d'Android");
+    }
+}

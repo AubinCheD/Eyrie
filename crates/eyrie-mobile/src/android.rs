@@ -12,7 +12,7 @@ use jni::JavaVM;
 use jni::objects::{JObject, JValue};
 use slint::android::AndroidApp;
 
-use crate::platform::Frame;
+use crate::platform::{Frame, Notice};
 
 static APP: OnceLock<AndroidApp> = OnceLock::new();
 
@@ -168,10 +168,28 @@ pub fn ask_notifications() {
     });
 }
 
-/// Une notification du système (application en arrière-plan) ; la toucher rouvre l'application. `tag` : une même
-/// étiquette remplace la notification précédente au lieu de s'ajouter.
-pub fn notify(tag: &str, title: &str, body: &str) {
+/// Quelqu'un regarde le téléphone : écran allumé et déverrouillé.
+fn someone_looking(env: &mut jni::JNIEnv, activity: &JObject) -> jni::errors::Result<bool> {
+    const SERVICE: &str = "(Ljava/lang/String;)Ljava/lang/Object;";
+    let power = env.new_string("power")?;
+    let power = env.call_method(activity, "getSystemService", SERVICE, &[JValue::Object(&power)])?.l()?;
+    let keyguard = env.new_string("keyguard")?;
+    let keyguard = env.call_method(activity, "getSystemService", SERVICE, &[JValue::Object(&keyguard)])?.l()?;
+    let on = env.call_method(&power, "isInteractive", "()Z", &[])?.z()?;
+    let locked = env.call_method(&keyguard, "isKeyguardLocked", "()Z", &[])?.z()?;
+    Ok(on && !locked)
+}
+
+/// Une notification du système : le détail si quelqu'un regarde le téléphone, sa forme discrète sinon (voir
+/// `Notice::shown`).
+pub fn notify(notice: &Notice) {
     with_java(|env, activity| {
+        // Dans le doute (appel en échec), le téléphone est tenu pour verrouillé : la forme discrète.
+        let looking = someone_looking(env, activity).unwrap_or(false);
+        if env.exception_check()? {
+            env.exception_clear()?;
+        }
+        let (title, body, visibility) = notice.shown(looking);
         let service = env.new_string("notification")?;
         let nm = env
             .call_method(
@@ -233,6 +251,8 @@ pub fn notify(tag: &str, title: &str, body: &str) {
         let b = env.new_string(body)?;
         env.call_method(&builder, "setContentTitle", format!("(Ljava/lang/CharSequence;){B}"), &[JValue::Object(&t)])?;
         env.call_method(&builder, "setContentText", format!("(Ljava/lang/CharSequence;){B}"), &[JValue::Object(&b)])?;
+        // Sur la notification, pas sur le canal : les réglages d'un canal sont à l'utilisateur une fois créé.
+        env.call_method(&builder, "setVisibility", format!("(I){B}"), &[JValue::Int(visibility)])?;
         env.call_method(
             &builder,
             "setContentIntent",
@@ -241,7 +261,7 @@ pub fn notify(tag: &str, title: &str, body: &str) {
         )?;
         env.call_method(&builder, "setAutoCancel", format!("(Z){B}"), &[JValue::Bool(1)])?;
         let n = env.call_method(&builder, "build", "()Landroid/app/Notification;", &[])?.l()?;
-        let tag = env.new_string(tag)?;
+        let tag = env.new_string(&notice.tag)?;
         env.call_method(
             &nm,
             "notify",
