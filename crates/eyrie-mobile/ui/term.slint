@@ -1,12 +1,12 @@
 // Un terminal du PC, en direct : la grille (couleurs résolues dans le thème du téléphone), ajustée à la largeur de
 // l'écran ; deux doigts la zooment (le zoom est gardé). Dessous : réponses rapides quand Claude attend, barre de touches
-// (Ctrl et Alt collants, coller, copier, saisie masquée), champ de saisie (sur plusieurs lignes, il part en collage).
-// Un appui long sur la sortie, ou « Copier », montre son texte dans un champ en lecture seule, où l'on sélectionne ce
-// qu'on copie.
+// (Ctrl et Alt collants, coller, copier, saisie masquée), champ de saisie (sur plusieurs lignes, il part en collage),
+// avec son micro (la dictée). Un appui long sur la sortie, ou « Copier », montre son texte dans un champ en lecture
+// seule, où l'on sélectionne ce qu'on copie.
 
 import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Icon, IconButton, ActButton } from "widgets.slint";
+import { Icon, IconButton, ActButton, MicButton, ListenLine } from "widgets.slint";
 
 export struct TermSeg {
     col: int,
@@ -238,13 +238,22 @@ export component TermView inherits Rectangle {
     in property <int> copy-anchor;
     in property <int> copy-focus;
     in-out property <bool> copy-visible;
+    // La dictée (voir `dictee.rs`) : le micro se montre si le téléphone sait reconnaître la parole, que la saisie est
+    // permise et n'est pas masquée (jamais un mot de passe). `listening` : il écoute pour ce terminal (micro rouge,
+    // « J'écoute… » et le texte provisoire au-dessus du champ) ; `sends` : le texte dicté partira aussitôt (réglage).
+    in property <bool> can-dictate;
+    in property <bool> listening;
+    in property <bool> dictation-stopping;
+    in property <string> heard;
+    in property <float> level;
+    in property <bool> sends;
     // Le bas de la liste est visible.
     out property <bool> at-bottom: list.content-y <= list.visible-height - root.content-h + 2 * root.ch;
     // La liste suit le bas tant que l'utilisateur ne l'a pas remontée : la sortie qui arrive y reste collée, et le bas
     // reste en vue quand la hauteur change (clavier du téléphone qui s'ouvre, réponses rapides, zoom).
     out property <bool> follow: true;
     // La hauteur des barres sous la liste : les bulles se posent au-dessus.
-    out property <length> bars-height: (root.waiting && root.replies.length > 0 ? 56px : 0) + 56px + root.input-h + 16px;
+    out property <length> bars-height: (root.waiting && root.replies.length > 0 ? 56px : 0) + 56px + listen-bar.height + root.input-h + 16px;
     callback send-line(string);
     callback key(string);
     // Ctrl (1) ou Alt (2) touché : il se colle, ou se relâche ; `unlatch` : il se relâche.
@@ -260,6 +269,9 @@ export component TermView inherits Rectangle {
     callback reply(int);
     callback zoomed(float);
     callback haptic();
+    // Le micro touché ; l'écoute à abandonner (la saisie s'est masquée).
+    callback dictate();
+    callback dictation-cancel();
 
     // Ajusté à la largeur : la police mono (Hack) avance de 0,602 em par caractère.
     property <length> fit-font: (root.width - 30px) / (max(root.cols, 20) * 0.602);
@@ -346,11 +358,14 @@ export component TermView inherits Rectangle {
         root.last-draft = root.draft;
     }
     // Le clavier ne relit le genre du champ qu'à sa prise de focus : il la reprend, pour que la lettre suivante soit
-    // déjà masquée (ou de nouveau visible).
+    // déjà masquée (ou de nouveau visible). Masquée, la saisie ne prend pas de dictée : l'écoute s'abandonne.
     changed masked => {
         if input.has-focus {
             input.clear-focus();
             input.focus();
+        }
+        if root.masked && root.listening {
+            root.dictation-cancel();
         }
     }
 
@@ -649,6 +664,22 @@ export component TermView inherits Rectangle {
             }
         }
 
+        // La dictée en cours : ce qui est entendu, au-dessus du champ, avant d'y être ajouté.
+        listen-bar := Rectangle {
+            height: root.listening ? listen.preferred-height + 12px : 0;
+            visible: root.listening;
+            background: Theme.surface;
+            listen := ListenLine {
+                x: 18px;
+                y: 8px;
+                width: parent.width - 36px;
+                stopping: root.dictation-stopping;
+                heard: root.heard;
+                // Espace fine insécable (\u{202f}) avant « : », comme `view::tied`.
+                hint: root.sends ? "Parlez\u{202f}: le texte partira au terminal, avec Entrée." : "Parlez, puis touchez le micro rouge\u{202f}: le texte s'ajoute à la saisie.";
+            }
+        }
+
         Rectangle {
             height: root.input-h + 16px;
             background: Theme.surface;
@@ -724,6 +755,15 @@ export component TermView inherits Rectangle {
                         vertical-alignment: center;
                         overflow: elide;
                         height: parent.height;
+                    }
+                }
+                if root.can-dictate && root.can-type && !root.ended && !root.masked: VerticalLayout {
+                    alignment: end;
+                    MicButton {
+                        listening: root.listening;
+                        stopping: root.dictation-stopping;
+                        level: root.level;
+                        clicked => { root.dictate(); }
                     }
                 }
                 VerticalLayout {

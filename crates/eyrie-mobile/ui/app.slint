@@ -103,6 +103,15 @@ export component AppWindow inherits Window {
     in property <string> term-paste-text;
     in-out property <bool> term-paste-visible;
 
+    // --- Dictée (voir `dictee.rs`) ---
+    // Le téléphone sait reconnaître la parole : le micro se montre (terminal).
+    in property <bool> can-dictate;
+    // Il écoute pour le terminal ; la fin est demandée ; le texte provisoire ; le niveau du son (de 0 à 1).
+    in property <bool> term-listening;
+    in property <bool> dictation-stopping;
+    in property <string> dictation-heard;
+    in property <float> dictation-level;
+
     // --- Accueil et appairage ---
     in property <image> logo;
     in property <bool> can-scan;
@@ -192,6 +201,9 @@ export component AppWindow inherits Window {
     callback term-paste-confirmed();
     callback term-copy(int);
     callback term-copied(bool);
+    // Le micro du terminal touché ; l'écoute à abandonner (`true` : celle du terminal).
+    callback term-dictate();
+    callback dictation-cancel(bool);
     callback open-folder(UiAct);
     callback picker-go(string);
     callback picker-pick(string);
@@ -601,6 +613,13 @@ export component AppWindow inherits Window {
                         reply(i) => { root.term-reply(i); }
                         zoomed(z) => { root.term-zoomed(z); }
                         haptic => { root.haptic(); }
+                        can-dictate: root.can-dictate;
+                        listening: root.term-listening;
+                        dictation-stopping: root.dictation-stopping;
+                        heard: root.dictation-heard;
+                        level: root.dictation-level;
+                        dictate => { root.term-dictate(); }
+                        dictation-cancel => { root.dictation-cancel(true); }
                     }
                 }
                 if !root.kb-visible && !root.terminal-mode: BottomNav {

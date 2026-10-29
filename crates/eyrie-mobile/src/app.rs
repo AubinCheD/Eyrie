@@ -14,6 +14,7 @@ use suite_mobile::pairing::{self, Ticket};
 use suite_mobile::term::TermInput;
 use suite_mobile::ui::{Act, Block, Fold, Screen, Tab, Tone};
 
+use crate::dictee::{self, Dictation, Heard, Outcome, Recognizer, Tap};
 use crate::net::{Link, NetEvent, PairEvent};
 use crate::picker::{Answer, Picker};
 use crate::store::{self, Pc, Store, Wake};
@@ -492,6 +493,10 @@ pub struct Controller {
     paste: Option<(String, String, String)>,
     /// Le terminal suivi demandait un mot de passe à la dernière image (la saisie s'est alors masquée).
     term_secret: bool,
+    /// La dictée en cours (voir `dictee.rs`), et la reconnaissance vocale du téléphone, relue au retour au premier
+    /// plan (la démonstration en pose une).
+    dictation: Dictation,
+    recognizer: Recognizer,
     /// Les listes de l'interface, mises à jour sur place (jamais remplacées) : une ligne touchée survit aux messages.
     models: Models,
     /// L'écran dont les lignes sont affichées, et leurs clés et empreintes (voir [`view::patch`]).
@@ -654,6 +659,8 @@ impl Controller {
             latch: Latch::None,
             paste: None,
             term_secret: false,
+            dictation: Dictation::default(),
+            recognizer: Recognizer::default(),
             models,
             shown_for: None,
             shown: Vec::new(),
@@ -696,6 +703,7 @@ impl Controller {
             c.age_timer.start(slint::TimerMode::Repeated, Duration::from_secs(20), || {
                 with(|c| c.refresh_age());
             });
+            c.refresh_recognizer();
             c.start();
         });
     }
@@ -998,6 +1006,7 @@ impl Controller {
                 self.offline_text = format!("Hors ligne ({reason}) · nouvel essai dans {secs} s");
                 self.show_offline();
                 self.picker_offline();
+                self.drop_dictation(None);
             }
             NetEvent::Refused(reason) => {
                 self.online = false;
@@ -1005,6 +1014,7 @@ impl Controller {
                 self.start = Start::Idle;
                 self.set_link(3, &reason);
                 self.picker_offline();
+                self.drop_dictation(None);
             }
             NetEvent::Started(answer) => self.on_started(answer),
             NetEvent::Message(m) => self.on_message(*m),
@@ -2130,7 +2140,7 @@ impl Controller {
     }
 
     /// Le programme se met à demander un mot de passe : la saisie se masque, une fois par demande (la démasquer à la
-    /// main tient jusqu'à la suivante).
+    /// main tient jusqu'à la suivante), et la dictée en cours s'abandonne (rien de dicté dans un mot de passe).
     fn mask_secret(&mut self) {
         let secret = self.term.asks_secret();
         if secret
@@ -2138,6 +2148,7 @@ impl Controller {
             && let Some(ui) = self.ui()
         {
             ui.set_term_masked(true);
+            self.drop_dictation(Some(true));
         }
         self.term_secret = secret;
     }
@@ -2185,11 +2196,12 @@ impl Controller {
     }
 
     /// Un autre terminal, ou plus de terminal : ce qui le servait se referme (Ctrl collé, texte à copier, collage,
-    /// saisie masquée).
+    /// saisie masquée, dictée).
     fn leave_term(&mut self) {
         self.set_latch(Latch::None);
         self.paste = None;
         self.term_secret = false;
+        self.drop_dictation(Some(true));
         if let Some(ui) = self.ui() {
             ui.set_term_copy_visible(false);
             ui.set_term_paste_visible(false);
@@ -2216,6 +2228,108 @@ impl Controller {
     fn term_reply(&self, i: usize) {
         if let Some(r) = self.term.replies.get(i) {
             self.term_inputs(vec![r.input.clone()]);
+        }
+    }
+
+    // --- La dictée (voir `dictee.rs`) ---
+
+    /// La reconnaissance vocale du téléphone : le micro se montre si elle est là.
+    fn refresh_recognizer(&mut self) {
+        if !self.demo {
+            self.recognizer = platform::recognizer();
+        }
+        if let Some(ui) = self.ui() {
+            ui.set_can_dictate(self.recognizer.available());
+        }
+    }
+
+    /// L'écoute à l'écran : le micro rouge, « J'écoute… », le texte provisoire, le niveau du son.
+    fn refresh_dictation(&self) {
+        let Some(ui) = self.ui() else { return };
+        let d = &self.dictation;
+        let term = d.active() && matches!(d.target, Some(dictee::Target::Term { .. }));
+        ui.set_term_listening(term);
+        ui.set_dictation_stopping(d.phase == dictee::Phase::Stopping);
+        ui.set_dictation_heard(d.partial.as_str().into());
+        ui.set_dictation_level(d.level);
+    }
+
+    /// Le micro du terminal touché : écouter pour lui, ou finir l'écoute.
+    pub(crate) fn term_dictate(&mut self) {
+        let Some((module, id)) = self.followed_term() else { return };
+        // Le micro n'est pas montré alors : une course avec le PC (droit retiré, mot de passe demandé).
+        if !self.rights.terminals || self.ui().is_some_and(|ui| ui.get_term_masked()) {
+            return;
+        }
+        self.dictate(dictee::Target::Term { module, id });
+    }
+
+    fn dictate(&mut self, target: dictee::Target) {
+        if !self.recognizer.available() {
+            self.toast(dictee::UNAVAILABLE, 3);
+            return;
+        }
+        platform::haptic();
+        match self.dictation.tap(target) {
+            Tap::Start(seq) => {
+                let on_device = self.recognizer == Recognizer::OnDevice;
+                platform::start_dictation(seq, on_device, Box::new(|seq, heard| post(move |c| c.on_heard(seq, heard))));
+            }
+            Tap::Stop => {
+                platform::stop_dictation();
+                let seq = self.dictation.seq();
+                slint::Timer::single_shot(dictee::STOP_WITHIN, move || {
+                    with(|c| {
+                        if c.dictation.stop_timed_out(seq) {
+                            platform::cancel_dictation();
+                            c.refresh_dictation();
+                            c.toast(dictee::NOTHING_HEARD, 1);
+                        }
+                    });
+                });
+            }
+            Tap::Cancel => platform::cancel_dictation(),
+            Tap::Nothing => {}
+        }
+        self.refresh_dictation();
+    }
+
+    /// Ce qu'entend la reconnaissance, pour l'écoute `seq`.
+    pub(crate) fn on_heard(&mut self, seq: u32, heard: Heard) {
+        match self.dictation.heard(seq, heard) {
+            Outcome::Stale => return,
+            // Le micro s'est ouvert alors que l'application passait en arrière-plan : abandonné.
+            Outcome::Update => {
+                if platform::in_background() && self.dictation.paused() {
+                    platform::cancel_dictation();
+                }
+            }
+            Outcome::Text(target, text) => self.dictated(&target, &text),
+            Outcome::Failed(why, tone) => self.toast(&why, tone),
+        }
+        self.refresh_dictation();
+    }
+
+    /// Le texte final, au bout de la saisie de sa cible si elle est toujours là : à relire, puis à envoyer.
+    fn dictated(&mut self, target: &dictee::Target, text: &str) {
+        let Some(ui) = self.ui() else { return };
+        if let dictee::Target::Term { module, id } = target
+            && self.followed_term().as_ref() == Some(&(module.clone(), id.clone()))
+        {
+            ui.set_term_draft(dictee::append(&ui.get_term_draft(), text).into());
+        }
+    }
+
+    /// L'écoute s'abandonne, si elle va au terminal (`Some(true)`), à une saisie (`Some(false)`) ou n'importe où
+    /// (`None`) : rien de ce qu'elle a entendu n'est gardé.
+    fn drop_dictation(&mut self, to_term: Option<bool>) {
+        let is_term = matches!(self.dictation.target, Some(dictee::Target::Term { .. }));
+        if to_term.is_some_and(|t| t != is_term) {
+            return;
+        }
+        if self.dictation.cancel() {
+            platform::cancel_dictation();
+            self.refresh_dictation();
         }
     }
 
@@ -2337,6 +2451,7 @@ impl Controller {
         self.pendings.sent.clear();
         self.holds = Holds::default();
         self.close_picker();
+        self.drop_dictation(None);
         self.followed = None;
         self.term = TermBuf::default();
         self.term_model.set_vec(Vec::new());
@@ -2496,11 +2611,22 @@ impl Controller {
     }
 
     /// L'application revient au premier plan : on se reconnecte tout de suite si besoin.
-    pub fn resumed(&self) {
+    /// De retour au premier plan : la liaison réessaie tout de suite ; la reconnaissance vocale se relit (un service
+    /// installé ou retiré entre-temps).
+    pub fn resumed(&mut self) {
         if !self.online
             && let Some(l) = &self.link
         {
             l.kick();
+        }
+        self.refresh_recognizer();
+    }
+
+    /// L'application passe en arrière-plan (Android) : une écoute ouverte s'abandonne.
+    pub fn paused(&mut self) {
+        if self.dictation.paused() {
+            platform::cancel_dictation();
+            self.refresh_dictation();
         }
     }
 }
@@ -2761,6 +2887,12 @@ fn wire(ui: &AppWindow) {
     });
     ui.on_term_reply(|i| {
         with(|c| c.term_reply(i.max(0) as usize));
+    });
+    ui.on_term_dictate(|| {
+        with(|c| c.term_dictate());
+    });
+    ui.on_dictation_cancel(|term| {
+        with(|c| c.drop_dictation(Some(term)));
     });
     ui.on_open_folder(|a| {
         with(|c| c.open_folder(&a));
@@ -3217,5 +3349,78 @@ mod tests {
         assert_eq!(size_choice(1.0), 0);
         assert_eq!(size_choice(1.7), 2);
         assert_eq!(size_choice(1.52), -1);
+    }
+
+    /// Un terminal de Fawkes ouvert, suivi par le téléphone, avec le droit « Terminaux » et une reconnaissance vocale.
+    fn dictating_terminal(name: &str) -> AppWindow {
+        let ui = headless(name);
+        with(|c| {
+            c.online = true;
+            c.rights = Rights { terminals: true, ..Default::default() };
+            c.recognizer = Recognizer::OnDevice;
+            for id in ["3", "4"] {
+                let screen = Screen::new(format!("Terminal {id}")).terminal(id);
+                c.on_message(ToPhone::Screen { module: "fawkes".into(), path: format!("t/{id}"), screen });
+            }
+            c.open_module_path("fawkes", "t/3");
+        });
+        ui
+    }
+
+    /// Le texte provisoire se montre à part ; le texte final s'ajoute au bout de la saisie du terminal où l'on a parlé,
+    /// sans partir. Un autre terminal abandonne l'écoute : ce qu'elle dit ensuite ne va nulle part.
+    #[test]
+    fn dictated_text_goes_to_the_draft_of_its_terminal_only() {
+        let ui = dictating_terminal("dictee-terminal");
+        ui.set_term_draft("relis".into());
+        let seq = with(|c| {
+            c.term_dictate();
+            let seq = c.dictation.seq();
+            c.on_heard(seq, Heard::Ready);
+            c.on_heard(seq, Heard::Partial("le diff".into()));
+            seq
+        })
+        .unwrap();
+        assert!(ui.get_term_listening());
+        assert_eq!((ui.get_dictation_heard().as_str(), ui.get_term_draft().as_str()), ("le diff", "relis"));
+        with(|c| {
+            c.term_dictate();
+            c.on_heard(seq, Heard::Final("le diff ci-dessus".into()));
+        });
+        assert_eq!(ui.get_term_draft().as_str(), "relis le diff ci-dessus", "dans la saisie, pas parti");
+        assert!(!ui.get_term_listening());
+        assert_eq!(ui.get_dictation_heard().as_str(), "");
+
+        let seq = with(|c| {
+            c.term_dictate();
+            let seq = c.dictation.seq();
+            c.on_heard(seq, Heard::Partial("ailleurs".into()));
+            c.open_path("t/4");
+            seq
+        })
+        .unwrap();
+        assert!(!ui.get_term_listening(), "un autre terminal : l'écoute s'abandonne");
+        with(|c| c.on_heard(seq, Heard::Final("ailleurs".into())));
+        assert_eq!(ui.get_term_draft().as_str(), "", "rien dans la saisie du nouveau terminal");
+    }
+
+    /// Une saisie masquée (un mot de passe demandé) ou la liaison coupée abandonnent l'écoute ; masquée, le micro ne
+    /// part pas.
+    #[test]
+    fn a_masked_draft_or_a_dropped_link_stops_dictation() {
+        let ui = dictating_terminal("dictee-masque");
+        with(|c| c.term_dictate());
+        assert!(ui.get_term_listening());
+        ui.invoke_dictation_cancel(true);
+        assert!(!ui.get_term_listening(), "la saisie s'est masquée (TermView)");
+        ui.set_term_masked(true);
+        with(|c| c.term_dictate());
+        assert!(!ui.get_term_listening(), "masquée : pas de dictée");
+        ui.set_term_masked(false);
+        with(|c| {
+            c.term_dictate();
+            c.on_net(NetEvent::Offline { reason: "essai".into(), retry_in: Duration::from_secs(1), away: Away::default() });
+        });
+        assert!(!ui.get_term_listening(), "liaison coupée");
     }
 }

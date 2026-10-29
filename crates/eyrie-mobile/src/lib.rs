@@ -247,7 +247,10 @@ fn android_main(app: slint::android::AndroidApp) {
             android::set_foreground(true);
             app::with(|c| c.resumed());
         }
-        PollEvent::Main(MainEvent::Pause) => android::set_foreground(false),
+        PollEvent::Main(MainEvent::Pause) => {
+            android::set_foreground(false);
+            app::with(|c| c.paused());
+        }
         _ => {}
     };
     if slint::android::init_with_event_listener(app, listener).is_ok() {
