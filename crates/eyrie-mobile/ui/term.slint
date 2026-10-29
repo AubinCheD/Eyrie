@@ -1,7 +1,8 @@
 // Un terminal du PC, en direct : la grille (couleurs résolues dans le thème du téléphone), ajustée à la largeur de
 // l'écran ; deux doigts la zooment (le zoom est gardé). Dessous : réponses rapides quand Claude attend, barre de touches
-// (Ctrl et Alt collants, coller, copier), champ de saisie (sur plusieurs lignes, il part en collage). Un appui long sur
-// la sortie, ou « Copier », montre son texte dans un champ en lecture seule, où l'on sélectionne ce qu'on copie.
+// (Ctrl et Alt collants, coller, copier, saisie masquée), champ de saisie (sur plusieurs lignes, il part en collage).
+// Un appui long sur la sortie, ou « Copier », montre son texte dans un champ en lecture seule, où l'on sélectionne ce
+// qu'on copie.
 
 import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
@@ -227,6 +228,9 @@ export component TermView inherits Rectangle {
     in property <[string]> replies;
     in property <bool> can-type: true;
     in-out property <string> draft;
+    // La saisie masquée, pour un mot de passe : ni affichée, ni apprise ou suggérée par le clavier du téléphone (un
+    // champ de mot de passe pour le système).
+    in-out property <bool> masked;
     // Ce qui est collé (tenu par le code) : 0 rien, 1 Ctrl, 2 Alt.
     in property <int> latch;
     // Le texte à copier, figé à l'ouverture, et sa sélection de départ (octets).
@@ -340,6 +344,14 @@ export component TermView inherits Rectangle {
     property <bool> shift-return;
     changed draft => {
         root.last-draft = root.draft;
+    }
+    // Le clavier ne relit le genre du champ qu'à sa prise de focus : il la reprend, pour que la lettre suivante soit
+    // déjà masquée (ou de nouveau visible).
+    changed masked => {
+        if input.has-focus {
+            input.clear-focus();
+            input.focus();
+        }
     }
 
     // Les touches de la barre, de part et d'autre de Coller et Copier (voir `termkeys.rs` pour ce qu'elles prennent
@@ -544,7 +556,7 @@ export component TermView inherits Rectangle {
                             root.key(k.key);
                         }
                     }
-                    // Coller, Copier, A− et A+ ne prennent pas Ctrl ou Alt collé : ils le relâchent.
+                    // Coller, Copier, Saisie masquée, A− et A+ ne prennent pas Ctrl ou Alt collé : ils le relâchent.
                     KeyChip {
                         text: "Coller";
                         dim: root.latch != 0;
@@ -559,6 +571,18 @@ export component TermView inherits Rectangle {
                         clicked => {
                             root.haptic();
                             root.copy(-1);
+                        }
+                    }
+                    KeyChip {
+                        text: "Saisie masquée";
+                        latchable: true;
+                        latched: root.masked;
+                        dim: root.latch != 0;
+                        clicked => {
+                            root.haptic();
+                            root.unlatch();
+                            root.masked = !root.masked;
+                            input.focus();
                         }
                     }
                     for k in root.more-keys: KeyChip {
@@ -654,6 +678,7 @@ export component TermView inherits Rectangle {
                             vertical-alignment: center;
                             text <=> root.draft;
                             enabled: root.can-type && !root.ended;
+                            input-type: root.masked ? InputType.password : InputType.text;
                             color: Theme.text;
                             font-size: 15px;
                             single-line: false;
@@ -693,7 +718,7 @@ export component TermView inherits Rectangle {
                     if root.draft == "": Text {
                         x: 16px;
                         width: parent.width - 28px;
-                        text: root.ended ? "Terminal arrêté" : root.can-type ? "Écrire dans le terminal…" : "Saisie non autorisée sur ce PC";
+                        text: root.ended ? "Terminal arrêté" : !root.can-type ? "Saisie non autorisée sur ce PC" : root.masked ? "Saisie masquée…" : "Écrire dans le terminal…";
                         color: Theme.text-faint;
                         font-size: 15px;
                         vertical-alignment: center;

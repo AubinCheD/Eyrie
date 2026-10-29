@@ -61,6 +61,17 @@ impl TermBuf {
         (text, starts)
     }
 
+    /// Le programme demande un secret : la ligne du curseur, jusqu'à lui, finit par « Password: », « Enter passphrase
+    /// for key '…': », « Mot de passe : »… La saisie du téléphone se masque alors (ni affichée, ni apprise par le
+    /// clavier).
+    pub fn asks_secret(&self) -> bool {
+        let Some((row, col)) = self.cursor else { return false };
+        let Some(line) = self.lines.get(row as usize) else { return false };
+        let before: String = line_text(line).chars().take(col as usize).collect();
+        let before = before.trim_end().to_lowercase();
+        before.ends_with(':') && ["password", "passphrase", "mot de passe"].iter().any(|k| before.contains(k))
+    }
+
     pub fn apply(&mut self, f: &TermFrame) -> Change {
         let full = !self.is(&f.module, &f.id);
         if full {
@@ -242,6 +253,35 @@ mod tests {
         assert_eq!(starts, vec![0, 13, 27]);
         assert_eq!(&text[starts[1]..starts[2] - 1], "  ok  3 tests");
         assert_eq!(TermBuf::default().copy_text(), (String::new(), Vec::new()));
+    }
+
+    #[test]
+    fn a_password_prompt_at_the_cursor_asks_for_a_secret() {
+        let at = |line: &str, col: u16| {
+            let mut b = TermBuf::default();
+            let mut v = view(&["$ git push", line, ""]);
+            v.cursor = Some((1, col));
+            b.apply(&TermFrame::full("fawkes", "1", &v));
+            b.asks_secret()
+        };
+        for prompt in [
+            "Password for 'https://aubin@github.com': ",
+            "aubin@build's password: ",
+            "Enter passphrase for key 'C:\\Users\\aubin/.ssh/id_ed25519': ",
+            "[sudo] password for aubin: ",
+            "Mot de passe : ",
+            "Enter PASSWORD:",
+        ] {
+            assert!(at(prompt, prompt.chars().count() as u16), "{prompt}");
+        }
+        // Le curseur ailleurs que juste après, ou une ligne qui n'en demande pas.
+        assert!(!at("Password: ", 0), "le curseur au début de la ligne");
+        assert!(!at("PS C:\\Users\\aubin> ", 19));
+        assert!(!at("Username for 'https://github.com': ", 35));
+        assert!(!at("password reset done", 19));
+        let mut b = TermBuf::default();
+        b.apply(&TermFrame::full("fawkes", "1", &view(&["Password: "])));
+        assert!(!b.asks_secret(), "sans curseur (caché) : rien");
     }
 
     #[test]

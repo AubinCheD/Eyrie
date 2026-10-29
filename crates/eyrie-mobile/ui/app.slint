@@ -87,6 +87,9 @@ export component AppWindow inherits Window {
     in property <[string]> term-replies;
     in property <bool> term-can-type: true;
     in-out property <string> term-draft;
+    // La saisie masquée (un mot de passe) : « Saisie masquée » la bascule, le code la pose quand le programme en
+    // demande un et l'enlève une fois la saisie partie.
+    in-out property <bool> term-masked;
     // La liste du terminal suit le bas : la sortie qui arrive y reste collée.
     out property <bool> term-follow: term.follow;
     // Ctrl ou Alt collé : 0 rien, 1 Ctrl, 2 Alt.
@@ -564,6 +567,7 @@ export component AppWindow inherits Window {
                         replies: root.term-replies;
                         can-type: root.term-can-type;
                         draft <=> root.term-draft;
+                        masked <=> root.term-masked;
                         latch: root.term-latch;
                         copy-text: root.term-copy-text;
                         copy-anchor: root.term-copy-anchor;

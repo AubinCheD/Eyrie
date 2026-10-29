@@ -487,6 +487,8 @@ pub struct Controller {
     latch: Latch,
     /// Le texte collé qui attend sa confirmation (plusieurs lignes), et le terminal `(module, id)` où il va.
     paste: Option<(String, String, String)>,
+    /// Le terminal suivi demandait un mot de passe à la dernière image (la saisie s'est alors masquée).
+    term_secret: bool,
     /// Les listes de l'interface, mises à jour sur place (jamais remplacées) : une ligne touchée survit aux messages.
     models: Models,
     /// L'écran dont les lignes sont affichées, et leurs clés et empreintes (voir [`view::patch`]).
@@ -643,6 +645,7 @@ impl Controller {
             term_dark: None,
             latch: Latch::None,
             paste: None,
+            term_secret: false,
             models,
             shown_for: None,
             shown: Vec::new(),
@@ -1080,6 +1083,7 @@ impl Controller {
                 if self.followed_term().is_some_and(|(m, id)| m == f.module && id == f.id) {
                     let change = self.term.apply(&f);
                     self.refresh_term(change);
+                    self.mask_secret();
                 }
             }
             ToPhone::Result { req, ok, message } => {
@@ -2067,13 +2071,28 @@ impl Controller {
         }
     }
 
-    /// La saisie du champ, avec Entrée (sur plusieurs lignes : en collage). Le champ ne se vide que si elle est partie.
+    /// La saisie du champ, avec Entrée (sur plusieurs lignes : en collage). Le champ ne se vide que si elle est partie ;
+    /// masqué, il se démasque (un mot de passe envoyé, la suite se lit de nouveau).
     pub(crate) fn term_send_line(&mut self, text: &str) {
         if self.term_inputs(termkeys::line(text))
             && let Some(ui) = self.ui()
         {
             ui.set_term_draft(SharedString::new());
+            ui.set_term_masked(false);
         }
+    }
+
+    /// Le programme se met à demander un mot de passe : la saisie se masque, une fois par demande (la démasquer à la
+    /// main tient jusqu'à la suivante).
+    fn mask_secret(&mut self) {
+        let secret = self.term.asks_secret();
+        if secret
+            && !self.term_secret
+            && let Some(ui) = self.ui()
+        {
+            ui.set_term_masked(true);
+        }
+        self.term_secret = secret;
     }
 
     /// Le presse-papiers, collé dans le terminal ; sur plusieurs lignes, après confirmation. Ctrl ou Alt collé se
@@ -2118,13 +2137,16 @@ impl Controller {
         ui.set_term_copy_visible(true);
     }
 
-    /// Un autre terminal, ou plus de terminal : ce qui le servait se referme (Ctrl collé, texte à copier, collage).
+    /// Un autre terminal, ou plus de terminal : ce qui le servait se referme (Ctrl collé, texte à copier, collage,
+    /// saisie masquée).
     fn leave_term(&mut self) {
         self.set_latch(Latch::None);
         self.paste = None;
+        self.term_secret = false;
         if let Some(ui) = self.ui() {
             ui.set_term_copy_visible(false);
             ui.set_term_paste_visible(false);
+            ui.set_term_masked(false);
         }
     }
 
