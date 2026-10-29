@@ -257,9 +257,10 @@ fn receive(
             ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Critical));
             core.mobile.requests.push(r);
         }
-        Inbound::PairAbandoned { device } => {
+        Inbound::PairAbandoned { device, ticket } => {
             core.mobile.store.journal(&device, "appairage", "abandonné par le téléphone");
             mirror(core, &device, "appairage abandonné");
+            core.mobile.ticket_abandoned(ticket);
         }
         Inbound::Connected { session, device, model, app, identity, sender, stream } => {
             let Some(d) = core.mobile.store.device_mut(&device) else {

@@ -386,6 +386,87 @@ fn a_late_accept_pairs_nothing_once_the_phone_has_left() {
     assert!(!journal.iter().any(|l| l.text.starts_with("appairé")), "{journal:?}");
 }
 
+/// Attend que la suite ait reçu l'abandon de l'appairage (sa ligne au journal).
+fn abandon_seen(h: &mut Harness<'static, Suite>) {
+    spin(h, |h| h.state().core.mobile.store.read_journal(50).iter().any(|l| l.text == "abandonné par le téléphone"));
+}
+
+/// Les lignes « appairage » du journal, les plus récentes d'abord.
+fn pairing_journal(h: &Harness<'static, Suite>) -> Vec<String> {
+    let journal = h.state().core.mobile.store.read_journal(50);
+    journal.into_iter().filter(|l| l.kind == "appairage").map(|l| l.text).collect()
+}
+
+/// Le code montré avait servi à l'appairage que le téléphone a abandonné : un nouveau le remplace, valable jusqu'à la
+/// même heure (la fenêtre ne s'allonge pas), et le QR code affiché appaire de nouveau au lieu de « Code faux ou
+/// expiré ». La page et le journal le disent.
+#[test]
+fn an_abandoned_pairing_leaves_a_fresh_code_until_the_same_deadline() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = suite();
+    let c = pairing_waits(&mut h);
+    let (uri, code, expires) = {
+        let t = h.state().core.mobile.ticket.as_ref().unwrap();
+        (t.uri.clone(), t.code.clone(), t.expires)
+    };
+    drop(c);
+    abandon_seen(&mut h);
+    let t = h.state().core.mobile.ticket.as_ref().expect("un code montré");
+    assert!(t.uri != uri && t.code != code, "un nouveau code");
+    assert_eq!(t.expires, expires, "la même fin de validité");
+    let fresh = Ticket::from_uri(&t.uri).unwrap();
+    assert!(pairing_journal(&h).iter().any(|l| l.starts_with("nouveau code")), "{:?}", pairing_journal(&h));
+    h.state_mut().core.act(crate::app::Action::OpenSettings(crate::settings::Page::Phones));
+    h.run_steps(3);
+    assert!(h.query_by_label("Nouveau code : le précédent a servi à un appairage abandonné.").is_some());
+
+    let mut c = client::open(&fresh.addresses(), &Keypair::generate(), Duration::from_secs(5)).unwrap();
+    client::pair(&mut c, &fresh.secret, Some(&fresh.key), "Pixel", "Google Pixel 8").expect("le code montré appaire");
+    spin(&mut h, |h| !h.state().core.mobile.requests.is_empty());
+}
+
+/// À moins de 20 s de sa fin, le code consommé par l'appairage abandonné n'est pas remplacé : il n'aurait pas le temps
+/// de servir. La page dit qu'il a expiré, sans QR code qui ne marche plus, jusqu'au code suivant.
+#[test]
+fn an_abandoned_pairing_near_the_deadline_says_the_code_expired() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = suite();
+    let c = pairing_waits(&mut h);
+    h.state_mut().core.mobile.ticket.as_mut().unwrap().expires = Instant::now() + Duration::from_secs(15);
+    drop(c);
+    abandon_seen(&mut h);
+    assert!(h.state().core.mobile.ticket.is_none(), "plus de QR code");
+    assert!(h.state().core.mobile.ticket_expired);
+    assert!(pairing_journal(&h).iter().any(|l| l.starts_with("code expiré")), "{:?}", pairing_journal(&h));
+    h.state_mut().core.act(crate::app::Action::OpenSettings(crate::settings::Page::Phones));
+    h.run_steps(3);
+    assert!(h.query_by_label("Code expiré : demandez-en un nouveau.").is_some());
+    h.state_mut().core.mobile.new_ticket(None).unwrap();
+    assert!(!h.state().core.mobile.ticket_expired, "un nouveau code efface le message");
+}
+
+/// Seul le code consommé par l'appairage abandonné est remplacé : un code demandé depuis reste tel quel. Un appairage
+/// refusé sur le PC n'en donne pas de nouveau.
+#[test]
+fn only_the_code_an_abandoned_pairing_spent_is_replaced() {
+    let mut h = suite();
+    let c = pairing_waits(&mut h);
+    h.state_mut().core.mobile.new_ticket(None).unwrap();
+    let uri = h.state().core.mobile.ticket.as_ref().unwrap().uri.clone();
+    drop(c);
+    abandon_seen(&mut h);
+    let t = h.state().core.mobile.ticket.as_ref().unwrap();
+    assert!(t.uri == uri && !t.renewed, "le code demandé ensuite reste");
+
+    let mut c = pairing_waits(&mut h);
+    let uri = h.state().core.mobile.ticket.as_ref().unwrap().uri.clone();
+    h.state_mut().core.mobile.decide(0, false);
+    assert!(client::wait_paired(&mut c).is_err(), "refusé");
+    h.run_steps(3);
+    let t = h.state().core.mobile.ticket.as_ref().unwrap();
+    assert!(t.uri == uri && !t.renewed, "pas de nouveau code après un refus");
+}
+
 /// Un téléphone appairé à la suite, qui fait `phone` dans son fil une fois connecté ; `paired` agit sur le PC juste
 /// après l'appairage, avant que la connexion du téléphone n'y soit reçue.
 fn with_phone<T: Send + 'static>(

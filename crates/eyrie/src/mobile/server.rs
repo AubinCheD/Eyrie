@@ -101,6 +101,8 @@ pub enum Inbound {
     /// Le téléphone est parti (retour, autre QR) pendant que sa demande d'appairage attendait : son fil l'a close.
     PairAbandoned {
         device: String,
+        /// Le groupe du ticket que la demande avait consommé.
+        ticket: u64,
     },
     /// À écrire au journal (refus, erreurs).
     Log {
@@ -161,19 +163,16 @@ impl Shared {
         wake_key(&key, dev)
     }
 
-    /// Un nouveau ticket (QR et code saisi ensemble : l'un utilisé, l'autre tombe).
-    pub fn add_ticket(&self, secrets: &[Vec<u8>], lifetime: Duration) {
+    /// Un nouveau ticket (QR et code saisi ensemble : l'un utilisé, l'autre tombe), valable jusqu'à `expires`. Renvoie
+    /// son groupe, que porte l'appairage qui le consomme.
+    pub fn add_ticket(&self, secrets: &[Vec<u8>], expires: Instant) -> u64 {
         let group = self.next.fetch_add(1, Ordering::Relaxed);
         let mut t = lock(&self.tickets);
         t.clear();
         for s in secrets {
-            t.push(Ticket {
-                group,
-                secret: s.clone(),
-                expires: Instant::now() + lifetime,
-                attempts: pairing::ATTEMPTS,
-            });
+            t.push(Ticket { group, secret: s.clone(), expires, attempts: pairing::ATTEMPTS });
         }
+        group
     }
 
     pub fn clear_tickets(&self) {
@@ -203,16 +202,16 @@ impl Shared {
         lock(&self.devices).iter().find(|d| &d.key == key).cloned()
     }
 
-    /// Le secret du ticket que cette preuve démontre ; le ticket (et son groupe) est alors consommé. Une preuve
-    /// fausse coûte un essai à chaque ticket en cours.
-    fn take_ticket(&self, proof: &[u8], hash: &[u8]) -> Option<Vec<u8>> {
+    /// Le secret du ticket que cette preuve démontre, et son groupe ; le ticket (et son groupe) est alors consommé.
+    /// Une preuve fausse coûte un essai à chaque ticket en cours.
+    fn take_ticket(&self, proof: &[u8], hash: &[u8]) -> Option<(Vec<u8>, u64)> {
         let now = Instant::now();
         let mut t = lock(&self.tickets);
         t.retain(|t| t.expires > now && t.attempts > 0);
         if let Some(found) = t.iter().find(|t| pairing::verify(&t.secret, hash, Role::Phone, proof)) {
             let (group, secret) = (found.group, found.secret.clone());
             t.retain(|t| t.group != group);
-            return Some(secret);
+            return Some((secret, group));
         }
         for ticket in t.iter_mut() {
             ticket.attempts -= 1;
@@ -476,7 +475,7 @@ fn serve(mut stream: TcpStream, shared: Arc<Shared>) {
                     refuse(&mut tx, "L'application et Eyrie n'ont pas la même version : mettez-les à jour.");
                     return;
                 }
-                let Some(secret) = shared.take_ticket(&proof, &peer.hash) else {
+                let Some((secret, ticket)) = shared.take_ticket(&proof, &peer.hash) else {
                     shared.log(&device, "refus", format!("appairage : code faux ou expiré ({who})"));
                     refuse(&mut tx, "Code faux ou expiré : demandez un nouveau code dans Eyrie.");
                     return;
@@ -513,7 +512,7 @@ fn serve(mut stream: TcpStream, shared: Arc<Shared>) {
                         return;
                     }
                     None => {
-                        shared.push(Inbound::PairAbandoned { device: name });
+                        shared.push(Inbound::PairAbandoned { device: name, ticket });
                         let _ = stream.shutdown(Shutdown::Both);
                         return;
                     }
@@ -564,7 +563,7 @@ mod tests {
         let s = shared(None);
         let server = Server::start(s.clone(), 0).unwrap();
         let secret = pairing::new_secret();
-        s.add_ticket(std::slice::from_ref(&secret), Duration::from_secs(60));
+        s.add_ticket(std::slice::from_ref(&secret), Instant::now() + Duration::from_secs(60));
         let phone = Keypair::generate();
         let pc_key = s.key.public;
         let s2 = s.clone();
@@ -681,12 +680,12 @@ mod tests {
     fn a_wrong_or_expired_code_is_refused() {
         let s = shared(None);
         let server = Server::start(s.clone(), 0).unwrap();
-        s.add_ticket(&[pairing::new_secret()], Duration::from_secs(60));
+        s.add_ticket(&[pairing::new_secret()], Instant::now() + Duration::from_secs(60));
         let mut c = open(&server, &Keypair::generate());
         let err = client::pair(&mut c, &pairing::new_secret(), None, "x", "y").unwrap_err().to_string();
         assert!(err.contains("Code faux"), "{err}");
         let secret = pairing::new_secret();
-        s.add_ticket(std::slice::from_ref(&secret), Duration::from_millis(1));
+        s.add_ticket(std::slice::from_ref(&secret), Instant::now() + Duration::from_millis(1));
         std::thread::sleep(Duration::from_millis(20));
         let mut c = open(&server, &Keypair::generate());
         assert!(client::pair(&mut c, &secret, None, "x", "y").is_err(), "ticket expiré");
@@ -697,7 +696,7 @@ mod tests {
         let s = shared(None);
         let server = Server::start(s.clone(), 0).unwrap();
         let secret = pairing::new_secret();
-        s.add_ticket(std::slice::from_ref(&secret), Duration::from_secs(60));
+        s.add_ticket(std::slice::from_ref(&secret), Instant::now() + Duration::from_secs(60));
         for _ in 0..pairing::ATTEMPTS {
             let mut c = open(&server, &Keypair::generate());
             assert!(client::pair(&mut c, &pairing::new_secret(), None, "x", "y").is_err());
@@ -712,7 +711,7 @@ mod tests {
         let s = shared(None);
         let server = Server::start(s.clone(), 0).unwrap();
         let secret = pairing::new_secret();
-        s.add_ticket(std::slice::from_ref(&secret), Duration::from_secs(60));
+        s.add_ticket(std::slice::from_ref(&secret), Instant::now() + Duration::from_secs(60));
         let s2 = s.clone();
         std::thread::spawn(move || {
             if let Inbound::Pair(req) = wait_inbox(&s2, |i| matches!(i, Inbound::Pair(_))) {
@@ -731,12 +730,13 @@ mod tests {
         let s = shared(None);
         let server = Server::start(s.clone(), 0).unwrap();
         let secret = pairing::new_secret();
-        s.add_ticket(std::slice::from_ref(&secret), Duration::from_secs(60));
+        s.add_ticket(std::slice::from_ref(&secret), Instant::now() + Duration::from_secs(60));
         let mut c = open(&server, &Keypair::generate());
         client::pair(&mut c, &secret, None, "Pixel", "y").unwrap();
         let Inbound::Pair(req) = wait_inbox(&s, |i| matches!(i, Inbound::Pair(_))) else { unreachable!() };
         drop(c);
-        let Inbound::PairAbandoned { device } = wait_inbox(&s, |i| matches!(i, Inbound::PairAbandoned { .. })) else {
+        let Inbound::PairAbandoned { device, .. } = wait_inbox(&s, |i| matches!(i, Inbound::PairAbandoned { .. }))
+        else {
             unreachable!()
         };
         assert_eq!(device, "Pixel");
@@ -825,7 +825,7 @@ mod tests {
         let s = shared(None);
         let server = Server::start(s.clone(), 0).unwrap();
         let secret = pairing::new_secret();
-        s.add_ticket(std::slice::from_ref(&secret), Duration::from_secs(60));
+        s.add_ticket(std::slice::from_ref(&secret), Instant::now() + Duration::from_secs(60));
         let mut c = open(&server, &Keypair::generate());
         let other_pc = Keypair::generate().public;
         assert!(

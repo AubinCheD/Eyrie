@@ -35,12 +35,21 @@ pub struct Shown {
     pub code: String,
     /// Nom du PC sur le tailnet, à saisir avec le code.
     pub host: String,
-    pub created: Instant,
+    /// Fin de validité, gardée par le code qui remplace celui d'un appairage abandonné.
+    pub expires: Instant,
+    /// Son groupe chez les fils (QR et code saisi), que porte l'appairage qui le consomme.
+    pub group: u64,
+    /// Il remplace un code qu'un appairage abandonné par le téléphone avait consommé.
+    pub renewed: bool,
 }
+
+/// Moins que cela avant sa fin, le code consommé par un appairage abandonné n'est pas remplacé : il n'aurait pas le temps
+/// de servir (scanner, comparer les codes, confirmer sur le PC).
+const RENEW_MIN: Duration = Duration::from_secs(20);
 
 impl Shown {
     pub fn remaining(&self) -> Duration {
-        Duration::from_secs(pairing::TICKET_SECS).saturating_sub(self.created.elapsed())
+        self.expires.saturating_duration_since(Instant::now())
     }
 }
 
@@ -53,6 +62,9 @@ pub struct Bridge {
     /// Appairages qui attendent le clic sur le PC.
     pub requests: Vec<server::PairRequest>,
     pub ticket: Option<Shown>,
+    /// Le code montré a servi à un appairage abandonné trop près de sa fin pour qu'un autre le remplace : la page dit
+    /// qu'il a expiré, jusqu'au code suivant.
+    pub ticket_expired: bool,
     /// Jeton que le compagnon présente à chaque connexion relayée.
     token: String,
     /// `EYRIE_MOBILE_LOCAL=<port>` : écoute directe sur ce port local, sans compagnon (essais, développement).
@@ -83,6 +95,7 @@ impl Bridge {
             sessions: Vec::new(),
             requests: Vec::new(),
             ticket: None,
+            ticket_expired: false,
             token: store::hex(&pairing::random::<32>()),
             local_port,
             error: None,
@@ -185,6 +198,7 @@ impl Bridge {
             r.answer(false);
         }
         self.ticket = None;
+        self.ticket_expired = false;
         if self.server.take().is_some() {
             self.store.journal("", "acces", "accès coupé");
         }
@@ -256,15 +270,39 @@ impl Bridge {
             (None, Some((name, ip))) => (name, ip, suite_mobile::PORT),
             (None, None) => return Err("Eyrie n'est pas encore joignable sur Tailscale".into()),
         };
+        let place = Ticket { pc: pc_name(), host, ip, port, key: shared.key.public, secret: Vec::new() };
+        self.show_ticket(&shared, place, Instant::now() + Duration::from_secs(pairing::TICKET_SECS), false);
+        Ok(())
+    }
+
+    /// Tire un secret et un code pour `place` (le PC, son adresse et sa clé), valables jusqu'à `expires`, et les montre.
+    fn show_ticket(&mut self, shared: &server::Shared, place: Ticket, expires: Instant, renewed: bool) {
         let secret = pairing::new_secret();
         let code = pairing::new_code();
         let code_secret = pairing::code_secret(&code).expect("code tiré dans l'alphabet");
-        shared.add_ticket(&[secret.clone(), code_secret], Duration::from_secs(pairing::TICKET_SECS));
-        let uri = Ticket { pc: pc_name(), host: host.clone(), ip, port, key: shared.key.public, secret }.to_uri();
+        let group = shared.add_ticket(&[secret.clone(), code_secret], expires);
         // Le nom court suffit sur le tailnet (MagicDNS) : c'est lui qu'on saisit.
-        let short = host.split('.').next().unwrap_or(&host).to_string();
-        self.ticket = Some(Shown { uri, code, host: short, created: Instant::now() });
-        Ok(())
+        let short = place.host.split('.').next().unwrap_or(&place.host).to_string();
+        let uri = Ticket { secret, ..place }.to_uri();
+        self.ticket = Some(Shown { uri, code, host: short, expires, group, renewed });
+        self.ticket_expired = false;
+    }
+
+    /// Le téléphone a abandonné l'appairage qui avait consommé le ticket `group`. Si c'est le code montré, il ne
+    /// servirait plus (« Code faux ou expiré ») : un nouveau le remplace, valable jusqu'à la même heure (la fenêtre ne
+    /// s'allonge jamais). Trop près de sa fin pour servir, il est retiré, et la page dit qu'il a expiré.
+    pub fn ticket_abandoned(&mut self, group: u64) {
+        let Some(t) = self.ticket.as_ref().filter(|t| t.group == group) else { return };
+        let (Some(shared), Ok(place)) = (self.shared().cloned(), Ticket::from_uri(&t.uri)) else { return };
+        if t.remaining() < RENEW_MIN {
+            self.cancel_ticket();
+            self.ticket_expired = true;
+            self.store.journal("", "appairage", "code expiré : il avait servi à un appairage abandonné");
+            return;
+        }
+        let expires = t.expires;
+        self.show_ticket(&shared, place, expires, true);
+        self.store.journal("", "appairage", "nouveau code : le précédent a servi à un appairage abandonné");
     }
 
     pub fn cancel_ticket(&mut self) {

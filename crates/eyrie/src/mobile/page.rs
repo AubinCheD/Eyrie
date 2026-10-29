@@ -125,6 +125,10 @@ pub fn page(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui) {
                 )
                 .wrap(),
             );
+            // Le code montré a servi à un appairage abandonné trop près de sa fin pour qu'un autre le remplace.
+            if suite.core.mobile.ticket_expired {
+                ui.label(RichText::new(tr("Code expiré : demandez-en un nouveau.")).color(p.warn));
+            }
             if ui.button(format!("📱 {}", tr("Afficher le code d'appairage"))).clicked() {
                 suite.core.st.mobile.enabled = true;
                 suite.core.mobile.ensure(true);
@@ -140,6 +144,12 @@ pub fn page(suite: &mut SettingsCx<'_>, ui: &mut egui::Ui) {
         }
         Some(t) => {
             let (uri, code, host, left) = (t.uri.clone(), t.code.clone(), t.host.clone(), t.remaining());
+            // Le code a changé sous les yeux de l'utilisateur : la page dit pourquoi.
+            if t.renewed {
+                ui.label(
+                    RichText::new(tr("Nouveau code : le précédent a servi à un appairage abandonné.")).color(p.warn),
+                );
+            }
             let state = &mut suite.core.mobile.page;
             if state.qr.as_ref().is_none_or(|(u, _)| *u != uri)
                 && let Some(img) = qr_image(&uri)
