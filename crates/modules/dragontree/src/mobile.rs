@@ -2931,6 +2931,14 @@ mod tests {
         account
     }
 
+    /// Le dossier d'essai `name` d'un clonage, hors des zones du PC, que DragonTree refuse lui aussi (le dossier
+    /// temporaire de Windows en est : il est dans `%LOCALAPPDATA%`) : dans `target\debug\essais`.
+    fn clone_trial_dir(name: &str) -> PathBuf {
+        let exe = std::env::current_exe().unwrap();
+        let debug = exe.parent().and_then(Path::parent).unwrap();
+        debug.join("essais").join(format!("{name}-{}", std::process::id()))
+    }
+
     fn ids(s: &Screen) -> Vec<String> {
         s.action_ids().into_iter().collect()
     }
@@ -2952,7 +2960,7 @@ mod tests {
     #[test]
     fn a_repo_is_cloned_by_dragontree_from_the_phone() {
         let Ok(git) = Git::discover() else { return };
-        let dir = std::env::temp_dir().join(format!("suite-dragontree-clonage-{}", std::process::id()));
+        let dir = clone_trial_dir("suite-dragontree-clonage");
         let _ = std::fs::remove_dir_all(&dir);
         let (source, shown, parent) = (dir.join("source"), dir.join("affiche"), dir.join("clones"));
         new_repo(&git, &source);
@@ -2967,8 +2975,8 @@ mod tests {
         let ada = seed_account(&profile, "aaaaaaaaaaaaaaaa", ForgeKind::GitHub, "github.com");
         let mut h = dragontree(&profile);
         h.state_mut().show_repo(&shown);
-        // Le dossier temporaire est sous les données des applications : seul `protected` est protégé ici.
-        phone.zones.forbidden = vec![protected.clone()];
+        // Les zones du PC, et `protected` en plus.
+        phone.zones.forbidden.push(protected.clone());
         step_until(&mut h, |h| !h.state().clone_defaults().accounts.is_empty());
 
         let home = phone.screen(h.state_mut(), "").unwrap();
@@ -3093,7 +3101,7 @@ mod tests {
         if Git::discover().is_err() {
             return;
         }
-        let dir = std::env::temp_dir().join(format!("suite-dragontree-annulation-{}", std::process::id()));
+        let dir = clone_trial_dir("suite-dragontree-annulation");
         let _ = std::fs::remove_dir_all(&dir);
         let parent = dir.join("clones");
         std::fs::create_dir_all(&parent).unwrap();
@@ -3110,7 +3118,6 @@ mod tests {
         let mut phone = phone_for(&profile, &dir.join("aucun"));
         let mut h = dragontree(&profile);
         h.step();
-        phone.zones.forbidden.clear();
         phone.action(h.state_mut(), "", "cloner", None).unwrap();
         let path = "cloner/1";
         let act = |phone: &mut Phone, h: &mut H, action: &str, input: &str| {
