@@ -54,7 +54,7 @@ use dragontree_git::{
     LogOrder, LogScope, Oid, Repo, StatusEntry, StatusSnapshot,
 };
 use suite_sdk::mobile::msg::OPEN_PREFIX;
-use suite_sdk::mobile::paths::{in_dot_folder, powershell_dirs, protected_name};
+use suite_sdk::mobile::paths::{in_dot_folder, powershell_dirs, protected_name, resolved_zone};
 use suite_sdk::mobile::ui::{
     Act, Block, FOLDER_PARENT, FOLDER_REPO, FolderInput, GraphCell, PROGRESS_UNKNOWN, Place, Screen, Tone,
 };
@@ -481,9 +481,10 @@ pub(crate) struct Zones {
 }
 
 impl Zones {
-    /// `p` est dans l'une des zones, prises telles qu'écrites et résolues.
+    /// `p` est dans l'une des zones, prises telles qu'écrites et résolues (une zone absente, par son plus proche
+    /// parent : [`resolved_zone`]).
     fn hold(&self, p: &Path) -> bool {
-        let zoned = self.forbidden.iter().any(|z| inside(p, z) || resolved(z).is_some_and(|z| inside(p, &z)));
+        let zoned = self.forbidden.iter().any(|z| inside(p, z) || resolved_zone(z).is_some_and(|z| inside(p, &z)));
         let configuration = |h: &Path| in_dot_folder(p, h) || resolved(h).is_some_and(|h| in_dot_folder(p, &h));
         zoned || self.home.as_deref().is_some_and(configuration)
     }
@@ -1824,6 +1825,32 @@ mod tests {
             assert!(real.hold(&p), "{}", p.display());
         }
         assert!(!real.hold(&home.join("DEV")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Des Documents déplacés par une jonction (vers un autre disque) : PowerShell lit son profil au travers. Ce
+    /// profil, absent, est refusé aussi là où mène la jonction, d'où le téléphone désigne le dossier parent.
+    #[test]
+    fn a_powershell_profile_reached_through_a_junction_is_refused() {
+        let dir = std::env::temp_dir().join(format!("suite-dragontree-jonction-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let moved = dir.join("D").join("Documents");
+        let documents = dir.join("profil").join("Documents");
+        std::fs::create_dir_all(&moved).unwrap();
+        std::fs::create_dir_all(dir.join("profil")).unwrap();
+        let linked = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&documents)
+            .arg(&moved)
+            .output()
+            .is_ok_and(|o| o.status.success());
+        assert!(linked, "jonction {} → {}", documents.display(), moved.display());
+        let zones = Zones { forbidden: powershell_dirs(&documents).to_vec(), home: None };
+        for folder in ["PowerShell", "WindowsPowerShell"] {
+            let e = check_clone_target(&moved, folder, &zones).unwrap_err();
+            assert!(e.contains("protégé"), "{folder} : {e}");
+        }
+        assert!(check_clone_target(&moved, "notes", &zones).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

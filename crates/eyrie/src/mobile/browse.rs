@@ -24,7 +24,7 @@ use suite_mobile::msg::{
     ENTRY_CLOUD, ENTRY_DENIED, ENTRY_DRIVE, ENTRY_HIDDEN, ENTRY_KNOWN, ENTRY_LINK, ENTRY_REPO, FolderEntry, Listing,
     PlaceGroup, ToPhone,
 };
-use suite_mobile::paths::{in_dot_folder, powershell_dirs, protected_name};
+use suite_mobile::paths::{in_dot_folder, powershell_dirs, protected_name, resolved_zone};
 use suite_mobile::ui::{FOLDER_ANY, FOLDER_PARENT, FOLDER_REPO, FolderInput, Tone};
 
 /// Dossiers par page.
@@ -136,11 +136,12 @@ impl Env {
     }
 }
 
-/// Les zones et leur forme résolue (noms courts, jonctions), quand elle diffère.
+/// Les zones et leur forme résolue (noms courts, jonctions), quand elle diffère ; une zone absente l'est par son plus
+/// proche parent ([`resolved_zone`]).
 fn with_resolved(zones: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for z in zones {
-        if let Some(full) = resolved(&z).filter(|f| key(f) != key(&z)) {
+        if let Some(full) = resolved_zone(&z).filter(|f| key(f) != key(&z)) {
             out.push(full);
         }
         out.push(z);
@@ -1160,6 +1161,24 @@ mod tests {
             assert!(protected(&real, &p), "{}", p.display());
         }
         assert!(!protected(&real, &home.join("DEV")) && !protected(&real, &home.join("Documents")));
+    }
+
+    /// Des Documents déplacés par une jonction (vers un autre disque) : PowerShell lit son profil au travers. Ce
+    /// profil, absent, est refusé aussi comme destination d'un clonage là où mène la jonction.
+    #[test]
+    fn a_powershell_profile_reached_through_a_junction_is_protected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        mkdir(&root.join(r"D\Documents"));
+        mkdir(&root.join("profil"));
+        junction(&root.join(r"profil\Documents"), &root.join(r"D\Documents"));
+        let env = Env::for_tests(powershell_dirs(&root.join(r"profil\Documents")).to_vec());
+        let moved = root.join(r"D\Documents").to_string_lossy().into_owned();
+        let parent = |child: &str| FolderInput { want: FOLDER_PARENT, child: child.into(), ..Default::default() };
+        for child in ["PowerShell", "WindowsPowerShell"] {
+            assert!(chosen(&env, Some(&moved), &parent(child)).unwrap_err().contains("protégé"), "{child}");
+        }
+        assert!(chosen(&env, Some(&moved), &parent("notes")).is_ok());
     }
 
     #[test]

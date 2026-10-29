@@ -40,6 +40,25 @@ pub fn powershell_dirs(documents: &Path) -> [PathBuf; 2] {
     [documents.join("PowerShell"), documents.join("WindowsPowerShell")]
 }
 
+/// Une zone résolue (noms courts 8.3, jonctions, liens), sans le préfixe `\\?\`. Absente, elle l'est par son plus
+/// proche parent qui existe, suivi des noms qui manquent : un profil de PowerShell pas encore créé, dans des Documents
+/// déplacés par une jonction ou écrits sous un nom court, se reconnaît aussi là où ils mènent. `None` : rien du chemin
+/// ne se résout.
+pub fn resolved_zone(zone: &Path) -> Option<PathBuf> {
+    let mut missing = Vec::new();
+    let mut at = zone;
+    loop {
+        if let Ok(full) = std::fs::canonicalize(at) {
+            let text = full.to_string_lossy();
+            let mut out = PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(&text));
+            out.extend(missing.iter().rev());
+            return Some(out);
+        }
+        missing.push(at.file_name()?);
+        at = at.parent()?;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -70,5 +89,33 @@ mod tests {
         assert!(!in_dot_folder(Path::new(r"C:\Users\ada\.config"), Path::new("")), "sans profil connu");
         let docs = Path::new(r"C:\Users\ada\OneDrive\Documents");
         assert_eq!(powershell_dirs(docs), [docs.join("PowerShell"), docs.join("WindowsPowerShell")]);
+    }
+
+    /// Une zone existante se résout ; une zone absente, par son plus proche parent, ici une jonction vers d'autres
+    /// Documents, suivi des noms qui manquent.
+    #[cfg(windows)]
+    #[test]
+    fn an_absent_zone_is_resolved_by_its_nearest_parent() {
+        let dir = std::env::temp_dir().join(format!("suite-mobile-zones-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let moved = dir.join("D").join("Documents");
+        let documents = dir.join("profil").join("Documents");
+        std::fs::create_dir_all(&moved).unwrap();
+        std::fs::create_dir_all(dir.join("profil")).unwrap();
+        let linked = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&documents)
+            .arg(&moved)
+            .output()
+            .is_ok_and(|o| o.status.success());
+        assert!(linked, "jonction {} → {}", documents.display(), moved.display());
+        let long = resolved_zone(&moved).unwrap();
+        assert!(!long.to_string_lossy().starts_with(r"\\?\"), "{}", long.display());
+        assert_eq!(resolved_zone(&documents), Some(long.clone()));
+        let [ps, wps] = powershell_dirs(&documents);
+        assert_eq!(resolved_zone(&ps), Some(long.join("PowerShell")));
+        assert_eq!(resolved_zone(&wps.join("Modules")), Some(long.join(r"WindowsPowerShell\Modules")));
+        assert_eq!(resolved_zone(Path::new("")), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

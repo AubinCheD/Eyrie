@@ -248,9 +248,10 @@ alimente (`Parcourir` → `Dossier`).
   d'Eyrie ; les profils des autres comptes, même écrits sous leur nom court, sans rien en dire, pas même s'ils
   existent (celui de l'utilisateur est admis sous ses deux noms) ; les dossiers de secrets où qu'ils soient (`.ssh`,
   `.gnupg`, `.aws`, `.azure`, `.kube`, `.docker`, `.password-store`, corbeille, `System Volume Information`) ; les
-  dossiers à point du profil (`.config`, `.claude`…) et les profils de PowerShell des Documents, que git, Claude Code
-  ou PowerShell lisent d'eux-mêmes, parfois pour lancer des commandes. Un dossier protégé se montre « protégé », sans
-  que le PC regarde dedans. Vient enfin la règle de la saisie (un `.git` ; `parent\nom` absent ou vide).
+  dossiers à point du profil (`.config`, `.claude`…) et les profils de PowerShell des Documents (même absents, aussi
+  là où mènent des Documents déplacés par une jonction), que git, Claude Code ou PowerShell lisent d'eux-mêmes,
+  parfois pour lancer des commandes. Un dossier protégé se montre « protégé », sans que le PC regarde dedans. Vient
+  enfin la règle de la saisie (un `.git` ; `parent\nom` absent ou vide).
 - Des dossiers seulement, jamais de fichier, ni de création. Une lecture à la fois par téléphone, dans un fil (jamais
   celui de l'interface) : pages de 200, 20 000 entrées ou 3 s au plus (au-delà, filtrer), huit lectures par 2 s. La
   racine : « Récents » (les huit derniers dossiers choisis pour ce module, `mobile\dossiers.json`), les raccourcis du
