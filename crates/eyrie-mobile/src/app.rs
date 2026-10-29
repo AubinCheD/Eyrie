@@ -892,7 +892,8 @@ impl Controller {
             ui.set_toast_visible(false);
             return;
         };
-        ui.set_toast_text(text.into());
+        // Sur trois lignes au plus : « : » ou « ? » n'y commence pas une ligne.
+        ui.set_toast_text(view::tied(&text).into());
         ui.set_toast_tone(tone);
         ui.set_toast_expanded(false);
         ui.set_toast_visible(true);
@@ -1865,7 +1866,7 @@ impl Controller {
     /// Le champ de texte à la place du sélecteur ; `note` dit pourquoi.
     fn ask_text(&self, a: &UiAct, note: &str) {
         if let Some(ui) = self.ui() {
-            ui.invoke_ask_input(a.clone(), note.into());
+            ui.invoke_ask_input(a.clone(), view::tied(note).into());
         }
     }
 
@@ -2878,7 +2879,7 @@ mod tests {
             c.on_message(ToPhone::Screen { module: "dragontree".into(), path: "depot/b".into(), screen });
         });
         assert!(!ui.invoke_close_overlays(), "la confirmation s'est fermée avec l'écran");
-        assert_eq!(ui.get_toast_text(), "L'écran a changé : rien n'est parti.");
+        assert_eq!(ui.get_toast_text(), "L'écran a changé\u{202f}: rien n'est parti.", "« : » reste avec son mot");
 
         with(|c| c.run_act(&on_a, ""));
         with(|c| assert!(c.pendings.sent.is_empty(), "rien n'est parti pour depot/b"));

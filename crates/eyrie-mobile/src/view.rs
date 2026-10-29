@@ -68,9 +68,9 @@ pub fn act_in(a: &Act, local: &Local) -> UiAct {
             ActStyle::Primary => 1,
             ActStyle::Danger => 2,
         },
-        confirm: a.confirm.clone().unwrap_or_default().into(),
+        confirm: dialog(a.confirm.as_deref().unwrap_or_default()).into(),
         has_input: a.input.is_some(),
-        input_label: input.label.into(),
+        input_label: dialog(&input.label).into(),
         input_placeholder: input.placeholder.into(),
         input_value: input.value.into(),
         multiline: input.multiline,
@@ -665,6 +665,27 @@ fn durations(text: &str) -> String {
     out
 }
 
+/// Un mot plus court tient sur une ligne d'un dialogue, même à 360 px (un nom de branche, de dépôt).
+const DIALOG_WORD: usize = 24;
+
+/// Le texte d'un dialogue venu du PC (une question, le titre d'une saisie) : [`tied`], et un mot court à trait
+/// d'union (« mobile-ergonomie ») d'un seul tenant, par le trait d'union insécable (U+2011) : Slint coupait après le
+/// trait d'union alors que le mot entier tenait sur la ligne suivante. Un mot plus long garde ses traits d'union, où
+/// il passe à la ligne.
+pub fn dialog(text: &str) -> String {
+    let text = tied(text);
+    let mut out = String::with_capacity(text.len());
+    for chunk in text.split_inclusive(char::is_whitespace) {
+        let word = chunk.trim_end();
+        if word.contains('-') && word.chars().count() <= DIALOG_WORD {
+            out.push_str(&chunk.replace('-', "\u{2011}"));
+        } else {
+            out.push_str(chunk);
+        }
+    }
+    out
+}
+
 /// « il y a » : à l'instant, 5 min, 2 h, 3 j.
 pub fn ago(at: u64, now: u64) -> String {
     match now.saturating_sub(at) {
@@ -709,6 +730,24 @@ mod tests {
         s.row(Row::new("mobile-ergonomie").subtitle("origin/mobile-ergonomie · ↑2 ↓1 · il y a 1 h"));
         let r = rows(&s, &Local::default());
         assert_eq!(r[0].subtitle, "origin/mobile-ergonomie · ↑2 ↓1 · il\u{202f}y\u{202f}a\u{202f}1\u{202f}h");
+    }
+
+    /// Une question du PC passe à la ligne sans laisser « ? » seul en tête de ligne, ni couper un nom de branche après
+    /// son trait d'union (« mobile- », puis « ergonomie ? ») quand il tient entier sur la ligne suivante.
+    #[test]
+    fn a_dialog_keeps_short_names_and_their_punctuation_whole() {
+        let merge = Act::new("fusionner:main", "Fusionner dans mobile-ergonomie")
+            .confirm("Fusionner main dans mobile-ergonomie ?")
+            .input("Nouveau nom de « mobile-ergonomie » :", "");
+        let a = act(&merge);
+        assert_eq!(a.confirm, "Fusionner main dans mobile\u{2011}ergonomie\u{202f}?");
+        assert_eq!(a.input_label, "Nouveau nom de «\u{202f}mobile\u{2011}ergonomie\u{202f}»\u{202f}:");
+        assert_eq!(a.label, "Fusionner dans mobile-ergonomie", "un bouton ne passe pas à la ligne");
+        assert_eq!(
+            dialog("Supprimer feature/achedotal/64522-correctif-veille ?"),
+            "Supprimer feature/achedotal/64522-correctif-veille\u{202f}?",
+            "trop long pour une ligne : il se coupe à ses traits d'union"
+        );
     }
 
     #[test]
@@ -762,7 +801,7 @@ mod tests {
     #[test]
     fn actions_keep_what_the_phone_needs() {
         let a = act(&Act::new("tout", "Tout arrêter").danger().confirm("Sûr ?").input("Pourquoi", "…"));
-        assert_eq!((a.style, a.confirm.as_str(), a.has_input), (2, "Sûr ?", true));
+        assert_eq!((a.style, a.confirm.as_str(), a.has_input), (2, "Sûr\u{202f}?", true));
         assert_eq!(act(&Act::link("Ouvrir", "https://x.org")).url, "https://x.org");
         assert_eq!(ago(100, 100), "à l'instant");
         assert_eq!(ago(0, 7300), "2 h");

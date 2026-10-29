@@ -519,8 +519,9 @@ export component AppWindow inherits Window {
                     if root.tab == "commandes": CommandsPage {
                         commands: root.commands;
                         filter <=> root.command-filter;
+                        // Espaces fines insécables (\u{202f}) : comme `view::tied`.
                         run(c) => {
-                            root.pending = { id: c.id, label: c.title, confirm: "Exécuter « " + c.title + " » sur le PC ?" };
+                            root.pending = { id: c.id, label: c.title, confirm: "Exécuter «\u{202f}" + c.title + "\u{202f}» sur le PC\u{202f}?" };
                             root.confirm-visible = true;
                             root.selected-command = c;
                         }
@@ -673,8 +674,9 @@ export component AppWindow inherits Window {
             root.run-act(root.pending, "");
         }
     }
+    // Les questions du téléphone : espace fine insécable (\u{202f}) avant « ? » et dans « », comme `view::tied`.
     if root.forget-visible: ConfirmDialog {
-        text: "Oublier « " + root.pc-name + " » ? Il faudra l'appairer de nouveau pour le piloter.";
+        text: "Oublier «\u{202f}" + root.pc-name + "\u{202f}»\u{202f}? Il faudra l'appairer de nouveau pour le piloter.";
         ok-text: "Oublier";
         danger: true;
         answered(yes) => {
@@ -685,7 +687,7 @@ export component AppWindow inherits Window {
         }
     }
     if root.start-visible: ConfirmDialog {
-        text: "Démarrer Eyrie sur « " + root.pc-name + " » ?\n\nElle s'ouvrira réduite sur le PC ; ce téléphone s'y connecte dès qu'elle est prête.";
+        text: "Démarrer Eyrie sur «\u{202f}" + root.pc-name + "\u{202f}»\u{202f}?\n\nElle s'ouvrira réduite sur le PC\u{202f}; ce téléphone s'y connecte dès qu'elle est prête.";
         ok-text: "Démarrer";
         answered(yes) => {
             root.start-visible = false;
@@ -707,7 +709,7 @@ export component AppWindow inherits Window {
         }
     }
     if root.logout-visible: ConfirmDialog {
-        text: "Déconnecter ce téléphone de Tailscale ? Il ne joindra plus le PC avant de se reconnecter à votre compte.";
+        text: "Déconnecter ce téléphone de Tailscale\u{202f}? Il ne joindra plus le PC avant de se reconnecter à votre compte.";
         ok-text: "Déconnecter";
         danger: true;
         answered(yes) => {
