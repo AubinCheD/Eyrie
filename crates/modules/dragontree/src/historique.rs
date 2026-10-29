@@ -132,7 +132,7 @@ pub fn chips(labels: Option<&Vec<RefLabel>>) -> Vec<Chip> {
                 let c = Chip::new(&l.name).glyph("🌿").tone(Tone::Ok);
                 if l.is_head { c.strong() } else { c }
             }
-            RefKind::Remote => Chip::new(&l.name).glyph("☁️").tone(Tone::Info),
+            RefKind::Remote => Chip::new(&l.name).glyph("🌐").tone(Tone::Info),
             RefKind::Tag => Chip::new(&l.name).glyph("🏷️"),
         })
         .collect();
@@ -353,8 +353,10 @@ mod tests {
         let folded = HashMap::from([(oid(2), 7)]);
         let r = rows(&page, &c, Some(&refs), &Marks { folded: Some(&folded), ..Default::default() });
         assert_eq!(r[0].cell.kind, NODE_HEAD);
-        let chips: Vec<(&str, bool)> = r[0].chips.iter().map(|c| (c.text.as_str(), c.strong)).collect();
-        assert_eq!(chips, [("main", true), ("origin/main", false), ("v1", false)]);
+        let chips: Vec<(&str, &str, bool)> =
+            r[0].chips.iter().map(|c| (c.text.as_str(), c.glyph.as_str(), c.strong)).collect();
+        // Une distante : 🌐, lisible dans les deux thèmes (☁️, blanc, disparaissait sur le fond clair).
+        assert_eq!(chips, [("main", "🌿", true), ("origin/main", "🌐", false), ("v1", "🏷️", false)]);
         let row = commit_row("depot/k", &r[1], 0);
         assert_eq!((row.badge.as_str(), row.key.as_str()), ("+7", oid(2).to_hex().as_str()));
         assert_eq!(row.open.as_deref(), Some(format!("depot/k/commit/{}", oid(2).to_hex()).as_str()));

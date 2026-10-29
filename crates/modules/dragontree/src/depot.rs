@@ -868,12 +868,12 @@ pub fn more(base: &str, v: &RepoView, now: i64, busy: bool) -> Screen {
             s.row(worktree_row(w, busy));
         }
     }
-    s.band(Band::new("remotes", "Remotes").glyph("☁️").aside(v.remotes.len().to_string()));
+    s.band(Band::new("remotes", "Remotes").glyph("🌐").aside(v.remotes.len().to_string()));
     if v.remotes.is_empty() {
         s.empty("Aucun remote : ce dépôt n'est publié nulle part.");
     }
     for r in v.remotes.iter() {
-        let mut row = Row::new(&r.name).subtitle(safe_url(&r.fetch_url)).glyph("☁️").key(format!("r:{}", r.name));
+        let mut row = Row::new(&r.name).subtitle(safe_url(&r.fetch_url)).glyph("🌐").key(format!("r:{}", r.name));
         if !r.push_url.is_empty() && r.push_url != r.fetch_url {
             row = row.detail("push à part").subtitle(format!(
                 "{} · push : {}",

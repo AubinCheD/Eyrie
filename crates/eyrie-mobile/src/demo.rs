@@ -257,7 +257,7 @@ fn depot_history() -> Screen {
     let mut s = depot("Eyrie").search("Chercher un commit");
     s.buttons(vec![Act::new("toutes", "Toutes les branches")]);
     // Les étiquettes de DragonTree (`historique::chips`) : glyphe, ton, la branche courante mise en avant.
-    let remote = |name: &str| Chip::new(name).glyph("☁️").tone(Tone::Info);
+    let remote = |name: &str| Chip::new(name).glyph("🌐").tone(Tone::Info);
     s.row(
         commit("Téléphone : bandeaux pliants", "75b78ee", 1, 0, NODE_HEAD, vec![(B, 0, 0, 0)])
             .chip(Chip::new("mobile-ergonomie").glyph("🌿").tone(Tone::Ok).strong())
@@ -446,13 +446,13 @@ fn depot_branches() -> Screen {
     s.row(branch("feature/qr-code", "0a1b2c", "non publiée · il y a 5 h"));
     s.row(branch("correctif-veille", "3d4e5f", "origin/correctif-veille · ↑1 ↓3 · il y a 1 j").tone(Tone::Warn));
     s.row(branch("essai-slint-1.18", "6a7b8c", "non publiée · il y a 6 j"));
-    s.band(Band::new("g:9e8d7c", "origin").glyph("☁️").aside("7").open(false));
+    s.band(Band::new("g:9e8d7c", "origin").glyph("🌐").aside("7").open(false));
     let remote = |name: &str, key: &str, sub: &str| {
-        Row::new(name).key(key).glyph("☁️").subtitle(sub).open(format!("depot/eyrie/branche/{key}"))
+        Row::new(name).key(key).glyph("🌐").subtitle(sub).open(format!("depot/eyrie/branche/{key}"))
     };
     s.row(remote("origin/mobile-ergonomie", "e1e2e3", "suivie par mobile-ergonomie · il y a 3 h"));
     s.row(remote("origin/main", "f1f2f3", "suivie par main · il y a 2 j"));
-    s.band(Band::new("g:4f5e6d", "upstream").glyph("☁️").aside("2").open(false));
+    s.band(Band::new("g:4f5e6d", "upstream").glyph("🌐").aside("2").open(false));
     s.row(remote("upstream/main", "a9b8c7", "il y a 4 j"));
     s
 }

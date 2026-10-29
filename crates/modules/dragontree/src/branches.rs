@@ -350,7 +350,7 @@ fn branch_row(
             }
         }
         Branch::Remote(r) => {
-            row = row.glyph("☁️");
+            row = row.glyph("🌐");
             let by = tracked_by(refs, r);
             if !by.is_empty() {
                 sub.push(format!("suivie par {}", by.join(", ")));
@@ -413,7 +413,7 @@ pub fn list(base: &str, v: &RepoView, now: i64, busy: bool) -> Screen {
         let cap = if g.remote { BAND_REMOTES.min(budget) } else { BAND_LOCALS };
         // Les locales les plus récentes ouvertes ; les distantes pliées.
         let open = !g.remote && std::mem::take(&mut first_local);
-        let glyph = if g.remote { "☁️" } else { "🌿" };
+        let glyph = if g.remote { "🌐" } else { "🌿" };
         s.band(Band::new(format!("g:{hash}"), &g.title).glyph(glyph).aside(n.to_string()).open(open));
         for b in g.branches.iter().take(cap) {
             s.row(branch_row(base, *b, refs, &v.tips, remote, now, busy));
@@ -678,6 +678,17 @@ mod tests {
             bands(&s),
             [("Courante", Fold::Open, ""), ("Locales", Fold::Open, "2"), ("origin", Fold::Closed, "1")]
         );
+        // Une distante : 🌐, lisible dans les deux thèmes (☁️, blanc, disparaissait sur le fond clair).
+        let glyphs: Vec<&str> = s
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::Section { glyph, .. } => Some(glyph.as_str()),
+                Block::Row(r) => Some(r.glyph.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(glyphs, ["📍", "🌿", "🌿", "🌿", "🌿", "🌐", "🌐"]);
         for r in rows(&s) {
             assert!(r.tap.is_none() && r.open.as_deref().is_some_and(|o| o.starts_with("depot/k/branche/")), "{r:?}");
         }
