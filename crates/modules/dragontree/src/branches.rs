@@ -336,7 +336,6 @@ fn branch_row(
         Branch::Local(l) => {
             let head = current == Some(l.name.as_str());
             sub.push(tracking(l));
-            row = row.glyph("🌿");
             if head {
                 row = row.badge("courante").tone(Tone::Ok);
             } else if l.ahead > 0 && l.behind > 0 {
@@ -350,7 +349,6 @@ fn branch_row(
             }
         }
         Branch::Remote(r) => {
-            row = row.glyph("🌐");
             let by = tracked_by(refs, r);
             if !by.is_empty() {
                 sub.push(format!("suivie par {}", by.join(", ")));
@@ -392,13 +390,15 @@ pub fn list(base: &str, v: &RepoView, now: i64, busy: bool) -> Screen {
             s.row(
                 Row::new("HEAD détachée")
                     .detail(oid.short())
-                    .glyph("📍")
                     .key("detachee")
                     .open(format!("{base}/commit/{}", oid.to_hex())),
             );
         }
         (_, Some(l)) => {
-            s.row(branch_row(base, Branch::Local(l), refs, &v.tips, remote, now, busy));
+            // Le bandeau « Courante » le dit déjà : pas de pastille.
+            let mut row = branch_row(base, Branch::Local(l), refs, &v.tips, remote, now, busy);
+            row.badge.clear();
+            s.row(row);
         }
         (_, None) => {
             s.empty("Branche sans commit encore.");
@@ -420,7 +420,7 @@ pub fn list(base: &str, v: &RepoView, now: i64, busy: bool) -> Screen {
         }
         if n > cap {
             let more = if cap == 0 { format!("Voir les {n} branches") } else { format!("{} autres…", n - cap) };
-            s.row(Row::new(more).glyph("📋").key(format!("autres:{hash}")).open(format!("{base}/branches/g/{hash}")));
+            s.row(Row::new(more).key(format!("autres:{hash}")).open(format!("{base}/branches/g/{hash}")));
         }
         if g.remote {
             budget = budget.saturating_sub(cap.min(n));
@@ -678,7 +678,7 @@ mod tests {
             bands(&s),
             [("Courante", Fold::Open, ""), ("Locales", Fold::Open, "2"), ("origin", Fold::Closed, "1")]
         );
-        // Une distante : 🌐, lisible dans les deux thèmes (☁️, blanc, disparaissait sur le fond clair).
+        // Le bandeau dit locale ou distante (🌐, lisible dans les deux thèmes) ; les lignes n'ont plus de glyphe.
         let glyphs: Vec<&str> = s
             .blocks
             .iter()
@@ -688,7 +688,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(glyphs, ["📍", "🌿", "🌿", "🌿", "🌿", "🌐", "🌐"]);
+        assert_eq!(glyphs, ["📍", "", "🌿", "", "", "🌐", ""]);
         for r in rows(&s) {
             assert!(r.tap.is_none() && r.open.as_deref().is_some_and(|o| o.starts_with("depot/k/branche/")), "{r:?}");
         }

@@ -2718,10 +2718,12 @@ mod tests {
         assert!(b.action_ids().contains("basculer:main"), "{b:?}");
         if let Some(out) = std::env::var_os("SUITE_MOBILE_DUMP") {
             std::fs::write(repo.join("lisez-moi.txt"), "un\ndeux\ntrois\n").unwrap();
-            std::fs::write(repo.join("nouveau.rs"), "fn main() {}\n").unwrap();
+            std::fs::create_dir_all(repo.join("src/ecrans")).unwrap();
+            std::fs::write(repo.join("src/ecrans/nouveau.rs"), "fn main() {}\n").unwrap();
             phone.action(h.state_mut(), &base, "actualiser", None).unwrap();
             let out = Path::new(&out);
             for (name, path, wait) in [
+                ("liste", String::new(), "depot"),
                 ("depot", base.clone(), "Non indexé"),
                 ("modifs", format!("{base}/modifs"), "Non indexé"),
                 ("diff", format!("{base}/fichier/{f}"), "+trois"),

@@ -258,10 +258,12 @@ pub fn state_text(s: &RepoState) -> String {
     parts.join(" · ")
 }
 
+/// Le ton d'un dépôt : une erreur, ou une branche qui a divergé de la distante (un pull ne suffira pas) ; le reste
+/// (en retard, des modifications) se lit au sous-titre, sans liseré.
 fn state_tone(s: &RepoState) -> Tone {
     if s.error.is_some() {
         Tone::Danger
-    } else if s.behind > 0 || s.changes > 0 {
+    } else if s.behind > 0 && s.ahead > 0 {
         Tone::Warn
     } else {
         Tone::Ok
@@ -270,7 +272,7 @@ fn state_tone(s: &RepoState) -> Tone {
 
 fn net_acts(key: &str) -> Vec<Act> {
     vec![
-        Act::new(format!("fetch:{key}"), "Fetch").glyph("⬇️"),
+        Act::new(format!("fetch:{key}"), "Fetch").glyph("📥"),
         Act::new(format!("pull:{key}"), "Pull").glyph("↓"),
         Act::new(format!("push:{key}"), "Push")
             .glyph("↑")
@@ -278,11 +280,12 @@ fn net_acts(key: &str) -> Vec<Act> {
     ]
 }
 
-fn kind_glyph(kind: RepoKind) -> &'static str {
+/// Ce qu'est un dépôt quand il n'est pas un dépôt ordinaire, en tête de son sous-titre.
+fn kind_text(kind: RepoKind) -> Option<&'static str> {
     match kind {
-        RepoKind::Normal => "🌿",
-        RepoKind::Worktree => "🌳",
-        RepoKind::Submodule => "📦",
+        RepoKind::Normal => None,
+        RepoKind::Worktree => Some("worktree"),
+        RepoKind::Submodule => Some("sous-module"),
     }
 }
 
@@ -300,16 +303,18 @@ fn band_of(group: &Group, count: usize) -> Band {
 
 fn row_of(e: &Entry) -> Row {
     let key = repo_key(&e.repo.path);
-    let mut row = Row::new(&e.repo.title).key(&key).glyph(kind_glyph(e.repo.kind)).open(format!("depot/{key}"));
+    // Ni glyphe ni pastille de couleur à gauche : le nom du dépôt commence la ligne.
+    let mut row = Row::new(&e.repo.title).key(&key).open(format!("depot/{key}"));
+    let kind = |text: String| match kind_text(e.repo.kind) {
+        Some(k) => format!("{k} · {text}"),
+        None => text,
+    };
     row = match &e.state {
-        Some(st) => row.subtitle(state_text(st)).tone(state_tone(st)),
+        Some(st) => row.subtitle(kind(state_text(st))).tone(state_tone(st)),
         // Toujours pas lu, sans erreur (une lecture ratée a la sienne, dans `state`) : une lecture longue.
         None if e.slow => row.subtitle("lecture longue… (voir DragonTree sur le PC)").tone(Tone::Warn),
         None => row.subtitle("lecture…"),
     };
-    if let Some(c) = e.color {
-        row = row.color(c);
-    }
     match &e.job {
         Some(j) if j.running() => row = row.badge("en cours").progress(j.percent),
         _ if e.repo.active => row = row.badge("affiché"),

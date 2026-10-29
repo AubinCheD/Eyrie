@@ -402,19 +402,26 @@ fn commit_buttons(s: &mut Screen, st: &StatusSnapshot) {
 
 /// Fetch, pull et push selon le suivi ; le push forcé n'est jamais un bouton (menu de l'écran, avec confirmation).
 fn net_buttons(st: &StatusSnapshot) -> Vec<Act> {
-    let mut acts = vec![Act::new("fetch", "Fetch").glyph("⬇️")];
+    let mut acts = vec![Act::new("fetch", "Fetch").glyph("📥")];
     let diverged = st.ahead > 0 && st.behind > 0;
     if st.upstream.is_some() && diverged {
         acts.push(
             Act::new("pull-fusion", "Pull (fusion)")
+                .glyph("🔀")
                 .confirm("Fusionner la branche distante dans la vôtre (un commit de fusion) ?"),
         );
-        acts.push(Act::new("pull-rebase", "Pull (rebase)").confirm("Rejouer vos commits sur la branche distante ?"));
+        acts.push(
+            Act::new("pull-rebase", "Pull (rebase)")
+                .glyph("↓")
+                .confirm("Rejouer vos commits sur la branche distante ?"),
+        );
     } else if st.upstream.is_some() {
-        acts.push(Act::new("pull", "Pull"));
-        acts.push(Act::new("push", "Push").primary().confirm("Pousser la branche vers sa branche distante ?"));
+        acts.push(Act::new("pull", "Pull").glyph("↓"));
+        let push = Act::new("push", "Push").glyph("↑").confirm("Pousser la branche vers sa branche distante ?");
+        // Le bouton principal : ce qui attend d'être poussé.
+        acts.push(if st.ahead > 0 { push.primary() } else { push });
     } else if let Some(b) = &st.branch {
-        acts.push(Act::new(format!("publier:{b}"), "Publier la branche").primary());
+        acts.push(Act::new(format!("publier:{b}"), "Publier la branche").glyph("📤").primary());
     }
     acts
 }
@@ -449,19 +456,19 @@ pub fn overview(base: &str, name: &str, path: &str, v: &RepoView, busy: bool) ->
         }
     }
     op_block(&mut s, base, v);
-    match &st.branch {
-        Some(b) => s.row(
-            Row::new("Branche")
-                .detail(b)
-                .glyph("🌿")
-                .key("branche")
-                .open(format!("{base}/branche/{}", branch_key(&format!("refs/heads/{b}")))),
-        ),
-        None => s.row(Row::new("Branche").detail("HEAD détachée").glyph("📍").key("branche")),
+    // La branche et son suivi, en une ligne : son nom en titre, la distante dessous, l'avance et le retard à droite.
+    let tracking = match &st.upstream {
+        Some(u) => format!("suit {u}"),
+        None if st.branch.is_some() => "non publiée".into(),
+        None => String::new(),
     };
-    let upstream = st.upstream.clone().unwrap_or_else(|| "aucune".into());
-    let tone = if st.ahead > 0 && st.behind > 0 { Tone::Warn } else { Tone::Ok };
-    s.row(Row::new("Suivi").subtitle(upstream).detail(sync(st.ahead, st.behind)).glyph("🔁").tone(tone));
+    let row = match &st.branch {
+        Some(b) => Row::new(b).open(format!("{base}/branche/{}", branch_key(&format!("refs/heads/{b}")))),
+        None => Row::new("HEAD détachée"),
+    };
+    let row = row.key("branche").full().subtitle(tracking);
+    let row = if st.upstream.is_some() { row.detail(sync(st.ahead, st.behind)) } else { row };
+    s.row(if st.ahead > 0 && st.behind > 0 { row.tone(Tone::Warn) } else { row });
     if !busy {
         s.buttons(net_buttons(st));
     }
@@ -492,7 +499,6 @@ pub fn overview(base: &str, name: &str, path: &str, v: &RepoView, busy: bool) ->
     if st.entries.len() > CHANGES_INLINE {
         s.row(
             Row::new(format!("Tout voir ({} fichiers)", st.entries.len()))
-                .glyph("📋")
                 .key("tout-voir")
                 .open(format!("{base}/modifs")),
         );
@@ -528,10 +534,16 @@ fn conflict_acts(v: &RepoView, e: &StatusEntry) -> Vec<Act> {
 
 fn file_row(base: &str, v: &RepoView, e: &StatusEntry, staged: bool) -> Row {
     let key = file_key(&e.path);
+    // Le nom du fichier en titre, son dossier dessous : le chemin entier écrasait le nom.
+    let (dir, name) = match e.path.rsplit_once('/') {
+        Some((dir, name)) => (dir, name),
+        None => ("", e.path.as_str()),
+    };
     // Un fichier en partie indexé est dans les deux listes : sa ligne a une clé par liste.
-    let mut row = Row::new(&e.path)
+    let mut row = Row::new(name)
         .key(format!("{}:{key}", if staged { "i" } else { "w" }))
         .glyph(letter(e, staged).to_string())
+        .subtitle(dir)
         .open(format!("{base}/fichier/{key}"));
     if let Some(old) = &e.orig_path {
         row = row.subtitle(format!("renommé depuis {old}"));
@@ -873,7 +885,7 @@ pub fn more(base: &str, v: &RepoView, now: i64, busy: bool) -> Screen {
         s.empty("Aucun remote : ce dépôt n'est publié nulle part.");
     }
     for r in v.remotes.iter() {
-        let mut row = Row::new(&r.name).subtitle(safe_url(&r.fetch_url)).glyph("🌐").key(format!("r:{}", r.name));
+        let mut row = Row::new(&r.name).subtitle(safe_url(&r.fetch_url)).key(format!("r:{}", r.name));
         if !r.push_url.is_empty() && r.push_url != r.fetch_url {
             row = row.detail("push à part").subtitle(format!(
                 "{} · push : {}",
