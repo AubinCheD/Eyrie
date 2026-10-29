@@ -1,17 +1,21 @@
-//! Android : dossier privé de l'application, nom de l'appareil, liens et vibration (par JNI), et le lecteur de QR
-//! code (caméra du NDK, `camera2ndk` et `mediandk`, décodage par `rqrr`).
+//! Android : dossier privé de l'application, nom de l'appareil, liens et vibration (par JNI), le lecteur de QR
+//! code (caméra du NDK, `camera2ndk` et `mediandk`, décodage par `rqrr`), et la dictée (la reconnaissance vocale
+//! d'Android, par notre classe Java `Dictee`).
 
 use std::ffi::{CStr, c_void};
+use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::ptr::null_mut;
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use jni::JavaVM;
-use jni::objects::{JObject, JValue};
+use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
+use jni::sys::{jfloat, jint};
+use jni::{JNIEnv, JavaVM, NativeMethod};
 use slint::android::AndroidApp;
 
+use crate::dictee::{self, Asking, Heard, Recognizer};
 use crate::platform::{Frame, Notice};
 
 static APP: OnceLock<AndroidApp> = OnceLock::new();
@@ -274,26 +278,35 @@ pub fn notify(notice: &Notice) {
 
 const CAMERA: &str = "android.permission.CAMERA";
 
-fn camera_granted() -> bool {
+fn granted(permission: &str) -> bool {
     with_java(|env, activity| {
-        let p = env.new_string(CAMERA)?;
+        let p = env.new_string(permission)?;
         Ok(env.call_method(activity, "checkSelfPermission", "(Ljava/lang/String;)I", &[JValue::Object(&p)])?.i()? == 0)
     })
     .unwrap_or(false)
 }
 
-fn ask_camera() {
+/// La question d'Android ; sa réponse ne revient pas (NativeActivity) : `granted` la relit.
+fn ask(permission: &str, code: i32) {
     with_java(|env, activity| {
-        let p = env.new_string(CAMERA)?;
+        let p = env.new_string(permission)?;
         let list = env.new_object_array(1, "java/lang/String", &p)?;
         env.call_method(
             activity,
             "requestPermissions",
             "([Ljava/lang/String;I)V",
-            &[JValue::Object(&list), JValue::Int(7)],
+            &[JValue::Object(&list), JValue::Int(code)],
         )?;
         Ok(())
     });
+}
+
+fn camera_granted() -> bool {
+    granted(CAMERA)
+}
+
+fn ask_camera() {
+    ask(CAMERA, 7);
 }
 
 static SCANNING: AtomicBool = AtomicBool::new(false);
@@ -326,6 +339,180 @@ pub fn start_scan(on_frame: Box<dyn Fn(Frame) + Send>, on_code: Box<dyn Fn(Strin
         }
         SCANNING.store(false, Ordering::Relaxed);
     });
+}
+
+// --- La dictée (android/java/io/github/aubinched/eyrie/Dictee.java) ---
+
+const DICTEE: &str = "io.github.aubinched.eyrie.Dictee";
+const RECORD_AUDIO: &str = "android.permission.RECORD_AUDIO";
+
+/// La classe `Dictee`, chargée par le chargeur de classes de l'activité (`FindClass`, depuis un fil natif, ne voit que
+/// les classes du système), ses fonctions natives enregistrées ; `None` : pas de dictée (APK sans `classes.dex`…).
+static DICTEE_CLASS: OnceLock<Option<GlobalRef>> = OnceLock::new();
+
+/// Où va ce qu'entend la dictée, avec le numéro de l'écoute (le contrôleur, par `start_dictation`).
+type HeardSink = Box<dyn Fn(u32, Heard) + Send>;
+static HEARD: Mutex<Option<HeardSink>> = Mutex::new(None);
+
+/// L'écoute demandée (son numéro ; 0 : aucune) : abandonnée pendant la question du micro, elle ne démarre pas.
+static DICTATING: AtomicU32 = AtomicU32::new(0);
+
+fn dictee_class() -> Option<&'static GlobalRef> {
+    DICTEE_CLASS
+        .get_or_init(|| {
+            with_java(|env, activity| {
+                let loader = env.call_method(activity, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])?.l()?;
+                let name = env.new_string(DICTEE)?;
+                let class = env
+                    .call_method(
+                        &loader,
+                        "loadClass",
+                        "(Ljava/lang/String;)Ljava/lang/Class;",
+                        &[JValue::Object(&name)],
+                    )?
+                    .l()?;
+                let class = JClass::from(class);
+                let natives = [
+                    ("prete", "(I)V", prete as *mut c_void),
+                    ("partiel", "(ILjava/lang/String;)V", partiel as *mut c_void),
+                    ("resultat", "(ILjava/lang/String;)V", resultat as *mut c_void),
+                    ("erreur", "(II)V", erreur as *mut c_void),
+                    ("niveau", "(IF)V", niveau as *mut c_void),
+                ];
+                let natives = natives
+                    .map(|(name, sig, fn_ptr)| NativeMethod { name: name.into(), sig: sig.into(), fn_ptr });
+                env.register_native_methods(&class, &natives)?;
+                env.new_global_ref(class)
+            })
+        })
+        .as_ref()
+}
+
+/// La reconnaissance vocale du téléphone : la sienne (sans Internet), son service par défaut, ou aucune.
+pub fn recognizer() -> Recognizer {
+    let Some(class) = dictee_class() else { return Recognizer::Missing };
+    with_java(|env, activity| {
+        const CTX: &str = "(Landroid/content/Context;)";
+        let kind = env.call_static_method(class, "disponible", format!("{CTX}I"), &[JValue::Object(activity)])?.i()?;
+        Ok(match kind {
+            1 => Recognizer::OnDevice,
+            2 => {
+                let name = env
+                    .call_static_method(class, "service", format!("{CTX}Ljava/lang/String;"), &[JValue::Object(activity)])?
+                    .l()?;
+                let name = if name.is_null() { String::new() } else { env.get_string(&JString::from(name))?.into() };
+                Recognizer::Service(name)
+            }
+            _ => Recognizer::Missing,
+        })
+    })
+    .unwrap_or(Recognizer::Missing)
+}
+
+/// Rend ce qu'entend la dictée à qui l'a demandée.
+fn deliver(seq: u32, heard: Heard) {
+    if let Ok(sink) = HEARD.lock()
+        && let Some(f) = sink.as_ref()
+    {
+        f(seq, heard);
+    }
+}
+
+/// Une fonction native, appelée par Java dans le fil principal d'Android : une panique s'arrête ici (au travers de
+/// Java, elle arrêterait l'application) ; une exception Java en cours est effacée avant de lui rendre la main.
+fn native(env: &mut JNIEnv, f: impl FnOnce(&mut JNIEnv)) {
+    let _ = std::panic::catch_unwind(AssertUnwindSafe(|| f(env)));
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
+    }
+}
+
+fn text_of(env: &mut JNIEnv, text: &JString) -> String {
+    if text.is_null() {
+        return String::new();
+    }
+    env.get_string(text).map(String::from).unwrap_or_default()
+}
+
+extern "system" fn prete<'l>(mut env: JNIEnv<'l>, _: JClass<'l>, seq: jint) {
+    native(&mut env, |_| deliver(seq as u32, Heard::Ready));
+}
+
+extern "system" fn partiel<'l>(mut env: JNIEnv<'l>, _: JClass<'l>, seq: jint, text: JString<'l>) {
+    native(&mut env, |env| deliver(seq as u32, Heard::Partial(text_of(env, &text))));
+}
+
+extern "system" fn resultat<'l>(mut env: JNIEnv<'l>, _: JClass<'l>, seq: jint, text: JString<'l>) {
+    native(&mut env, |env| deliver(seq as u32, Heard::Final(text_of(env, &text))));
+}
+
+extern "system" fn erreur<'l>(mut env: JNIEnv<'l>, _: JClass<'l>, seq: jint, code: jint) {
+    native(&mut env, |_| deliver(seq as u32, Heard::Error(code)));
+}
+
+extern "system" fn niveau<'l>(mut env: JNIEnv<'l>, _: JClass<'l>, seq: jint, db: jfloat) {
+    native(&mut env, |_| deliver(seq as u32, Heard::Level(dictee::level(db))));
+}
+
+/// Écoute (`on_device` : la reconnaissance du téléphone lui-même), après la permission du micro, demandée la première
+/// fois ; ce qu'elle entend part à `heard`, avec son numéro `seq`. Une écoute d'avant est annulée.
+pub fn start_dictation(seq: u32, on_device: bool, heard: HeardSink) {
+    if let Ok(mut sink) = HEARD.lock() {
+        *sink = Some(heard);
+    }
+    DICTATING.store(seq, Ordering::Relaxed);
+    let _ = std::thread::Builder::new().name("eyrie-dictee".into()).spawn(move || {
+        let still = || DICTATING.load(Ordering::Relaxed) == seq;
+        if !granted(RECORD_AUDIO) {
+            ask(RECORD_AUDIO, 9);
+            let asked = Instant::now();
+            let mut asking = Asking::default();
+            loop {
+                if !still() {
+                    return;
+                }
+                match asking.answer(granted(RECORD_AUDIO), !in_background(), asked.elapsed()) {
+                    Some(true) => break,
+                    Some(false) => return deliver(seq, Heard::Error(dictee::NO_PERMISSION)),
+                    None => std::thread::sleep(Duration::from_millis(150)),
+                }
+            }
+        }
+        if !still() {
+            return;
+        }
+        let started = dictee_class().and_then(|class| {
+            with_java(|env, activity| {
+                env.call_static_method(
+                    class,
+                    "ecouter",
+                    "(Landroid/content/Context;IZ)V",
+                    &[JValue::Object(activity), JValue::Int(seq as i32), JValue::Bool(on_device.into())],
+                )?;
+                Ok(())
+            })
+        });
+        if started.is_none() {
+            deliver(seq, Heard::Error(dictee::NOT_STARTED));
+        }
+    });
+}
+
+fn dictee_call(method: &str) {
+    if let Some(class) = dictee_class() {
+        with_java(|env, _| env.call_static_method(class, method, "()V", &[]).map(|_| ()));
+    }
+}
+
+/// Finit l'écoute : le texte final arrive.
+pub fn stop_dictation() {
+    dictee_call("arreter");
+}
+
+/// Abandonne l'écoute (ou sa demande du micro) : plus rien n'arrive d'elle.
+pub fn cancel_dictation() {
+    DICTATING.store(0, Ordering::Relaxed);
+    dictee_call("annuler");
 }
 
 mod camera {
@@ -467,7 +654,7 @@ mod camera {
                 on_frame(preview(luma, w, h, stride, orientation));
                 // Le décodage, une image sur deux : il coûte plus que l'aperçu.
                 frames += 1;
-                if frames % 2 == 0
+                if frames.is_multiple_of(2)
                     && let Some(text) = decode(luma, w, h, stride)
                 {
                     on_code(text);

@@ -1,5 +1,5 @@
-//! Ce qui dépend du système : dossier de données, nom de l'appareil, liens, vibration, caméra. Le bureau sert au
-//! développement (fenêtre de la taille d'un téléphone) ; Android est dans `android.rs`.
+//! Ce qui dépend du système : dossier de données, nom de l'appareil, liens, vibration, caméra, dictée. Le bureau sert
+//! au développement (fenêtre de la taille d'un téléphone) ; Android est dans `android.rs`.
 
 /// Une image de la caméra, prête pour l'interface.
 pub type Frame = slint::SharedPixelBuffer<slint::Rgba8Pixel>;
@@ -37,8 +37,8 @@ impl Notice {
 
 #[cfg(target_os = "android")]
 pub use crate::android::{
-    ask_notifications, can_scan, data_dir, device_model, device_name, haptic, in_background, notify, open_url,
-    start_scan, stop_scan,
+    ask_notifications, can_scan, cancel_dictation, data_dir, device_model, device_name, haptic, in_background, notify,
+    open_url, recognizer, start_dictation, start_scan, stop_dictation, stop_scan,
 };
 
 #[cfg(not(target_os = "android"))]
@@ -46,6 +46,7 @@ mod desktop {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::dictee::{Heard, Recognizer};
 
     /// `EYRIE_MOBILE_DATA`, sinon `%LOCALAPPDATA%\EyrieMobile`.
     pub fn data_dir() -> PathBuf {
@@ -91,6 +92,17 @@ mod desktop {
     pub fn notify(_notice: &Notice) {}
 
     pub fn ask_notifications() {}
+
+    /// Pas de dictée sur le bureau (la démonstration en montre une, sans micro).
+    pub fn recognizer() -> Recognizer {
+        Recognizer::Absent
+    }
+
+    pub fn start_dictation(_seq: u32, _on_device: bool, _heard: Box<dyn Fn(u32, Heard) + Send>) {}
+
+    pub fn stop_dictation() {}
+
+    pub fn cancel_dictation() {}
 }
 
 #[cfg(not(target_os = "android"))]

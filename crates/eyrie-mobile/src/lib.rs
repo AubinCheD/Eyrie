@@ -6,6 +6,7 @@
 //! - [`tailnet`] : le nœud Tailscale de l'application, par où passent les connexions (Android) ;
 //! - [`termbuf`], [`view`] : ce que le PC envoie, prêt à dessiner ;
 //! - [`termkeys`] : ce que le téléphone envoie au terminal (touches, Ctrl et Alt collés, saisie, collage) ;
+//! - [`dictee`] : la dictée (reconnaissance vocale du téléphone), ajoutée à la saisie du terminal ou d'une action ;
 //! - [`picker`] : le sélecteur de dossiers du PC (une action qui demande un dossier) ;
 //! - [`store`] : identité, PC appairés, préférences ;
 //! - [`platform`] : ce qui dépend du système (Android, ou le bureau pour le développement) ;
@@ -17,6 +18,7 @@ slint::include_modules!();
 mod android;
 pub mod app;
 mod demo;
+pub mod dictee;
 pub mod net;
 pub mod picker;
 pub mod platform;
