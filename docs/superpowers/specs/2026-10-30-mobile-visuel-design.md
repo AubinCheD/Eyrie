@@ -80,3 +80,16 @@ miens, marqués **(choix)**.
 - Envoi d'un fichier du téléphone : seulement avec le droit « Terminaux », 20 Mo au plus, rangé par le PC dans
   `%LOCALAPPDATA%\EyrieSuite\Eyrie\Televerses\<date>\` sous un nom nettoyé (jamais dans un dossier de projet),
   journalisé ; rien n'est envoyé au terminal sans que l'utilisateur touche « Envoyer ».
+
+## 7. Ajouts en cours de route
+
+- **Fichier du PC…** (dans le menu + aussi, et au menu ⋮ du terminal) : une saisie `FOLDER_FILE` ouverte dans le
+  dossier du terminal ; le pont liste alors les fichiers après les dossiers (droits « Agir », « Dossiers du PC » et
+  « Terminaux ») ; un toucher choisit ; le chemin, relatif au dossier du terminal, va au curseur. L'action
+  (`INSERT_FILE`, « @fichier-pc ») ne part jamais au PC **(choix : chemin relatif, plus court, valable pour le shell
+  comme pour Claude ; pas de « @ » ajouté devant)**.
+- Glyphes ramenés à une icône en plus : ● (un commit) → `commit`, ◐ (au travail) → `sync`, ▸ → chevron ; « Tout
+  replier » et « Tout déplier » ont les leurs. Les textes qui portaient un émoji le disent en mots (« 1 Claude · 3 »
+  dans Fawkes, « remise 14:20 » sur la carte de Gringotts).
+- Pas fait **(choix)** : poignée de curseur à faire glisser (Slint ne donne pas la position d'un caractère sous le
+  doigt ; la loupe en tient lieu) ; logos PNG des modules (remplacés par les icônes, gardés pour un module inconnu).
