@@ -75,7 +75,8 @@ pub fn icon_for(glyph: &str) -> &'static str {
         "➕" | "+" => "add",
         "➖" => "remove",
         "⏹" => "stop",
-        "▶" | "▸" => "play",
+        "▶" => "play",
+        "▸" => "chevron",
         "⏸" => "pause",
         "✏" => "edit",
         "📝" => "edit-note",
@@ -217,6 +218,8 @@ pub fn module_icon(id: &str) -> &'static str {
 /// tout un groupe (« Tout marquer lu »), sinon valide ; ● la marque non lue ; 🌐 et un lien s'ouvrent ailleurs.
 pub fn material_icon(a: &Act) -> &'static str {
     match a.glyph.trim_end_matches('\u{fe0f}') {
+        _ if a.id == "@replier" => "unfold-less",
+        _ if a.id == "@deplier" => "unfold-more",
         "✅" if a.id.starts_with("tout") => "done-all",
         "✅" if a.id == "lu" || a.id.starts_with("lu:") => "mark-read",
         "●" => "mark-unread",
@@ -1327,6 +1330,7 @@ mod tests {
         assert_eq!(icon("lu", "✅"), "mark-read");
         assert_eq!(icon("lu:42", "✅"), "mark-read");
         assert_eq!(icon("valider", "✅"), "check-circle", "valider un commit");
+        assert_eq!((icon("@replier", "▸").as_str(), icon("@deplier", "▾").as_str()), ("unfold-less", "unfold-more"));
         assert_eq!(icon("tout-lu:contoso/web", "✅"), "done-all");
         assert_eq!(icon("tout_lu", "✅"), "done-all");
         assert_eq!(icon("non-lu", "⚪"), "mark-unread");

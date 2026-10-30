@@ -68,7 +68,7 @@ fn card(id: &str, name: &str, glyph: &str, color: u32, badge: Option<(u32, Tone)
 fn modules() -> Vec<ModuleCard> {
     // Seul Gringotts écrit une ligne pour sa carte (`mobile_status`), chaque partie d'un seul tenant ; les autres n'ont
     // pas de ligne d'état, même dans la barre du PC : leur carte montre leur description, sur une ligne.
-    let gringotts = ["5 h 38 %", "sem. 61 %", "🔄 17:40"].map(|p| p.replace(' ', "\u{202f}")).join("\u{202f}· ");
+    let gringotts = ["5 h 38 %", "sem. 61 %", "remise 17:40"].map(|p| p.replace(' ', "\u{202f}")).join("\u{202f}· ");
     vec![
         card(
             "fawkes",
