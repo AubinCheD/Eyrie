@@ -26,14 +26,14 @@
 
 use slint::ComponentHandle;
 use suite_mobile::msg::{
-    Badge, CommandCard, ENTRY_CLOUD, ENTRY_DENIED, ENTRY_DRIVE, ENTRY_HIDDEN, ENTRY_KNOWN, ENTRY_LINK, ENTRY_REPO,
-    FolderEntry, Listing, ModuleCard, Note, PlaceGroup, ToPhone, Waiting,
+    Badge, CommandCard, ENTRY_CLOUD, ENTRY_DENIED, ENTRY_DRIVE, ENTRY_FILE, ENTRY_HIDDEN, ENTRY_KNOWN, ENTRY_LINK,
+    ENTRY_REPO, FolderEntry, Listing, ModuleCard, Note, PlaceGroup, ToPhone, Waiting,
 };
 use suite_mobile::term::{self, Color, Line, Run, TermFrame, TermView};
 use suite_mobile::ui::{
-    Act, Band, Chip, DIFF_ADDED, DIFF_CONTEXT, DIFF_HEADER, DIFF_REMOVED, FOLDER_ANY, FOLDER_PARENT, FOLDER_REPO,
-    FolderInput, GRAPH_BOTTOM as B, GRAPH_THROUGH as T, GRAPH_TOP as H, GraphCell, NODE_COMMIT, NODE_HEAD, NODE_MERGE,
-    Place, Row, Screen, Tone,
+    Act, Band, Chip, DIFF_ADDED, DIFF_CONTEXT, DIFF_HEADER, DIFF_REMOVED, FOLDER_ANY, FOLDER_FILE, FOLDER_PARENT,
+    FOLDER_REPO, FolderInput, GRAPH_BOTTOM as B, GRAPH_THROUGH as T, GRAPH_TOP as H, GraphCell, INSERT_FILE,
+    NODE_COMMIT, NODE_HEAD, NODE_MERGE, Place, Row, Screen, Tone,
 };
 
 use crate::app::with;
@@ -655,6 +655,38 @@ fn folders(scene: &str, feed: &dyn Fn(ToPhone)) {
         });
     };
     match scene {
+        // Un fichier du PC pour la saisie d'un terminal : le dossier du terminal, ses dossiers puis ses fichiers, leur
+        // taille ; un toucher sur un fichier le choisit.
+        "dossiers-fichier" => {
+            let dir = format!(r"{DEV}\TestAubin\Eyrie");
+            let at = |a: &Act| a.id == INSERT_FILE;
+            let screen = Screen::new("Claude · appli mobile").terminal("3").act(
+                Act::new(INSERT_FILE, "Insérer un fichier du PC…").glyph("📂").terminal().folder(
+                    "Insérer un fichier du PC",
+                    FolderInput { want: FOLDER_FILE, start: dir.clone(), ..Default::default() },
+                ),
+            );
+            let act = screen.acts.iter().find(|a| at(a)).cloned().expect("l'action");
+            feed(ToPhone::Screen { module: "fawkes".into(), path: "t/3".into(), screen });
+            open("fawkes", "t/3", &act);
+            let mut entries: Vec<FolderEntry> =
+                ["crates", "docs", "tools"].iter().map(|n| folder(n, &dir, 0, "")).collect();
+            for (n, size) in
+                [("Cargo.lock", "142 Ko"), ("Cargo.toml", "2 Ko"), ("README.md", "6 Ko"), ("rustfmt.toml", "84 o")]
+            {
+                entries.push(folder(n, &dir, ENTRY_FILE, size));
+            }
+            answer(Listing {
+                dir: dir.clone(),
+                title: "Eyrie".into(),
+                crumbs: crumbs(&dir),
+                total: entries.len() as u32,
+                entries,
+                hidden: 4,
+                why_not: "Touchez un fichier pour le choisir.".into(),
+                ..Default::default()
+            });
+        }
         // Un dossier quelconque (un nouveau terminal) : une page de plus de quarante dossiers, le filtre.
         "dossiers" => {
             open("fawkes", "nouveau", &fawkes_new_act().expect("« Autre dossier… »"));
@@ -1103,11 +1135,18 @@ pub fn play(ui: &AppWindow, scene: &str) {
     feed(ToPhone::Screen { module: "dragontree".into(), path: "depot/eyrie/historique".into(), screen: history });
     let file = depot_file();
     feed(ToPhone::Screen { module: "dragontree".into(), path: "depot/eyrie/fichier/view".into(), screen: file });
+    let file = FolderInput { want: FOLDER_FILE, start: format!(r"{DEV}\TestAubin\Eyrie"), ..Default::default() };
     let term_screen = Screen::new("Claude · appli mobile")
         .subtitle("Claude attend une réponse")
         .terminal("3")
         .act(Act::new("redemarrer:3", "Redémarrer"))
-        .act(Act::new("montrer:3", "Montrer sur le PC"));
+        .act(Act::new("montrer:3", "Montrer sur le PC"))
+        .act(
+            Act::new(INSERT_FILE, "Insérer un fichier du PC…")
+                .glyph("📂")
+                .terminal()
+                .folder("Insérer un fichier du PC", file),
+        );
     feed(ToPhone::Screen { module: "fawkes".into(), path: "t/3".into(), screen: term_screen });
     match scene {
         "fawkes" => {

@@ -29,6 +29,8 @@ export struct PickRow {
     enabled: bool,
     dim: bool,
     pick: bool,
+    // Un fichier (saisie d'un fichier) : le toucher le choisit, il ne s'ouvre pas.
+    file: bool,
     first: bool,
     last: bool,
 }
@@ -70,9 +72,11 @@ component PickEntry inherits Rectangle {
     accessible-role: list-item;
     accessible-label: item.title + (item.subtitle != "" ? ", " + item.subtitle : "");
     accessible-enabled: item.enabled;
-    accessible-description: item.enabled ? "Ouvre le dossier" : "";
+    accessible-description: !item.enabled ? "" : item.file ? "Choisit le fichier" : "Ouvre le dossier";
     accessible-action-default => {
-        if item.enabled {
+        if item.enabled && item.file {
+            root.pick();
+        } else if item.enabled {
             root.open();
         }
     }
@@ -87,8 +91,14 @@ component PickEntry inherits Rectangle {
         border-bottom-right-radius: item.last ? Theme.radius : 0;
         clip: true;
         ta := TouchArea {
-            enabled: item.enabled;
-            clicked => { root.open(); }
+            enabled: item.enabled && !(item.file && root.waiting);
+            clicked => {
+                if item.file {
+                    root.pick();
+                } else {
+                    root.open();
+                }
+            }
         }
         content := HorizontalLayout {
             padding-left: 14px;
@@ -147,7 +157,7 @@ component PickEntry inherits Rectangle {
                     clicked => { root.pick(); }
                 }
             }
-            if item.enabled: VerticalLayout {
+            if item.enabled && !item.file: VerticalLayout {
                 alignment: center;
                 Icon {
                     kind: "chevron";
@@ -562,7 +572,8 @@ export component FolderPicker inherits Rectangle {
                     font-size: 13.5px;
                     wrap: word-wrap;
                 }
-                ActButton {
+                // Sans libellé (un fichier se choisit d'un toucher sur sa ligne) : pas de bouton.
+                if root.state.choose-label != "": ActButton {
                     text: root.state.choose-label;
                     style: 1;
                     enabled: root.state.can-choose;

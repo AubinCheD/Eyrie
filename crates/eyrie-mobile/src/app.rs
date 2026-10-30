@@ -15,7 +15,7 @@ use suite_mobile::msg::{
 };
 use suite_mobile::pairing::{self, Ticket};
 use suite_mobile::term::{Line, TermInput};
-use suite_mobile::ui::{Act, Block, Fold, Screen, Tab, Tone};
+use suite_mobile::ui::{Act, Block, Fold, INSERT_FILE, Screen, Tab, Tone};
 
 use crate::dictee::{self, Dictation, Heard, Outcome, Recognizer, Tap};
 use crate::net::{Link, NetEvent, PairEvent};
@@ -1889,6 +1889,14 @@ impl Controller {
             ..Default::default()
         };
         let mut acts = Vec::new();
+        // « Fichier du PC… » : l'action du terminal que le PC propose (le sélecteur, dans le dossier du terminal).
+        let key = self.nav.key();
+        if let Some(a) = self.screens.get(&key).and_then(|s| find_act(s, INSERT_FILE)) {
+            let local = view::Local { screen: key.clone(), ..Default::default() };
+            acts.push(UiAct {
+                label: "Fichier du PC…".into(), icon: "folder-open".into(), ..view::act_in(a, &local)
+            });
+        }
         if self.can_upload() {
             acts.push(item("@fichier-tel", "Photo ou fichier du téléphone…", "photo"));
         }
@@ -2261,6 +2269,16 @@ impl Controller {
     /// Le dossier est choisi : le sélecteur se ferme, l'action suit son chemin habituel (confirmation, puis envoi et
     /// action en cours) avec ce chemin pour saisie.
     fn picker_done(&mut self, path: String) {
+        // Un fichier du PC pour la saisie du terminal : son chemin y va, rien ne part au PC.
+        if let Some((p, _)) = self.picker.take_if(|(_, a)| a.id.as_str() == INSERT_FILE) {
+            self.close_picker();
+            let shown = view::shell_path(&view::relative_to(&path, &p.spec.start));
+            if let Some(ui) = self.ui() {
+                let (text, at) = view::insert_at(&ui.get_term_draft(), ui.get_term_caret(), &shown);
+                ui.invoke_term_set_draft(text.into(), at);
+            }
+            return;
+        }
         if !self.online {
             self.toast("Hors ligne : l'action n'est pas partie.", 3);
             return;

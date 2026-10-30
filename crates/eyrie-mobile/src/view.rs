@@ -174,6 +174,17 @@ pub fn insert_at(text: &str, at: i32, insert: &str) -> (String, i32) {
     (format!("{head}{after}"), caret)
 }
 
+/// `path` relatif à `base` quand il y est (sans casse, comme Windows), sinon tel quel.
+pub fn relative_to(path: &str, base: &str) -> String {
+    let base = base.trim_end_matches(['\\', '/']);
+    let inside = !base.is_empty()
+        && path.len() > base.len() + 1
+        && path.is_char_boundary(base.len())
+        && path[..base.len()].eq_ignore_ascii_case(base)
+        && path[base.len()..].starts_with(['\\', '/']);
+    if inside { path[base.len() + 1..].to_string() } else { path.to_string() }
+}
+
 /// Un chemin tel qu'on l'écrit dans un terminal : entre guillemets s'il a une espace.
 pub fn shell_path(path: &str) -> String {
     if path.contains(char::is_whitespace) { format!("\"{path}\"") } else { path.to_string() }
@@ -1399,6 +1410,11 @@ mod tests {
         assert_eq!(insert_at("é", 1, "x"), ("x é".into(), 2), "au début du caractère coupé");
         assert_eq!(shell_path(r"C:\Users\a b\c.png"), r#""C:\Users\a b\c.png""#);
         assert_eq!(shell_path(r"C:\x.png"), r"C:\x.png");
+        let base = r"C:\DEV\Eyrie";
+        assert_eq!(relative_to(r"C:\DEV\Eyrie\crates\a.rs", base), r"crates\a.rs");
+        assert_eq!(relative_to(r"c:\dev\eyrie\README.md", r"C:\DEV\Eyrie\"), "README.md", "sans casse");
+        assert_eq!(relative_to(r"C:\DEV\Eyrie2\a.rs", base), r"C:\DEV\Eyrie2\a.rs", "un autre dossier");
+        assert_eq!(relative_to(r"D:\x.txt", ""), r"D:\x.txt");
     }
 
     #[test]

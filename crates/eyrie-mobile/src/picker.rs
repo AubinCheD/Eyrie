@@ -9,10 +9,10 @@
 //! avec « Réessayer » et la saisie du chemin à la main.
 
 use suite_mobile::msg::{
-    ENTRY_CLOUD, ENTRY_DENIED, ENTRY_DRIVE, ENTRY_HIDDEN, ENTRY_KNOWN, ENTRY_LINK, ENTRY_REPO, FolderEntry, Listing,
-    ToPc,
+    ENTRY_CLOUD, ENTRY_DENIED, ENTRY_DRIVE, ENTRY_FILE, ENTRY_HIDDEN, ENTRY_KNOWN, ENTRY_LINK, ENTRY_REPO, FolderEntry,
+    Listing, ToPc,
 };
-use suite_mobile::ui::{FOLDER_REPO, FolderInput};
+use suite_mobile::ui::{FOLDER_FILE, FOLDER_REPO, FolderInput};
 
 use crate::{PickCrumb, PickRow};
 
@@ -283,9 +283,13 @@ impl Picker {
         e.flags & ENTRY_KNOWN != 0 || self.spec.known.iter().any(|k| same_path(k, &e.path))
     }
 
-    /// Un dépôt choisi d'un toucher, sans l'ouvrir (saisie d'un dépôt existant) : ni refusé, ni déjà connu du module.
+    /// Un dépôt choisi d'un toucher, sans l'ouvrir (saisie d'un dépôt existant) : ni refusé, ni déjà connu du module ;
+    /// ou un fichier (saisie d'un fichier), non refusé.
     pub fn can_pick(&self, e: &FolderEntry) -> bool {
-        self.spec.want == FOLDER_REPO && e.flags & ENTRY_REPO != 0 && e.flags & ENTRY_DENIED == 0 && !self.known(e)
+        let allowed = e.flags & ENTRY_DENIED == 0;
+        let repo = self.spec.want == FOLDER_REPO && e.flags & ENTRY_REPO != 0 && !self.known(e);
+        let file = self.spec.want == FOLDER_FILE && e.flags & ENTRY_FILE != 0;
+        allowed && (repo || file)
     }
 
     /// Ce chemin est celui d'une entrée montrée qui peut être choisie d'un toucher : un dossier, ou un raccourci de la
@@ -316,6 +320,10 @@ impl Picker {
     pub fn choice(&self) -> (String, bool, String) {
         if self.refusal().is_some() {
             return ("Saisir le chemin".into(), true, "Ou saisissez le chemin du dossier à la main.".into());
+        }
+        // Un fichier se choisit d'un toucher sur sa ligne : pas de bouton.
+        if self.spec.want == FOLDER_FILE {
+            return (String::new(), false, "Touchez un fichier pour le choisir.".into());
         }
         let l = self.listing.as_ref();
         let label = l.and_then(|l| l.choose.clone()).unwrap_or_else(|| "Choisir ce dossier".into());
@@ -386,10 +394,13 @@ impl Picker {
             };
             out.push(PickRow { kind: 2, key: "plus".into(), title: title.into(), ..Default::default() });
         }
+        // Une saisie « fichier » cache aussi des fichiers : des éléments.
+        let (one, many) =
+            if self.spec.want == FOLDER_FILE { ("élément", "éléments") } else { ("dossier", "dossiers") };
         let toggle = match (self.hidden, l.hidden) {
-            (true, _) => Some("Masquer les dossiers cachés".to_string()),
-            (false, 1) => Some("1 dossier caché · Afficher".into()),
-            (false, h) if h > 1 => Some(format!("{h} dossiers cachés · Afficher")),
+            (true, _) => Some(format!("Masquer les {many} cachés")),
+            (false, 1) => Some(format!("1 {one} caché · Afficher")),
+            (false, h) if h > 1 => Some(format!("{h} {many} cachés · Afficher")),
             _ => None,
         };
         if let Some(t) = toggle {
@@ -429,6 +440,8 @@ impl Picker {
         let known = self.known(e);
         let (icon, tone) = if has(ENTRY_DENIED) {
             ("lock", 0)
+        } else if has(ENTRY_FILE) {
+            ("doc", 0)
         } else if has(ENTRY_DRIVE) {
             ("drive", 0)
         } else if has(ENTRY_REPO) {
@@ -470,7 +483,9 @@ impl Picker {
             path: e.path.as_str().into(),
             enabled: !has(ENTRY_DENIED),
             dim: has(ENTRY_HIDDEN) || known,
-            pick: self.can_pick(e),
+            // Un fichier se choisit d'un toucher sur sa ligne ; un dépôt, par son bouton « Choisir ».
+            pick: self.can_pick(e) && !has(ENTRY_FILE),
+            file: has(ENTRY_FILE),
             first,
             last,
         }
@@ -661,6 +676,25 @@ mod tests {
         assert_eq!(p.answer(1, unreachable(r"C:\nulle\part", "Ce dossier n'existe pas.")), Answer::Shown);
         assert_eq!(p.refusal(), Some("Ce dossier n'existe pas."));
         assert_eq!(browse_req(&p.again(2)).1.as_deref(), Some(r"C:\nulle\part"));
+    }
+
+    /// Une saisie « fichier » : un fichier se choisit d'un toucher sur sa ligne (ni bouton, ni chevron), un fichier
+    /// refusé ne se choisit pas, un dossier s'ouvre.
+    #[test]
+    fn a_file_is_picked_by_a_touch_on_its_row() {
+        let mut p = picker(FOLDER_FILE);
+        p.browse(1, Some(r"C:\DEV"));
+        let l = listing(r"C:\DEV", &[("src", 0), ("Cargo.toml", ENTRY_FILE), ("cle", ENTRY_FILE | ENTRY_DENIED)]);
+        p.answer(1, l);
+        let rows = p.rows();
+        let row = |name: &str| rows.iter().find(|r| r.title == name).unwrap();
+        assert!(row("Cargo.toml").file && !row("Cargo.toml").pick && row("Cargo.toml").icon == "doc");
+        assert!(!row("src").file);
+        assert!(p.pickable(r"C:\DEV\Cargo.toml"));
+        assert!(!p.pickable(r"C:\DEV\cle"), "refusé");
+        assert!(!p.pickable(r"C:\DEV\src"), "un dossier ne se choisit pas");
+        assert!(!picker(FOLDER_REPO).can_pick(&entry("x", ENTRY_FILE)), "seulement pour une saisie « fichier »");
+        assert_eq!(p.choice(), (String::new(), false, "Touchez un fichier pour le choisir.".into()), "pas de bouton");
     }
 
     /// Un dossier touché, sa réponse pas encore là : ni « Choisir ce dossier » ni « Choisir » à côté d'un dépôt du
