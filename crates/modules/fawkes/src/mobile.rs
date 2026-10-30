@@ -19,7 +19,7 @@ use eframe::egui;
 use suite_sdk::Cx;
 use suite_sdk::mobile::msg::OPEN_PREFIX;
 use suite_sdk::mobile::term::{self, Color, Key, Line, Run, TermInput, TermView};
-use suite_sdk::mobile::ui::{Act, Band, FOLDER_ANY, FolderInput, Place, Row, Screen, Tone};
+use suite_sdk::mobile::ui::{Act, Band, FOLDER_ANY, FOLDER_FILE, FolderInput, INSERT_FILE, Place, Row, Screen, Tone};
 
 use fawkes::app::{App, NewClaude, NewTerm};
 use fawkes::model::{AppState, Group, GroupId, Rgb, TermId, TermSpec};
@@ -420,6 +420,15 @@ pub fn screen(app: &mut App, path: &str, _cx: &mut Cx) -> Option<Screen> {
     let s = seen_of(app, id);
     let mut screen = Screen::new(t.display_title()).subtitle(&s.label).terminal(id.to_string());
     screen.acts = term_acts(t, &s);
+    // Un fichier du PC, à partir du dossier du terminal, dont le téléphone insère le chemin dans la saisie : rien
+    // n'arrive au module ; proposée ici pour que le pont accepte de lister les fichiers (avec le droit « Terminaux »).
+    let file = FolderInput { want: FOLDER_FILE, start: t.cwd.clone(), ..Default::default() };
+    screen.acts.push(
+        Act::new(INSERT_FILE, "Insérer un fichier du PC…")
+            .glyph("📂")
+            .terminal()
+            .folder("Insérer un fichier du PC", file),
+    );
     Some(screen)
 }
 
