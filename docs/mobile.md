@@ -350,8 +350,14 @@ La passe d'ergonomie, avec l'accord du 28/10, en ajoute d'autres, un commit par 
 - **Saisie du terminal** (30/10) : Slint sélectionnait dès que le doigt bougeait d'un pixel, et un mot au double
   toucher (puis la frappe ou le collage remplaçait la sélection). Une sélection faite au toucher est ramenée au
   curseur : glisser déplace le curseur, qui suit le doigt, et une loupe au-dessus du champ montre le texte autour de
-  lui (`view::around`) ; elle reste une seconde après. Le bouton + à gauche du champ : « Photo ou fichier du
-  téléphone… » (si le PC les reçoit), « Coller ici » (au curseur), « Copier la saisie », « Effacer la saisie ».
+  lui (`view::around`) ; elle reste une seconde après. Le bouton + à gauche du champ : « Fichier du PC… »,
+  « Photo ou fichier du téléphone… » (si le PC les reçoit), « Coller ici » (au curseur), « Copier la saisie »,
+  « Effacer la saisie ».
+- **Insérer un fichier du PC** : l'action `INSERT_FILE` (« @fichier-pc ») de l'écran d'un terminal de Fawkes, une
+  saisie `FOLDER_FILE` ouverte dans le dossier du terminal : le sélecteur montre alors les fichiers après les dossiers
+  (leur taille ; un toucher sur la ligne choisit, sans bouton) ; le chemin choisi va au curseur de la saisie, relatif
+  au dossier du terminal quand il y est (`view::relative_to`), entre guillemets s'il a une espace. Rien ne part au PC :
+  le pont ne liste les fichiers que pour cette saisie, avec les droits « Agir », « Dossiers du PC » et « Terminaux ».
 - **Joindre un fichier du téléphone** : le sélecteur d'Android (`Fichiers.java`, une activité sans vue : NativeActivity
   ne reçoit pas les résultats d'activité ; photos, fichiers, Drive…). Une image de plus de 3 Mo est réduite (2048 px,
   JPEG, tournée selon son EXIF) ; un autre fichier passe jusqu'à 10 Mo. Il part au PC (`ToPc::Upload`), qui le range
