@@ -127,7 +127,10 @@ pub fn icon_for(glyph: &str) -> &'static str {
         "📜" => "doc",
         "📒" | "📓" => "book",
         "🔥" => "fire",
-        "◐" => "contrast",
+        // Au travail (Claude, une exécution de Patronus).
+        "◐" => "sync",
+        // Un commit (une ligne de commit sans graphe) ; une action « ● » marque non lue (`material_icon`).
+        "●" => "commit",
         "▾" => "down",
         "🔒" => "lock",
         "🔔" => "bell",
