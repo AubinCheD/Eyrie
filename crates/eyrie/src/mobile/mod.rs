@@ -16,6 +16,7 @@ pub mod store;
 pub mod sync;
 #[cfg(test)]
 mod tests;
+pub mod upload;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -81,6 +82,12 @@ pub struct Bridge {
 }
 
 /// Nom de ce PC (`COMPUTERNAME`).
+/// Ce que ce PC sait faire en plus du protocole de base, annoncé au téléphone (`Welcome.features`) : recevoir un
+/// fichier joint à la saisie d'un terminal.
+pub fn features() -> Vec<String> {
+    vec![suite_mobile::msg::FEATURE_UPLOAD.into()]
+}
+
 pub fn pc_name() -> String {
     std::env::var("COMPUTERNAME").ok().filter(|n| !n.is_empty()).unwrap_or_else(|| "PC".into())
 }
@@ -257,6 +264,7 @@ impl Bridge {
             eyrie: env!("CARGO_PKG_VERSION").into(),
             rights: dev.rights,
             wake: self.wake.and_then(|k| server::wake_key(&k, dev)),
+            features: features(),
         }
     }
 

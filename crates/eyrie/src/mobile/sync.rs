@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::{Shutdown, TcpStream};
 use std::sync::mpsc;
-use std::time::{Duration, Instant, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use eframe::egui;
 use serde::Serialize;
@@ -30,8 +30,8 @@ use suite_mobile::term::{TermFrame, TermView};
 use suite_mobile::ui::{self as mui, Act, FolderInput, Row, Screen};
 use suite_sdk::{Cx, Module, Notification, Tone};
 
-use super::browse;
 use super::server::{Identity, Inbound};
+use super::{browse, upload};
 use crate::app::Core;
 use crate::core::{self, CallKind, SlotState};
 use crate::sandbox::Policy;
@@ -50,6 +50,7 @@ const REFUSALS_EVERY: Duration = Duration::from_secs(60);
 const RESTART: &str = "@relancer";
 /// Ce que dit le PC à un téléphone qui n'a pas le droit « Agir ».
 const NO_ACT: &str = "Ce téléphone n'a plus le droit d'agir (réglage du PC).";
+const NO_TERMINALS: &str = "Ce téléphone n'a pas le droit d'écrire dans les terminaux.";
 
 /// L'écran que suit un téléphone.
 struct Followed {
@@ -523,12 +524,41 @@ fn message(
             }
             core.mobile.sync.at = None;
         }
+        // Un fichier joint à la saisie d'un terminal : avec le droit « Terminaux », pour le terminal suivi ; rangé dans
+        // un dossier d'Eyrie (`upload`), jamais ailleurs, son chemin rendu au téléphone qui l'insère dans la saisie (rien
+        // ne part au terminal sans l'utilisateur). Noté au journal, refus compris.
+        ToPc::Upload { req, module, terminal, name: file, data } => {
+            let follows = s.term.as_ref().is_some_and(|t| t.module == module && t.id == terminal);
+            let text = format!(
+                "fichier {} pour le terminal {} ({})",
+                shown(&file),
+                shown(&terminal),
+                shown(&module_name(core, &module))
+            );
+            if !rights.terminals {
+                refuse(core, id, req, format!("{text} : {NO_TERMINALS}"), NO_TERMINALS);
+                return;
+            }
+            if !follows {
+                let e = "Le terminal a changé entre-temps : réessayez.";
+                refuse(core, id, req, format!("{text} : terminal que le téléphone ne suivait pas"), e);
+                return;
+            }
+            let saved = suite_mobile::msg::upload_decode(&data)
+                .and_then(|bytes| upload::save(&core.mobile.store.uploads_dir(), &file, &bytes, SystemTime::now()));
+            match saved {
+                Ok(path) => {
+                    let shown_path = path.display().to_string();
+                    core.mobile.store.journal(&name, "fichier", format!("{text} : reçu, {shown_path}"));
+                    mirror(core, &name, &format!("Fichier reçu : {}", shown(&file)));
+                    reply(core, id, req, Ok(Some(shown_path)));
+                }
+                Err(e) => refuse(core, id, req, format!("{text} : {e}"), &e),
+            }
+        }
         ToPc::Terminal { module, id: term, input } => {
             if !rights.terminals {
-                s.send(ToPhone::Toast {
-                    text: "Ce téléphone n'a pas le droit d'écrire dans les terminaux.".into(),
-                    tone: mui::Tone::Warn,
-                });
+                s.send(ToPhone::Toast { text: NO_TERMINALS.into(), tone: mui::Tone::Warn });
                 return;
             }
             let follows = s.term.as_ref().is_some_and(|t| t.module == module && t.id == term);

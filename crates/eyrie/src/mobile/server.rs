@@ -427,6 +427,7 @@ fn serve(mut stream: TcpStream, shared: Arc<Shared>) {
                     eyrie: shared.eyrie.clone(),
                     rights: dev.rights,
                     wake: shared.wake_key(&dev),
+                    features: super::features(),
                 };
                 if tx.send(&welcome).is_err() {
                     return;

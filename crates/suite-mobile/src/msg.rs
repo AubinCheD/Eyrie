@@ -110,6 +110,48 @@ pub enum ToPc {
         #[serde(default)]
         hidden: bool,
     },
+    /// Un fichier choisi sur le téléphone (une photo, une capture, un document), joint à la saisie du terminal suivi
+    /// `(module, terminal)` : le PC le range dans un dossier à lui et rend son chemin ([`ToPhone::Result`], `message`),
+    /// que le téléphone insère dans la saisie. Envoyé seulement à un PC qui l'annonce ([`FEATURE_UPLOAD`]), pour un
+    /// téléphone qui a le droit « Terminaux », [`UPLOAD_MAX`] octets au plus.
+    Upload {
+        req: u32,
+        module: String,
+        terminal: String,
+        /// Le nom du fichier sur le téléphone (le PC le nettoie).
+        name: String,
+        /// Le contenu en base64 : MessagePack écrirait les octets en tableau d'entiers, une fois et demie plus long.
+        data: String,
+    },
+}
+
+/// Ce que le PC sait faire en plus du protocole de base, annoncé dans [`ToPhone::Welcome`] : recevoir un fichier du
+/// téléphone ([`ToPc::Upload`]).
+pub const FEATURE_UPLOAD: &str = "televersement";
+
+/// Taille d'un fichier envoyé par le téléphone, au plus : 10 Mo (base64 compris, le message reste sous
+/// [`crate::channel::MESSAGE_MAX`]). Une photo est réduite avant (voir l'application).
+pub const UPLOAD_MAX: usize = 10 * 1024 * 1024;
+
+/// Le contenu d'un fichier, tel que [`ToPc::Upload`] le porte.
+pub fn upload_encode(bytes: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// Le contenu d'un [`ToPc::Upload`] : refusé au-delà de [`UPLOAD_MAX`] octets (avant même de le décoder) ou mal écrit.
+pub fn upload_decode(data: &str) -> Result<Vec<u8>, String> {
+    use base64::Engine;
+    let too_big = || format!("Fichier trop gros : {} Mo au plus.", UPLOAD_MAX / (1024 * 1024));
+    if data.len() > UPLOAD_MAX.div_ceil(3) * 4 {
+        return Err(too_big());
+    }
+    let bytes =
+        base64::engine::general_purpose::STANDARD.decode(data).map_err(|_| "Fichier mal transmis.".to_string())?;
+    if bytes.len() > UPLOAD_MAX {
+        return Err(too_big());
+    }
+    Ok(bytes)
 }
 
 /// Une carte de module : ce que montre la barre de navigation.
@@ -185,6 +227,9 @@ pub enum ToPhone {
         /// [`crate::veille`]). Absent : le PC ne se démarre pas à distance.
         #[serde(default)]
         wake: Option<WakeKey>,
+        /// Ce que le PC sait faire en plus ([`FEATURE_UPLOAD`]…). Absent : rien.
+        #[serde(default)]
+        features: Vec<String>,
     },
     /// La preuve du PC a été vérifiée par lui ; il attend le clic de l'utilisateur. Le téléphone vérifie la preuve du
     /// PC et affiche `sas`, que le PC affiche aussi.

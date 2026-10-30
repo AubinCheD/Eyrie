@@ -185,6 +185,11 @@ impl Store {
         Some(d)
     }
 
+    /// Où sont rangés les fichiers que les téléphones joignent à la saisie d'un terminal (voir `upload`).
+    pub fn uploads_dir(&self) -> PathBuf {
+        self.dir.join("televerses")
+    }
+
     pub fn journal(&self, device: &str, kind: &str, text: impl Into<String>) {
         let line = JournalLine { at: now(), device: device.to_string(), kind: kind.to_string(), text: text.into() };
         let _ = std::fs::create_dir_all(&self.dir);

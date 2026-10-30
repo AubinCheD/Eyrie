@@ -121,6 +121,8 @@ pub struct Welcome {
     pub rights: Rights,
     /// De quoi démarrer Eyrie à distance quand elle est fermée (le veilleur du PC est actif).
     pub wake: Option<WakeKey>,
+    /// Ce que le PC sait faire en plus du protocole de base (`msg::FEATURE_UPLOAD`…).
+    pub features: Vec<String>,
 }
 
 /// Ce que l'application sait faire en plus du protocole de base, annoncé dans `Hello`.
@@ -187,8 +189,8 @@ pub fn hello(conn: &mut Connection, pc_key: &[u8; 32], device: &str, model: &str
         })
         .map_err(broken)?;
     match conn.rx.recv::<ToPhone>().map_err(broken)? {
-        ToPhone::Welcome { protocol, pc, eyrie, rights, wake } if protocol == PROTOCOL => {
-            Ok(Welcome { pc, eyrie, rights, wake })
+        ToPhone::Welcome { protocol, pc, eyrie, rights, wake, features } if protocol == PROTOCOL => {
+            Ok(Welcome { pc, eyrie, rights, wake, features })
         }
         ToPhone::Welcome { .. } => {
             Err(Failure::Refused("Eyrie et l'application n'ont pas la même version du protocole".into()))

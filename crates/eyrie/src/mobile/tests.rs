@@ -301,6 +301,39 @@ fn a_phone_pairs_follows_acts_and_types_and_the_pc_sees_it() {
             .unwrap();
         c.tx.send(&ToPc::Ping).unwrap();
         until(&mut c, |m| matches!(m, ToPhone::Pong).then_some(()));
+
+        // Un fichier joint à la saisie du terminal suivi : rangé par Eyrie (son nom nettoyé), son chemin rendu ; pour
+        // un terminal que le téléphone ne suit pas, refusé ; trop gros, refusé avant d'être décodé.
+        let upload = |req: u32, terminal: &str, name: &str, data: String| ToPc::Upload {
+            req,
+            module: "factice".into(),
+            terminal: terminal.into(),
+            name: name.into(),
+            data,
+        };
+        let png = suite_mobile::msg::upload_encode(b"\x89PNG faux");
+        c.tx.send(&upload(3, "1", r"..\..\photo.png", png.clone())).unwrap();
+        let (ok, path) = until(&mut c, |m| match m {
+            ToPhone::Result { req: 3, ok, message } => Some((ok, message)),
+            _ => None,
+        });
+        assert!(ok, "{path}");
+        let saved = std::path::PathBuf::from(&path);
+        assert!(path.contains("televerses") && path.ends_with("-photo.png"), "{path}");
+        assert_eq!(std::fs::read(&saved).unwrap(), b"\x89PNG faux");
+        c.tx.send(&upload(4, "2", "autre.png", png)).unwrap();
+        let r = until(&mut c, |m| match m {
+            ToPhone::Result { req: 4, ok, message } => Some((ok, message)),
+            _ => None,
+        });
+        assert!(!r.0 && r.1.contains("terminal a changé"), "{r:?}");
+        let huge = "A".repeat(suite_mobile::msg::UPLOAD_MAX / 3 * 4 + 8);
+        c.tx.send(&upload(5, "1", "gros.bin", huge)).unwrap();
+        let r = until(&mut c, |m| match m {
+            ToPhone::Result { req: 5, ok, message } => Some((ok, message)),
+            _ => None,
+        });
+        assert!(!r.0 && r.1.contains("trop gros"), "{r:?}");
         sas
     });
 
