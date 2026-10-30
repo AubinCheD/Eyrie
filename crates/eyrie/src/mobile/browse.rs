@@ -21,11 +21,11 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use suite_mobile::msg::{
-    ENTRY_CLOUD, ENTRY_DENIED, ENTRY_DRIVE, ENTRY_HIDDEN, ENTRY_KNOWN, ENTRY_LINK, ENTRY_REPO, FolderEntry, Listing,
-    PlaceGroup, ToPhone,
+    ENTRY_CLOUD, ENTRY_DENIED, ENTRY_DRIVE, ENTRY_FILE, ENTRY_HIDDEN, ENTRY_KNOWN, ENTRY_LINK, ENTRY_REPO, FolderEntry,
+    Listing, PlaceGroup, ToPhone,
 };
 use suite_mobile::paths::{in_dot_folder, powershell_dirs, protected_name, resolved_zone};
-use suite_mobile::ui::{FOLDER_ANY, FOLDER_PARENT, FOLDER_REPO, FolderInput, Tone};
+use suite_mobile::ui::{FOLDER_ANY, FOLDER_FILE, FOLDER_PARENT, FOLDER_REPO, FolderInput, Tone};
 
 /// Dossiers par page.
 pub const PAGE: usize = 200;
@@ -387,6 +387,7 @@ fn child_ok(child: &str) -> Result<(), String> {
 fn rule(env: &Env, dir: &Path, spec: &FolderInput) -> Result<(PathBuf, bool), String> {
     match spec.want {
         FOLDER_ANY => Ok((dir.to_path_buf(), false)),
+        FOLDER_FILE => Err("Touchez un fichier pour le choisir.".into()),
         FOLDER_REPO if dir.join(".git").exists() => Ok((dir.to_path_buf(), false)),
         FOLDER_REPO => Err(format!("{} n'est pas un dépôt git.", dir.display())),
         FOLDER_PARENT if spec.child.is_empty() => Ok((dir.to_path_buf(), false)),
@@ -641,6 +642,8 @@ struct Raw {
 struct Level {
     dirs: Vec<Raw>,
     files: u32,
+    /// Les fichiers eux-mêmes, avec leur taille : seulement pour une saisie [`FOLDER_FILE`].
+    file_list: Vec<(Raw, u64)>,
     truncated: bool,
 }
 
@@ -656,8 +659,9 @@ fn attributes(_: &std::fs::DirEntry) -> u32 {
     0
 }
 
-/// Lit un niveau, sans rien suivre : les dossiers (liens et jonctions compris), et combien de fichiers.
-fn read_level(env: &Env, dir: &Path) -> Result<Level, String> {
+/// Lit un niveau, sans rien suivre : les dossiers (liens et jonctions compris), et combien de fichiers ; les fichiers
+/// eux-mêmes avec `files` (leur taille vient de la lecture du dossier, sans autre accès au disque sous Windows).
+fn read_level(env: &Env, dir: &Path, files: bool) -> Result<Level, String> {
     let started = Instant::now();
     let entries = std::fs::read_dir(dir).map_err(|e| match e.kind() {
         ErrorKind::PermissionDenied => "Accès refusé à ce dossier.".to_string(),
@@ -677,6 +681,13 @@ fn read_level(env: &Env, dir: &Path) -> Result<Level, String> {
         let link = kind.is_symlink();
         if !(kind.is_dir() || (link && attrs & DIRECTORY != 0)) {
             level.files += 1;
+            if files
+                && !link
+                && let Some(name) = e.file_name().to_str().map(str::to_string)
+            {
+                let size = e.metadata().map(|m| m.len()).unwrap_or(0);
+                level.file_list.push((Raw { name, attrs, link }, size));
+            }
             continue;
         }
         let Some(name) = e.file_name().to_str().map(str::to_string) else { continue };
@@ -723,7 +734,29 @@ fn entry(env: &Env, dir: &Path, r: &Raw, known: &Known, module: &str) -> FolderE
     }
 }
 
-/// Un dossier : une page de ses sous-dossiers, et ce que donnerait son choix.
+/// Une taille de fichier, courte : « 812 o », « 12 Ko », « 3,4 Mo ».
+fn size_text(n: u64) -> String {
+    const K: u64 = 1024;
+    match n {
+        n if n < K => format!("{n} o"),
+        n if n < K * K => format!("{} Ko", n.div_ceil(K)),
+        n if n < 10 * K * K * K => format!("{:.1} Mo", n as f64 / (K * K) as f64).replace('.', ","),
+        n => format!("{} Go", n / (K * K * K)),
+    }
+}
+
+/// Un fichier d'une saisie [`FOLDER_FILE`] : sa taille ; refusé dans une zone protégée (comme un dossier).
+fn file_entry(env: &Env, dir: &Path, r: &Raw, size: u64) -> FolderEntry {
+    let path = dir.join(&r.name);
+    let mut flags = ENTRY_FILE | (flags_of(r.attrs, r.link, &r.name) & (ENTRY_HIDDEN | ENTRY_CLOUD));
+    if protected(env, &path) {
+        flags |= ENTRY_DENIED;
+    }
+    FolderEntry { name: r.name.clone(), path: path.to_string_lossy().into_owned(), flags, detail: size_text(size) }
+}
+
+/// Un dossier : une page de ses sous-dossiers (et de ses fichiers pour une saisie [`FOLDER_FILE`]), et ce que donnerait
+/// son choix.
 fn folder(env: &Env, ask: &Ask, text: &str, known: &Known) -> Listing {
     let mut out = Listing {
         dir: text.to_string(),
@@ -741,7 +774,8 @@ fn folder(env: &Env, ask: &Ask, text: &str, known: &Known) -> Listing {
     out.dir = dir.to_string_lossy().into_owned();
     out.title = title_of(&dir);
     out.crumbs = crumbs(&out.dir);
-    let level = match read_level(env, &dir) {
+    let want_files = ask.spec.want == FOLDER_FILE;
+    let level = match read_level(env, &dir, want_files) {
         Ok(l) => l,
         Err(e) => {
             out.error = e;
@@ -761,11 +795,29 @@ fn folder(env: &Env, ask: &Ask, text: &str, known: &Known) -> Listing {
         out.hidden = (before - dirs.len()) as u32;
     }
     dirs.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.name.cmp(&b.1.name)));
+    // Une saisie « fichier » : les fichiers après les dossiers, filtrés et triés de même ; une page porte les deux.
+    let mut files: Vec<(String, Raw, u64)> = level
+        .file_list
+        .into_iter()
+        .map(|(r, size)| (fold(&r.name), r, size))
+        .filter(|(f, _, _)| filter.is_empty() || f.contains(&filter))
+        .collect();
+    if !ask.hidden {
+        let before = files.len();
+        files.retain(|(_, r, _)| flags_of(r.attrs, r.link, &r.name) & ENTRY_HIDDEN == 0);
+        out.hidden += (before - files.len()) as u32;
+    }
+    files.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.name.cmp(&b.1.name)));
     let offset = ask.offset as usize;
+    let total = dirs.len() + files.len();
     out.offset = ask.offset;
-    out.total = dirs.len() as u32;
-    out.entries = dirs.iter().skip(offset).take(PAGE).map(|(_, r)| entry(env, &dir, r, known, &ask.module)).collect();
-    out.more = offset.saturating_add(out.entries.len()) < dirs.len();
+    out.total = total as u32;
+    let shown_dirs = dirs.iter().skip(offset).take(PAGE).map(|(_, r)| entry(env, &dir, r, known, &ask.module));
+    let room = PAGE.saturating_sub(dirs.len().saturating_sub(offset).min(PAGE));
+    let file_offset = offset.saturating_sub(dirs.len());
+    let shown_files = files.iter().skip(file_offset).take(room).map(|(_, r, size)| file_entry(env, &dir, r, *size));
+    out.entries = shown_dirs.chain(shown_files).collect();
+    out.more = offset.saturating_add(out.entries.len()) < total;
     out.files = level.files;
     out.truncated = level.truncated;
     match rule(env, &dir, &ask.spec) {
@@ -1219,6 +1271,42 @@ mod tests {
         }
         let unknown = FolderInput { want: 9, ..Default::default() };
         assert!(chosen(&env, Some(&at("simple")), &unknown).is_err());
+    }
+
+    /// Une saisie « fichier » : les fichiers après les dossiers, avec leur taille, filtrés et paginés avec eux ; aucun
+    /// dossier ne se choisit ; un fichier d'une zone protégée est refusé.
+    #[test]
+    fn a_file_input_lists_files_after_folders() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        mkdir(&root.join("src"));
+        mkdir(&root.join(".ssh"));
+        std::fs::write(root.join("lisez-moi.md"), "x".repeat(2000)).unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[package]").unwrap();
+        std::fs::write(root.join(".env"), "SECRET=1").unwrap();
+        let env = env(root);
+        let spec = FolderInput { want: FOLDER_FILE, ..Default::default() };
+        let l = listing(&env, &ask(root, spec.clone()));
+        assert_eq!(l.error, "");
+        let names: Vec<(&str, u8, &str)> =
+            l.entries.iter().map(|e| (e.name.as_str(), e.flags, e.detail.as_str())).collect();
+        assert_eq!(names[0].0, "src");
+        assert_eq!(&names[1..], [("Cargo.toml", ENTRY_FILE, "9 o"), ("lisez-moi.md", ENTRY_FILE, "2 Ko")]);
+        assert_eq!((l.total, l.hidden, l.choose.as_ref()), (3, 2, None));
+        assert!(l.why_not.contains("Touchez un fichier"));
+        let all = listing(&env, &Ask { hidden: true, ..ask(root, spec.clone()) });
+        let env_file = all.entries.iter().find(|e| e.name == ".env").unwrap();
+        assert_eq!(env_file.flags & (ENTRY_FILE | ENTRY_HIDDEN), ENTRY_FILE | ENTRY_HIDDEN);
+        let filtered = listing(&env, &Ask { filter: "LISEZ".into(), ..ask(root, spec.clone()) });
+        assert_eq!(filtered.entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["lisez-moi.md"]);
+        // Sans saisie « fichier », rien ne change : des dossiers seulement.
+        let dirs = listing(&env, &ask(root, FolderInput::default()));
+        assert!(dirs.entries.iter().all(|e| e.flags & ENTRY_FILE == 0) && dirs.files == 3);
+        assert!(chosen(&env, Some(&root.join("src").to_string_lossy()), &spec).is_err(), "pas un dossier");
+        assert_eq!(
+            (size_text(812), size_text(12 * 1024), size_text(3_565_158)),
+            ("812 o".into(), "12 Ko".into(), "3,4 Mo".into())
+        );
     }
 
     #[test]

@@ -326,6 +326,8 @@ pub const ENTRY_DENIED: u8 = 16;
 pub const ENTRY_CLOUD: u8 = 32;
 /// Un lecteur.
 pub const ENTRY_DRIVE: u8 = 64;
+/// Un fichier (seulement pour une saisie `FOLDER_FILE`) ; `detail` dit sa taille.
+pub const ENTRY_FILE: u8 = 128;
 
 /// Un dossier dans une liste du sélecteur.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -347,7 +349,8 @@ pub struct PlaceGroup {
     pub places: Vec<FolderEntry>,
 }
 
-/// Le contenu d'un dossier du PC, tel que le sélecteur le montre : des dossiers seulement, jamais de fichier.
+/// Le contenu d'un dossier du PC, tel que le sélecteur le montre : des dossiers seulement, et ses fichiers pour une
+/// saisie `FOLDER_FILE` (après les dossiers).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Listing {
     /// Dossier listé ; vide : la racine.

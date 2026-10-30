@@ -40,6 +40,13 @@ pub const FOLDER_ANY: u8 = 0;
 pub const FOLDER_REPO: u8 = 1;
 /// … le dossier où créer `child` (un clone) : `dossier\child` doit être absent ou vide.
 pub const FOLDER_PARENT: u8 = 2;
+/// … un fichier : le sélecteur montre aussi les fichiers, et un toucher en choisit un (aucun dossier ne se choisit). Pour
+/// [`INSERT_FILE`] seulement : le téléphone insère le chemin dans la saisie du terminal, rien n'est envoyé au module.
+pub const FOLDER_FILE: u8 = 3;
+
+/// L'action d'un terminal « Insérer un fichier du PC… » : une saisie [`FOLDER_FILE`] que le téléphone garde pour lui (le
+/// chemin choisi va dans la saisie du terminal) ; le PC la propose pour que le pont accepte de lister les fichiers.
+pub const INSERT_FILE: &str = "@fichier-pc";
 
 /// Un raccourci du sélecteur de dossiers (« Dossier de clonage », un dossier récent du module).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]

@@ -390,6 +390,11 @@ fn message(
                 s.send(ToPhone::Folder { req, listing: browse::refused(dir, why) });
                 return;
             };
+            // Les fichiers du PC (« Insérer un fichier du PC… » d'un terminal) : avec le droit « Terminaux » aussi.
+            if spec.want == mui::FOLDER_FILE && !rights.terminals {
+                s.send(ToPhone::Folder { req, listing: browse::refused(dir, NO_TERMINALS) });
+                return;
+            }
             let opened = s.screen.as_mut().is_some_and(|f| f.browsed.insert(action));
             let recents = core.mobile.store.recent_folders(&module);
             let module = module_name(core, &module);
