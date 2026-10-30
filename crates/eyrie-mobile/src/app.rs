@@ -9,7 +9,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use suite_mobile::client::Welcome;
-use suite_mobile::msg::{CommandCard, Listing, ModuleCard, Note, Rights, ToPc, ToPhone, Waiting, module_target};
+use suite_mobile::msg::{
+    CommandCard, FEATURE_UPLOAD, Listing, ModuleCard, Note, Rights, ToPc, ToPhone, UPLOAD_MAX, Waiting, module_target,
+    upload_encode,
+};
 use suite_mobile::pairing::{self, Ticket};
 use suite_mobile::term::{Line, TermInput};
 use suite_mobile::ui::{Act, Block, Fold, Screen, Tab, Tone};
@@ -514,6 +517,11 @@ pub struct Controller {
     link_pc: String,
     online: bool,
     rights: Rights,
+    /// Ce que le PC sait faire en plus du protocole de base (`Welcome.features`).
+    pc_features: Vec<String>,
+    /// Les fichiers du téléphone en route vers le PC, par demande : le terminal `(module, id)` où insérer leur chemin,
+    /// et leur nom.
+    uploads: HashMap<u32, ((String, String), String)>,
     pc_name: String,
     eyrie: String,
     cards: Vec<ModuleCard>,
@@ -690,6 +698,8 @@ impl Controller {
             link_pc: String::new(),
             online: false,
             rights: Rights::default(),
+            pc_features: Vec::new(),
+            uploads: HashMap::new(),
             pc_name: String::new(),
             eyrie: String::new(),
             cards: Vec::new(),
@@ -1078,6 +1088,7 @@ impl Controller {
     /// terminal disparaît : son écoute s'abandonne.
     fn welcomed(&mut self, w: Welcome) {
         self.rights = w.rights;
+        self.pc_features = w.features;
         if !self.rights.terminals {
             self.drop_dictation(Some(true), "le PC a retiré « Terminaux »");
         }
@@ -1167,6 +1178,11 @@ impl Controller {
                     self.mask_secret();
                 }
             }
+            ToPhone::Result { req, ok, message } if self.uploads.contains_key(&req) => {
+                if let Some((terminal, name)) = self.uploads.remove(&req) {
+                    self.uploaded(terminal, &name, ok, &message);
+                }
+            }
             ToPhone::Result { req, ok, message } => {
                 let done = self.pendings.answer(req);
                 if let Some(p) = &done
@@ -1196,8 +1212,8 @@ impl Controller {
             ToPhone::Bye { reason, .. } => self.set_link(2, &reason),
             ToPhone::Folder { req, listing } => self.on_folder(req, listing),
             // Un nouvel accueil pendant la connexion : le PC a activé ou coupé son veilleur (la clé de démarrage).
-            ToPhone::Welcome { pc, eyrie, rights, wake, .. } => {
-                self.welcomed(Welcome { pc, eyrie, rights, wake });
+            ToPhone::Welcome { pc, eyrie, rights, wake, features, .. } => {
+                self.welcomed(Welcome { pc, eyrie, rights, wake, features });
                 self.refresh_settings();
             }
             ToPhone::PairPending { .. } | ToPhone::Paired { .. } | ToPhone::Refused { .. } | ToPhone::Pong => {}
@@ -1857,6 +1873,95 @@ impl Controller {
         }
     }
 
+    /// Le PC reçoit-il les fichiers du téléphone, et le téléphone sait-il en choisir ?
+    fn can_upload(&self) -> bool {
+        self.rights.terminals && self.pc_features.iter().any(|f| f == FEATURE_UPLOAD) && platform::can_pick_file()
+    }
+
+    /// Le bouton + de la saisie du terminal : joindre un fichier du téléphone (si le PC les reçoit), coller au curseur,
+    /// copier ou effacer la saisie.
+    pub(crate) fn compose_menu(&mut self) {
+        let Some(ui) = self.ui() else { return };
+        let item = |id: &str, label: &str, icon: &str| UiAct {
+            id: id.into(),
+            label: label.into(),
+            icon: icon.into(),
+            ..Default::default()
+        };
+        let mut acts = Vec::new();
+        if self.can_upload() {
+            acts.push(item("@fichier-tel", "Photo ou fichier du téléphone…", "photo"));
+        }
+        acts.push(item("@coller-ici", "Coller ici", "paste"));
+        if !ui.get_term_draft().is_empty() {
+            acts.push(item("@copier-saisie", "Copier la saisie", "copy"));
+            acts.push(UiAct { style: 2, ..item("@effacer-saisie", "Effacer la saisie", "delete") });
+        }
+        ui.invoke_open_sheet("Saisie".into(), ModelRc::new(VecModel::from(acts)));
+    }
+
+    /// Le sélecteur de fichiers du téléphone, pour le terminal affiché : le fichier choisi part au PC (`picked`).
+    fn pick_phone_file(&mut self) {
+        let Some(terminal) = self.followed_term() else { return };
+        if !self.can_upload() {
+            return self.toast("Ce PC ne reçoit pas de fichier du téléphone.", 3);
+        }
+        platform::pick_file(Box::new(move |p| {
+            let terminal = terminal.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                with(|c| c.picked(terminal, p));
+            });
+        }));
+    }
+
+    /// Le fichier choisi : envoyé au PC (en base64), son chemin inséré dans la saisie à la réponse (`uploaded`).
+    pub(crate) fn picked(&mut self, terminal: (String, String), p: Option<platform::Picked>) {
+        let (name, bytes) = match p {
+            None => return,
+            Some(Err(e)) => {
+                self.toast(&e, 4);
+                return haptic_error();
+            }
+            Some(Ok(f)) => f,
+        };
+        if bytes.len() > UPLOAD_MAX {
+            self.toast(&format!("{name} est trop gros : 10 Mo au plus."), 4);
+            return haptic_error();
+        }
+        if !self.online {
+            return self.toast("Hors ligne : le fichier n'est pas parti.", 3);
+        }
+        let req = self.pendings.next();
+        self.uploads.insert(req, (terminal.clone(), name.clone()));
+        self.toast(&format!("Envoi de {name} au PC…"), 1);
+        let (module, terminal) = terminal;
+        self.send(ToPc::Upload { req, module, terminal, name, data: upload_encode(&bytes) });
+    }
+
+    /// Démonstration : un fichier joint, comme si le PC venait de le recevoir.
+    pub(crate) fn demo_uploaded(&mut self, terminal: (String, String), name: &str, path: &str) {
+        self.uploaded(terminal, name, true, path);
+    }
+
+    /// La réponse du PC à un fichier envoyé : son chemin inséré au curseur de la saisie, si le même terminal est encore
+    /// affiché (sinon le chemin est dit, à recopier).
+    fn uploaded(&mut self, terminal: (String, String), name: &str, ok: bool, message: &str) {
+        if !ok {
+            self.toast(message, 4);
+            return haptic_error();
+        }
+        let path = view::shell_path(message);
+        match self.ui() {
+            Some(ui) if self.followed_term().as_ref() == Some(&terminal) => {
+                let (text, at) = view::insert_at(&ui.get_term_draft(), ui.get_term_caret(), &path);
+                ui.invoke_term_set_draft(text.into(), at);
+                platform::haptic();
+                self.toast(&format!("{name} joint : son chemin est dans la saisie."), 2);
+            }
+            _ => self.toast(&format!("{name} reçu sur le PC : {path}"), 2),
+        }
+    }
+
     /// Glisser de côté : l'onglet voisin de celui qui est affiché (`dir` : 1 le suivant, -1 le précédent), s'il y en a un.
     pub(crate) fn swipe_tab(&mut self, dir: i32) {
         let Some(ui) = self.ui() else { return };
@@ -1911,6 +2016,26 @@ impl Controller {
             "@lu" => return self.send(ToPc::NotesRead),
             "@replier" => return self.fold_bands(None, false),
             "@deplier" => return self.fold_bands(None, true),
+            // Le menu de la saisie du terminal (bouton +).
+            "@fichier-tel" => return self.pick_phone_file(),
+            "@coller-ici" => {
+                if let Some(ui) = self.ui() {
+                    ui.invoke_term_paste_here();
+                }
+                return;
+            }
+            "@copier-saisie" => {
+                if let Some(ui) = self.ui() {
+                    ui.invoke_term_copy_draft();
+                }
+                return self.toast("Saisie copiée.", 2);
+            }
+            "@effacer-saisie" => {
+                if let Some(ui) = self.ui() {
+                    ui.invoke_term_set_draft(SharedString::new(), 0);
+                }
+                return;
+            }
             _ => {}
         }
         if !self.nav.is_module_tab() || a.busy {
@@ -3194,6 +3319,10 @@ fn wire(ui: &AppWindow) {
     // Une autre largeur : les lignes se replient une fois le zoom arrêté (un pincement en change plusieurs fois de
     // suite), hors de tout appel au contrôleur (le code a pu poser le zoom pendant l'un d'eux).
     let refits = Rc::new(Cell::new(0u64));
+    ui.on_term_compose_menu(|| {
+        with(|c| c.compose_menu());
+    });
+    ui.on_term_around(|text, at, after| view::around(&text, at, after).into());
     ui.on_term_refit(move || {
         let seq = refits.get() + 1;
         refits.set(seq);
@@ -4099,7 +4228,14 @@ mod tests {
         with(|c| c.on_message(frame(false)));
         let seq = listen();
         let rights = Rights { terminals: false, ..Default::default() };
-        let welcome = ToPhone::Welcome { protocol: 1, pc: "PC".into(), eyrie: "x".into(), rights, wake: None };
+        let welcome = ToPhone::Welcome {
+            protocol: 1,
+            pc: "PC".into(),
+            eyrie: "x".into(),
+            rights,
+            wake: None,
+            features: Vec::new(),
+        };
         with(|c| c.on_message(welcome));
         assert!(!ui.get_term_can_type() && !ui.get_term_listening(), "« Terminaux » retiré");
         with(|c| c.on_heard(seq, Heard::Final("trop tard".into())));

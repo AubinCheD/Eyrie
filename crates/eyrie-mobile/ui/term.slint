@@ -2,8 +2,9 @@
 // lisible, repliées à la largeur de l'écran (`termfit.rs`) : elles ne défilent que de haut en bas ; deux doigts
 // changent la taille (elle est gardée), et les lignes se replient de nouveau. Dessous : réponses rapides quand Claude attend, barre de touches
 // (Ctrl et Alt collants, coller, copier, saisie masquée), champ de saisie (sur plusieurs lignes, il part en collage),
-// avec son micro (la dictée). Un appui long sur la sortie, ou « Copier », montre son texte dans un champ en lecture
-// seule, où l'on sélectionne ce qu'on copie.
+// avec son micro (la dictée) et son bouton + (joindre un fichier, coller au curseur). Au doigt, glisser dans la saisie
+// déplace le curseur, avec une loupe au-dessus, et ne sélectionne rien. Un appui long sur la sortie, ou « Copier »,
+// montre son texte dans un champ en lecture seule, où l'on sélectionne ce qu'on copie.
 
 import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
@@ -251,6 +252,18 @@ export component TermView inherits Rectangle {
     out property <bool> follow: true;
     // La hauteur des barres sous la liste : les bulles se posent au-dessus.
     out property <length> bars-height: (root.waiting && root.replies.length > 0 ? 56px : 0) + 56px + listen-bar.height + root.input-h + 16px;
+    // Où est le curseur de la saisie (octets) : le code y insère le chemin d'un fichier joint (`set-draft`).
+    out property <int> caret: input.cursor-position-byte-offset;
+    // Une sélection voulue (« Copier la saisie ») : le toucher ne la défait pas le temps de la copier.
+    property <bool> keep-selection;
+    // La loupe : le texte autour du curseur pendant qu'on le fait glisser du doigt ; `loupe-left` : dixièmes de seconde
+    // avant qu'elle disparaisse ; `loupe-x` : l'abscisse du curseur dans la saisie.
+    property <int> loupe-left;
+    property <length> loupe-x;
+    // Le texte d'un côté du curseur dans sa ligne, pour la loupe (`after` : après lui ; voir `view::around`).
+    pure callback around(text: string, at: int, after: bool) -> string;
+    // Le bouton + : le menu de la saisie (joindre un fichier, coller au curseur…), tenu par le code.
+    callback compose-menu();
     callback send-line(string);
     callback key(string);
     // Ctrl (1) ou Alt (2) touché : il se colle, ou se relâche ; `unlatch` : il se relâche.
@@ -275,6 +288,30 @@ export component TermView inherits Rectangle {
     callback follows(follow: bool, user: bool, up: length, gap: length, row: length, fits: bool) -> bool;
     // Il tient un autre nombre de colonnes dans la largeur (zoom, écran tourné) : le code replie de nouveau les lignes.
     callback refit();
+
+    // La saisie remplacée par le code (un chemin inséré), le curseur posé à `at` (octets).
+    public function set-draft(text: string, at: int) {
+        root.draft = text;
+        root.last-draft = text;
+        input.set-selection-offsets(at, at);
+        input.focus();
+    }
+
+    // Le presse-papiers inséré au curseur de la saisie.
+    public function paste-here() {
+        input.focus();
+        input.paste();
+    }
+
+    // Toute la saisie dans le presse-papiers, le curseur laissé où il était.
+    public function copy-draft() {
+        root.keep-selection = true;
+        let at = input.cursor-position-byte-offset;
+        input.select-all();
+        input.copy();
+        input.set-selection-offsets(at, at);
+        root.keep-selection = false;
+    }
 
     property <length> fs: max(8px, min(32px, 13px * root.zoom));
     // La police mono (Hack) avance de 0,602 em par caractère, mais le moteur de rendu arrondit parfois l'avance au
@@ -748,11 +785,25 @@ export component TermView inherits Rectangle {
             height: root.input-h + 16px;
             background: Theme.surface;
             HorizontalLayout {
-                padding-left: 10px;
+                padding-left: root.can-type && !root.ended ? 2px : 10px;
                 padding-right: 6px;
                 padding-top: 8px;
                 padding-bottom: 8px;
                 spacing: 6px;
+                // Joindre un fichier, coller au curseur, copier ou effacer la saisie.
+                if root.can-type && !root.ended: VerticalLayout {
+                    alignment: end;
+                    IconButton {
+                        icon: "add";
+                        size: 42px;
+                        label: "Joindre un fichier, coller…";
+                        tint: Theme.text-dim;
+                        clicked => {
+                            root.haptic();
+                            root.compose-menu();
+                        }
+                    }
+                }
                 Rectangle {
                     horizontal-stretch: 1;
                     border-radius: 21px;
@@ -800,8 +851,16 @@ export component TermView inherits Rectangle {
                                 root.shift-return = false;
                                 root.last-draft = self.text;
                             }
+                            // Au doigt, Slint sélectionnerait dès que le doigt bouge d'un pixel, et un mot au double
+                            // toucher (puis la frappe ou le collage remplacerait la sélection) : une sélection faite
+                            // au toucher est ramenée au curseur, qui suit donc le doigt, et la loupe montre où il est.
                             // Le curseur reste visible quand le texte dépasse le champ.
                             cursor-position-changed(p) => {
+                                if self.anchor-position-byte-offset != self.cursor-position-byte-offset && !root.keep-selection {
+                                    self.set-selection-offsets(self.cursor-position-byte-offset, self.cursor-position-byte-offset);
+                                    root.loupe-left = 10;
+                                }
+                                root.loupe-x = p.x;
                                 if p.y + 10px + field.content-y < 0 {
                                     field.content-y = min(0px, -p.y);
                                 } else if p.y + 40px + field.content-y > field.height {
@@ -856,6 +915,54 @@ export component TermView inherits Rectangle {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // La loupe : au-dessus de la saisie, centrée sur le curseur, le texte autour de lui en plus grand.
+    Timer {
+        interval: 100ms;
+        running: root.loupe-left > 0;
+        triggered => {
+            root.loupe-left -= 1;
+        }
+    }
+    if root.loupe-left > 0 && input.has-focus: Rectangle {
+        property <length> w: min(root.width - 24px, loupe-row.preferred-width + 28px);
+        x: max(12px, min(root.width - self.w - 12px, 12px + 16px + root.loupe-x - self.w / 2));
+        y: root.height - root.input-h - 16px - 58px;
+        width: self.w;
+        height: 46px;
+        border-radius: 23px;
+        background: Theme.surface;
+        border-width: 1px;
+        border-color: Theme.border;
+        drop-shadow-blur: 10px;
+        drop-shadow-offset-y: 2px;
+        drop-shadow-color: #00000040;
+        loupe-row := HorizontalLayout {
+            padding-left: 14px;
+            padding-right: 14px;
+            alignment: center;
+            Text {
+                text: root.around(root.draft, input.cursor-position-byte-offset, false);
+                color: Theme.text;
+                font-size: 19px;
+                vertical-alignment: center;
+            }
+            VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 2px;
+                    height: 24px;
+                    background: Theme.accent;
+                }
+            }
+            Text {
+                text: root.around(root.draft, input.cursor-position-byte-offset, true);
+                color: Theme.text;
+                font-size: 19px;
+                vertical-alignment: center;
             }
         }
     }

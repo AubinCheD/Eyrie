@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Eyrie mobile : une seule activité native (Slint) ; une classe Java à nous, la dictée (android/java, Dictee.java :
-     la reconnaissance vocale d'Android parle à un écouteur Java, que NativeActivity n'a pas). Pas de sauvegarde des
+<!-- Eyrie mobile : une activité native (Slint) ; des classes Java à nous (android/java) : la dictée (Dictee.java : la
+     reconnaissance vocale d'Android parle à un écouteur Java, que NativeActivity n'a pas) et le choix d'un fichier
+     (Fichiers.java : une activité sans vue, NativeActivity ne recevant pas les résultats d'activité). Pas de sauvegarde des
      données ni de transfert vers un autre téléphone : la clé de l'appareil et les clés de démarrage des PC ne doivent
      pas partir (allowBackup et fullBackupContent jusqu'à Android 11, dataExtractionRules à partir d'Android 12). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
@@ -49,5 +50,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- Le choix d'un fichier à joindre à la saisie d'un terminal (Fichiers.java) : sans vue, privée à l'application ;
+             elle ouvre le sélecteur d'Android et rend le fichier au code natif. -->
+        <activity
+            android:name="io.github.aubinched.eyrie.Fichiers"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|uiMode|density|navigation" />
     </application>
 </manifest>

@@ -35,11 +35,14 @@ impl Notice {
     }
 }
 
+/// Un fichier choisi sur le téléphone : son nom et son contenu, ou pourquoi il n'y en a pas.
+pub type Picked = Result<(String, Vec<u8>), String>;
+
 #[cfg(target_os = "android")]
 pub use crate::android::{
-    ask_notifications, asking_mic, can_scan, cancel_dictation, data_dir, device_model, device_name, dictation_log,
-    download_language, haptic, in_background, language_download, notify, open_url, recognizer, start_dictation,
-    start_scan, stop_dictation, stop_scan,
+    ask_notifications, asking_mic, can_pick_file, can_scan, cancel_dictation, data_dir, device_model, device_name,
+    dictation_log, download_language, haptic, in_background, language_download, notify, open_url, pick_file,
+    recognizer, start_dictation, start_scan, stop_dictation, stop_scan,
 };
 
 #[cfg(not(target_os = "android"))]
@@ -76,6 +79,20 @@ mod desktop {
     }
 
     pub fn haptic() {}
+
+    /// Sur le bureau, le fichier « choisi » est celui que nomme `EYRIE_MOBILE_FICHIER` (essais) ; la démonstration
+    /// montre le choix.
+    pub fn can_pick_file() -> bool {
+        std::env::var_os("EYRIE_MOBILE_FICHIER").is_some() || std::env::var_os("EYRIE_MOBILE_DEMO").is_some()
+    }
+
+    pub fn pick_file(done: Box<dyn Fn(Option<super::Picked>) + Send>) {
+        let Some(path) = std::env::var_os("EYRIE_MOBILE_FICHIER").map(PathBuf::from) else { return done(None) };
+        std::thread::spawn(move || {
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            done(Some(std::fs::read(&path).map(|b| (name, b)).map_err(|e| format!("Fichier illisible : {e}"))));
+        });
+    }
 
     pub fn can_scan() -> bool {
         false

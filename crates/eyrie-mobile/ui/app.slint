@@ -223,6 +223,12 @@ export component AppWindow inherits Window {
     callback term-follows(bool, bool, length, length, length, bool) -> bool;
     // Le terminal tient un autre nombre de colonnes (`term-fit-cols`) : ses lignes se replient de nouveau.
     callback term-refit();
+    // Le bouton + de la saisie du terminal : le menu (joindre un fichier, coller…), fait par le code.
+    callback term-compose-menu();
+    // Le texte d'un côté du curseur de la saisie, dans sa ligne : la loupe (voir `view::around`).
+    pure callback term-around(string, int, bool) -> string;
+    // Où est le curseur de la saisie du terminal (octets).
+    out property <int> term-caret: term.caret;
     // Le micro du terminal, ou d'une saisie (l'action qui l'a ouverte), touché ; l'écoute à abandonner (`true` : celle
     // du terminal, `false` : celle de la saisie) ; « Envoyer la dictée aussitôt ».
     callback term-dictate();
@@ -367,6 +373,24 @@ export component AppWindow inherits Window {
         root.input-visible = false;
         root.folder-input = false;
         root.dictation-cancel(false);
+    }
+
+    // Une feuille d'actions ouverte par le code (le menu de la saisie du terminal).
+    public function open-sheet(title: string, acts: [UiAct]) {
+        root.show-sheet(title, acts);
+    }
+
+    // La saisie du terminal remplacée (un chemin inséré), son curseur à `at` (octets).
+    public function term-set-draft(text: string, at: int) {
+        term.set-draft(text, at);
+    }
+
+    public function term-paste-here() {
+        term.paste-here();
+    }
+
+    public function term-copy-draft() {
+        term.copy-draft();
     }
 
     function show-sheet(title: string, acts: [UiAct]) {
@@ -676,6 +700,10 @@ export component AppWindow inherits Window {
                             root.term-follows(follow, user, up, gap, row, fits)
                         }
                         refit => { root.term-refit(); }
+                        compose-menu => { root.term-compose-menu(); }
+                        around(t, at, after) => {
+                            root.term-around(t, at, after)
+                        }
                         reply(i) => { root.term-reply(i); }
                         zoomed(z) => { root.term-zoomed(z); }
                         haptic => { root.haptic(); }

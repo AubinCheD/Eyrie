@@ -504,7 +504,14 @@ mod tests {
     }
 
     fn welcome(wake: Option<WakeKey>) -> ToPhone {
-        ToPhone::Welcome { protocol: PROTOCOL, pc: "PC".into(), eyrie: "x".into(), rights: Rights::default(), wake }
+        ToPhone::Welcome {
+            protocol: PROTOCOL,
+            pc: "PC".into(),
+            eyrie: "x".into(),
+            rights: Rights::default(),
+            wake,
+            features: Vec::new(),
+        }
     }
 
     /// Un PC qui accueille le téléphone puis se tait sans fermer la connexion (réseau coupé, PC en veille) : la

@@ -835,10 +835,34 @@ fn terminal() -> TermView {
     }
 }
 
-/// Le terminal ouvert : Ctrl collé, le texte à copier (la ligne d'un appui long sélectionnée), un collage de plusieurs
+/// Le terminal ouvert : le menu + de la saisie (`terminal-plus`), un fichier joint (`terminal-joint`), Ctrl collé, le
+/// texte à copier (la ligne d'un appui long sélectionnée), un collage de plusieurs
 /// lignes à confirmer, une saisie sur plusieurs lignes, un zoom (gardé seulement le temps de la démonstration).
 fn terminal_scene(ui: &AppWindow, scene: &str) {
+    // Le PC reçoit les fichiers du téléphone (le bureau en « choisit » un dans la démonstration).
+    let welcome = |features: Vec<String>| ToPhone::Welcome {
+        protocol: suite_mobile::PROTOCOL,
+        pc: "PORTABLE-AUBIN".into(),
+        eyrie: "x".into(),
+        rights: suite_mobile::msg::Rights::default(),
+        wake: None,
+        features,
+    };
     match scene {
+        // Le bouton + de la saisie : joindre une photo ou un fichier du téléphone, coller au curseur…
+        "terminal-plus" => {
+            with(|c| c.on_message(welcome(vec![suite_mobile::msg::FEATURE_UPLOAD.into()])));
+            ui.set_term_draft("Regarde cette capture : le bouton est coupé".into());
+            with(|c| c.compose_menu());
+        }
+        // Le fichier choisi est arrivé sur le PC : son chemin est inséré au curseur de la saisie.
+        "terminal-joint" => {
+            with(|c| c.on_message(welcome(vec![suite_mobile::msg::FEATURE_UPLOAD.into()])));
+            let draft = "Regarde cette capture : le bouton est coupé";
+            ui.invoke_term_set_draft(draft.into(), draft.len() as i32);
+            let path = r"C:\Users\aubin\AppData\Local\EyrieSuite\Eyrie\mobile\televerses\2026-10-30\143205-capture.png";
+            with(|c| c.demo_uploaded(("fawkes".into(), "3".into()), "capture.png", path));
+        }
         "terminal-ctrl" => {
             with(|c| c.term_latch(Latch::Ctrl));
         }

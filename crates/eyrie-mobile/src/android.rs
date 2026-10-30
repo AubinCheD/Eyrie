@@ -10,13 +10,13 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use jni::objects::{GlobalRef, JClass, JObject, JString, JThrowable, JValue};
+use jni::objects::{GlobalRef, JByteArray, JClass, JObject, JString, JThrowable, JValue};
 use jni::sys::{jfloat, jint};
 use jni::{JNIEnv, JavaVM, NativeMethod};
 use slint::android::AndroidApp;
 
 use crate::dictee::{self, Asking, Download, Heard, Recognizer, Requested};
-use crate::platform::{Frame, Notice};
+use crate::platform::{Frame, Notice, Picked};
 
 static APP: OnceLock<AndroidApp> = OnceLock::new();
 
@@ -388,6 +388,95 @@ pub fn start_scan(on_frame: Box<dyn Fn(Frame) + Send>, on_code: Box<dyn Fn(Strin
         }
         SCANNING.store(false, Ordering::Relaxed);
     });
+}
+
+// --- Le choix d'un fichier (android/java/io/github/aubinched/eyrie/Fichiers.java) ---
+
+const FICHIERS: &str = "io.github.aubinched.eyrie.Fichiers";
+
+/// La classe `Fichiers`, ses fonctions natives enregistrées ; `None` : pas de choix de fichier (APK sans elle).
+static FICHIERS_CLASS: OnceLock<Option<GlobalRef>> = OnceLock::new();
+
+/// Où va le fichier choisi (le contrôleur, par `pick_file`).
+type PickedSink = Box<dyn Fn(Option<Picked>) + Send>;
+static PICKED: Mutex<Option<PickedSink>> = Mutex::new(None);
+
+fn fichiers_class() -> Option<&'static GlobalRef> {
+    FICHIERS_CLASS
+        .get_or_init(|| {
+            java(Some("chargement de Fichiers"), |env, activity| {
+                let loader = env.call_method(activity, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])?.l()?;
+                let name = env.new_string(FICHIERS)?;
+                let class = env
+                    .call_method(
+                        &loader,
+                        "loadClass",
+                        "(Ljava/lang/String;)Ljava/lang/Class;",
+                        &[JValue::Object(&name)],
+                    )?
+                    .l()?;
+                let class = JClass::from(class);
+                let natives = [
+                    ("recu", "(Ljava/lang/String;[B)V", recu as *mut c_void),
+                    ("rien", "()V", rien as *mut c_void),
+                    ("echec", "(Ljava/lang/String;)V", echec as *mut c_void),
+                ];
+                let natives =
+                    natives.map(|(name, sig, fn_ptr)| NativeMethod { name: name.into(), sig: sig.into(), fn_ptr });
+                env.register_native_methods(&class, &natives)?;
+                env.new_global_ref(class)
+            })
+        })
+        .as_ref()
+}
+
+/// Le téléphone sait-il choisir un fichier (la classe `Fichiers` est dans l'APK) ?
+pub fn can_pick_file() -> bool {
+    fichiers_class().is_some()
+}
+
+/// Ouvre le sélecteur de fichiers d'Android ; le fichier choisi (ou rien, ou pourquoi il ne se lit pas) part à `done`.
+pub fn pick_file(done: Box<dyn Fn(Option<Picked>) + Send>) {
+    let Some(class) = fichiers_class() else {
+        done(Some(Err("Ce téléphone ne sait pas choisir de fichier ici.".into())));
+        return;
+    };
+    if let Ok(mut sink) = PICKED.lock() {
+        *sink = Some(done);
+    }
+    let opened = java(Some("Fichiers.choisir"), |env, activity| {
+        env.call_static_method(class, "choisir", "(Landroid/content/Context;)V", &[JValue::Object(activity)])?;
+        Ok(())
+    });
+    if opened.is_none() {
+        picked(Some(Err("Le sélecteur de fichiers ne s'est pas ouvert.".into())));
+    }
+}
+
+/// Rend le fichier choisi à qui l'a demandé, une fois.
+fn picked(p: Option<Picked>) {
+    let sink = PICKED.lock().ok().and_then(|mut s| s.take());
+    if let Some(f) = sink {
+        f(p);
+    }
+}
+
+extern "system" fn recu<'l>(mut env: JNIEnv<'l>, _: JClass<'l>, name: JString<'l>, data: JByteArray<'l>) {
+    native(&mut env, |env| {
+        let name = text_of(env, &name);
+        match env.convert_byte_array(&data) {
+            Ok(bytes) => picked(Some(Ok((name, bytes)))),
+            Err(e) => picked(Some(Err(format!("Fichier illisible : {e}")))),
+        }
+    });
+}
+
+extern "system" fn rien<'l>(mut env: JNIEnv<'l>, _: JClass<'l>) {
+    native(&mut env, |_| picked(None));
+}
+
+extern "system" fn echec<'l>(mut env: JNIEnv<'l>, _: JClass<'l>, why: JString<'l>) {
+    native(&mut env, |env| picked(Some(Err(text_of(env, &why)))));
 }
 
 // --- La dictée (android/java/io/github/aubinched/eyrie/Dictee.java) ---

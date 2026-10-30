@@ -135,6 +135,49 @@ pub fn icon_for(glyph: &str) -> &'static str {
     }
 }
 
+/// Le texte d'un côté du curseur (`at`, en octets) dans sa ligne, pour la loupe de la saisie du terminal : 14
+/// caractères au plus, « … » là où il est coupé.
+pub fn around(text: &str, at: i32, after: bool) -> String {
+    const AROUND: usize = 14;
+    let mut at = usize::try_from(at).unwrap_or(0).min(text.len());
+    while !text.is_char_boundary(at) {
+        at -= 1;
+    }
+    if after {
+        let line = text[at..].split('\n').next().unwrap_or_default();
+        let mut s: String = line.chars().take(AROUND).collect();
+        if line.chars().count() > AROUND {
+            s.push('…');
+        }
+        s
+    } else {
+        let line = text[..at].rsplit('\n').next().unwrap_or_default();
+        let n = line.chars().count();
+        let tail: String = line.chars().skip(n.saturating_sub(AROUND)).collect();
+        if n > AROUND { format!("…{tail}") } else { tail }
+    }
+}
+
+/// `insert` mis dans `text` au curseur `at` (octets), séparé par une espace de ce qui le touche ; rend le texte et le
+/// curseur après l'insertion.
+pub fn insert_at(text: &str, at: i32, insert: &str) -> (String, i32) {
+    let mut at = usize::try_from(at).unwrap_or(text.len()).min(text.len());
+    while !text.is_char_boundary(at) {
+        at -= 1;
+    }
+    let (before, after) = text.split_at(at);
+    let space_before = if before.chars().last().is_some_and(|c| !c.is_whitespace()) { " " } else { "" };
+    let space_after = if after.chars().next().is_some_and(|c| c.is_whitespace()) { "" } else { " " };
+    let head = format!("{before}{space_before}{insert}{space_after}");
+    let caret = i32::try_from(head.len()).unwrap_or(i32::MAX);
+    (format!("{head}{after}"), caret)
+}
+
+/// Un chemin tel qu'on l'écrit dans un terminal : entre guillemets s'il a une espace.
+pub fn shell_path(path: &str) -> String {
+    if path.contains(char::is_whitespace) { format!("\"{path}\"") } else { path.to_string() }
+}
+
 /// Le glyphe d'une ligne quand c'est une ou deux lettres (l'état d'un fichier : « M », « ?? », « A ») : dessiné en
 /// texte dans une petite pastille. Vide sinon.
 pub fn mark(glyph: &str) -> &str {
@@ -1326,6 +1369,32 @@ mod tests {
         }
         assert_eq!(icon_for("🌿"), "branch");
         assert_eq!((mark("M"), mark("??"), mark("🌿"), mark("abc")), ("M", "??", "", ""));
+    }
+
+    /// La loupe montre la ligne du curseur autour de lui, coupée au-delà de 14 caractères ; un curseur au milieu d'un
+    /// caractère (é) recule à son début.
+    #[test]
+    fn the_loupe_shows_the_line_around_the_cursor() {
+        let text = "première ligne\ncd C:\\Users\\aubin\\DEV && cargo test";
+        let at = text.find("&&").unwrap() as i32;
+        assert_eq!(around(text, at, false), "…ers\\aubin\\DEV ");
+        assert_eq!(around(text, at, true), "&& cargo test");
+        assert_eq!(around(text, 0, false), "");
+        assert_eq!(around(text, 0, true), "première ligne");
+        assert_eq!(around("é", 1, false), "", "milieu d'un caractère");
+        assert_eq!(around("abc", 99, false), "abc");
+    }
+
+    /// Un chemin inséré au curseur, une espace de part et d'autre seulement s'il en faut ; le curseur après lui.
+    #[test]
+    fn a_path_is_inserted_at_the_cursor() {
+        assert_eq!(insert_at("", 0, "C:\\a.png"), ("C:\\a.png ".into(), 9));
+        assert_eq!(insert_at("voici", 5, "x"), ("voici x ".into(), 8));
+        assert_eq!(insert_at("voici  merci", 6, "x"), ("voici x merci".into(), 7));
+        assert_eq!(insert_at("ab", 1, "x"), ("a x b".into(), 4));
+        assert_eq!(insert_at("é", 1, "x"), ("x é".into(), 2), "au début du caractère coupé");
+        assert_eq!(shell_path(r"C:\Users\a b\c.png"), r#""C:\Users\a b\c.png""#);
+        assert_eq!(shell_path(r"C:\x.png"), r"C:\x.png");
     }
 
     #[test]
