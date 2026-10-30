@@ -403,7 +403,8 @@ impl Module for Gringotts {
         }
     }
 
-    /// La ligne de sa carte sur le téléphone : « 5 h 38 % · sem. 61 % · 🔄 14:20 ». Celle de la barre y était coupée
+    /// La ligne de sa carte sur le téléphone : « 5 h 38 % · sem. 61 % · remise 14:20 », en mots (un émoji dans le texte
+    /// n'est pas une icône du téléphone). Celle de la barre y était coupée
     /// avant l'heure de remise à zéro. Chaque partie reste d'un seul tenant (espaces fines insécables, que Slint ne coupe
     /// pas) : sur deux lignes, la carte ne passe à la ligne qu'après un « · ». Sans relevé, celle de la barre.
     fn mobile_status(&self) -> Option<String> {
@@ -411,7 +412,7 @@ impl Module for Gringotts {
         let mut parts: Vec<String> =
             ["5 h", "sem."].iter().zip(pcts).map(|(label, p)| format!("{label} {}", readings::pct_text(p))).collect();
         if let Some(at) = reset {
-            parts.push(format!("🔄 {}", readings::local(at, "%H:%M")));
+            parts.push(format!("remise {}", readings::local(at, "%H:%M")));
         }
         Some(parts.iter().map(|p| p.replace(' ', "\u{202f}")).collect::<Vec<_>>().join("\u{202f}· "))
     }

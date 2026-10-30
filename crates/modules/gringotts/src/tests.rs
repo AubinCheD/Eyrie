@@ -167,7 +167,7 @@ fn the_phone_card_gets_a_shorter_line_with_the_reset_time() {
     assert!(bar.starts_with("Claude 5 h 35 % · semaine 45 % · ↻ "), "{bar}");
     let reset = bar.rsplit("↻ ").next().unwrap();
     let n = '\u{202f}';
-    assert_eq!(g.mobile_status().unwrap(), format!("5{n}h{n}35{n}%{n}· sem.{n}45{n}%{n}· 🔄{n}{reset}"));
+    assert_eq!(g.mobile_status().unwrap(), format!("5{n}h{n}35{n}%{n}· sem.{n}45{n}%{n}· remise{n}{reset}"));
     let empty = Gringotts::open(host("carte-vide"), host("carte-vide").module_dir(ID), Vec::new(), false);
     assert_eq!(empty.mobile_status(), None);
 }
