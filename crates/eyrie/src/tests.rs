@@ -397,6 +397,70 @@ fn the_suite_zoom_comes_back_after_a_module_changes_it() {
     assert!((ctx.zoom_factor() - 1.0).abs() < 1e-3, "zoom {}", ctx.zoom_factor());
 }
 
+/// Suit le pincement à chaque image, comme Patronus (`track_zoom`, appelé même masqué : `hidden_ui`).
+struct Pincher {
+    info: ModuleInfo,
+}
+
+impl Module for Pincher {
+    fn info(&self) -> &ModuleInfo {
+        &self.info
+    }
+    fn logic(&mut self, ctx: &egui::Context, _cx: &mut Cx) {
+        let delta = ctx.input(|i| i.zoom_delta());
+        if delta != 1.0 {
+            ctx.set_zoom_factor(ctx.zoom_factor() * delta);
+        }
+    }
+    fn ui(&mut self, _ui: &mut egui::Ui, _view: &str, _cx: &mut Cx) {}
+}
+
+fn build_pincher(_: &suite_sdk::BuildCx) -> Result<Box<dyn Module>, suite_sdk::Unavailable> {
+    Ok(Box::new(Pincher { info: closing_info("pincement") }))
+}
+
+/// Le pincement d'un pavé tactile (Ctrl+molette sous Windows) ne zoome pas la suite, pas même une image : la suite n'a
+/// pas de zoom au geste (seulement « taille de l'interface »). Un module qui suivait le pincement la faisait grossir une
+/// image, puis la suite rétablissait son zoom : l'interface sautait.
+#[test]
+fn a_trackpad_pinch_never_zooms_the_suite() {
+    let mut h = suite();
+    let ctx = h.ctx.clone();
+    {
+        let s = h.state_mut();
+        let cc = eframe::CreationContext::_new_kittest(ctx.clone());
+        let mut slot = Slot::new(closing_info("pincement"), build_pincher);
+        slot.start(&cc, &s.core.host, suite_sdk::DataMode::Shared, &mut s.core.journal);
+        s.core.slots.push(slot);
+    }
+    h.run_steps(2);
+    let mut seen = Vec::new();
+    for _ in 0..12 {
+        h.input_mut().events.push(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::vec2(0.0, 1.0),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Unknown,
+            modifiers: egui::Modifiers::CTRL,
+        });
+        h.step();
+        seen.push(ctx.zoom_factor());
+    }
+    h.run_steps(4);
+    seen.push(ctx.zoom_factor());
+    assert!(seen.iter().all(|z| (z - 1.0).abs() < 1e-3), "zoom à chaque image : {seen:?}");
+}
+
+/// L'autre forme du pincement (un geste du système, `Event::Zoom`) est retirée avant que rien ne la voie.
+#[test]
+fn a_pinch_gesture_is_dropped_from_the_input() {
+    let mut raw = egui::RawInput::default();
+    raw.events.push(egui::Event::Zoom(1.2));
+    raw.events.push(egui::Event::Text("a".into()));
+    crate::app::drop_zoom_gestures(&mut raw);
+    assert_eq!(raw.events, [egui::Event::Text("a".into())]);
+}
+
 // --- Réglages de la suite -----------------------------------------------------------------------
 
 /// Les textes des réglages restent courts et parlent à l'utilisateur, pas de la mécanique de la suite.

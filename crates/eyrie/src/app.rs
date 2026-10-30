@@ -1196,7 +1196,18 @@ fn named_default(core: &Core, name: &str) -> Option<SavedLayout> {
     Some(SavedLayout { main: layout::preset(0, Preset::Columns, panes), windows: Vec::new() })
 }
 
+/// Retire de l'entrée le pincement venu du système (`Event::Zoom`, celui d'un pavé tactile sous macOS) : la suite n'a pas
+/// de zoom au geste, seulement « taille de l'interface ». Celui de Windows, un Ctrl+molette, ne zoome plus
+/// (`theme::apply` : `zoom_modifier`).
+pub(crate) fn drop_zoom_gestures(raw: &mut egui::RawInput) {
+    raw.events.retain(|e| !matches!(e, egui::Event::Zoom(_)));
+}
+
 impl eframe::App for Suite {
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        drop_zoom_gestures(raw_input);
+    }
+
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         // Un module a pu remplacer toutes les polices : rétablies avant toute mise en page.
         if suite_sdk::fonts::guard(ctx, &self.core.fonts) {

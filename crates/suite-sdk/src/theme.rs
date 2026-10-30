@@ -266,8 +266,12 @@ pub fn apply(ctx: &egui::Context, p: &Palette, zoom: f32) {
         o.light_style = style;
         o.theme_preference = theme.into();
         o.zoom_factor = zoom;
-        // Le zoom au clavier (Ctrl+molette, Ctrl+=) appartiendrait au module qui a le clavier.
+        // Le zoom au clavier (Ctrl+=, Ctrl+-) appartiendrait au module qui a le clavier.
         o.zoom_with_keyboard = false;
+        // Ni au geste : Ctrl+molette, et le pincement d'un pavé tactile que Windows envoie ainsi, ne zooment pas (ils
+        // font défiler). Un module qui suit le pincement (Patronus) faisait sinon grossir toute la suite tant que durait
+        // le geste, puis la suite rétablissait son zoom. Le seul zoom est « taille de l'interface ».
+        o.input_options.zoom_modifier = egui::Modifiers::NONE;
     });
 }
 

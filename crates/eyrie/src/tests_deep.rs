@@ -271,6 +271,37 @@ fn real_modules_survive_every_layout_operation() {
     check_invariants(h.state(), 0, "thèmes");
 }
 
+/// Le pincement d'un pavé tactile (Ctrl+molette sous Windows), sur chaque module affiché tour à tour, ne zoome jamais la
+/// suite, pas même une image : Patronus, masqué mais appelé à chaque image, le suivait (`track_zoom`).
+#[test]
+#[ignore = "lent : les huit modules réels ; à lancer seul"]
+fn real_modules_never_zoom_on_a_trackpad_pinch() {
+    let (_turn, mut h, _dir) = real_suite("pincement");
+    h.run_steps(10);
+    let started = running(h.state());
+    assert!(started.contains(&"patronus"), "{started:?}");
+    let mut seen = Vec::new();
+    for id in started.iter().filter(|m| **m != "carnet") {
+        h.state_mut().core.act(Action::Reveal(Pane::module(id, suite_sdk::ViewInfo::MAIN)));
+        h.run_steps(2);
+        let centre = h.ctx.content_rect().center();
+        h.input_mut().events.push(egui::Event::PointerMoved(centre));
+        for _ in 0..6 {
+            h.input_mut().events.push(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Line,
+                delta: egui::vec2(0.0, 1.0),
+                phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Unknown,
+                modifiers: egui::Modifiers::CTRL,
+            });
+            h.step();
+            seen.push((*id, h.ctx.zoom_factor()));
+        }
+    }
+    let off: Vec<_> = seen.iter().filter(|(_, z)| (z - 1.0).abs() > 1e-3).collect();
+    assert!(off.is_empty(), "zoom changé : {off:?}");
+}
+
 #[test]
 #[ignore = "lent : les huit modules réels ; à lancer seul"]
 fn real_modules_can_be_stopped_and_restarted() {
