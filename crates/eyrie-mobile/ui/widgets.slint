@@ -476,31 +476,35 @@ export component ActButton inherits Rectangle {
     }
 }
 
-// Le signe d'un module : son icône Material sur sa couleur, sinon son logo, sinon son initiale. `bare` : l'icône seule
-// (la barre du bas), pleine quand `filled`.
+// Le signe d'un module : son icône Material sur sa couleur, sinon son logo, sinon son initiale. `original` : le signe
+// d'origine du module, son logo (envoyé par le PC) ou son initiale sur sa couleur, jamais l'icône Material (la barre du
+// bas, au choix de l'utilisateur). `bare` : l'icône seule, pleine quand `filled`.
 export component ModuleAvatar inherits Rectangle {
     in property <ModuleItem> module;
     in property <length> size: 36px;
+    in property <bool> original;
     in property <bool> bare;
     in property <bool> filled;
     in property <color> tint: module.color;
+    property <string> icon: root.original ? "" : module.icon;
     width: size;
     height: size;
-    border-radius: size * 0.3;
-    background: root.bare || (module.icon == "" && module.has-logo) ? transparent : module.color.with-alpha(0.16);
-    if module.icon != "": Icon {
-        kind: module.icon;
+    border-radius: size * (root.original ? 0.28 : 0.3);
+    background: root.bare || (root.icon == "" && module.has-logo) ? transparent
+        : module.color.with-alpha(root.original ? 0.18 : 0.16);
+    if root.icon != "": Icon {
+        kind: root.icon;
         filled: root.filled;
         tint: root.tint;
         size: root.bare ? root.size : root.size * 0.6;
     }
-    if module.icon == "" && module.has-logo: Image {
+    if root.icon == "" && module.has-logo: Image {
         source: module.logo;
         width: parent.width;
         height: parent.height;
         image-fit: contain;
     }
-    if module.icon == "" && !module.has-logo: Text {
+    if root.icon == "" && !module.has-logo: Text {
         text: module.glyph;
         font-size: root.size * 0.48;
         font-weight: 700;
@@ -1719,12 +1723,11 @@ export component BottomNav inherits Rectangle {
                         background: on ? Theme.accent-soft : transparent;
                         animate background { duration: 150ms; }
                     }
+                    // Les modules gardent leur signe d'origine : leur logo, sinon leur initiale.
                     if item.is-module: ModuleAvatar {
                         module: item.module;
                         size: 24px;
-                        bare: true;
-                        filled: on;
-                        tint: on ? Theme.accent-ink : Theme.text-dim;
+                        original: true;
                     }
                     if !item.is-module: Icon {
                         kind: item.icon;

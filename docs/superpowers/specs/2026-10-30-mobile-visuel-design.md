@@ -31,9 +31,9 @@ miens, marqués **(choix)**.
   du haut. Un émoji sans icône reste dessiné tel quel ; une ou deux lettres (« M », « ? », état d'un fichier) restent
   du texte, dans une petite pastille du ton de la ligne.
 - Modules : une icône par module (Fawkes `terminal`, DragonTree `account_tree`, Owlery `inbox`, Patronus
-  `smart_toy`, Menagerie `dns`, Grimoire `menu_book`, Gringotts `savings`, Carnet `edit_note`) dans la barre du bas,
-  sur les cartes et dans « Plus », à la place des logos PNG et des initiales **(choix ; le logo reste pour un module
-  inconnu)**.
+  `smart_toy`, Menagerie `dns`, Grimoire `menu_book`, Gringotts `savings`, Carnet `edit_note`) sur les cartes et dans
+  « Plus ». **La barre du bas garde les logos d'origine** (demande de l'utilisateur du 30/10 : « garde les icônes
+  originelles des applis en bas ») : le logo envoyé par le PC, sinon l'initiale sur la couleur du module.
 
 ## 3. Lignes, bandeaux, boutons, onglets (tous les modules)
 

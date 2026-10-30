@@ -339,8 +339,8 @@ La passe d'ergonomie, avec l'accord du 28/10, en ajoute d'autres, un commit par 
   toujours des émojis (protocole inchangé) ; le téléphone les ramène à une icône partout — lignes, bandeaux,
   étiquettes, boutons, menus, barre du haut (`view::icon_for`, `view::material_icon`) ; une ou deux lettres (l'état
   d'un fichier) restent du texte, dans une pastille de leur couleur ; un émoji sans icône reste dessiné. Chaque module
-  a son icône (`view::module_icon`) dans la barre du bas, sur sa carte et dans « Plus », à la place de son logo ou de
-  son initiale.
+  a son icône (`view::module_icon`) sur sa carte et dans « Plus » ; la barre du bas garde son signe d'origine, son
+  logo (envoyé par le PC) ou son initiale sur sa couleur (choix de l'utilisateur, 30/10).
 - **Listes** (30/10) : une ligne n'a plus de tuile ni de chevron (toute la ligne se touche, à la façon d'Android) ;
   son icône seule à gauche (dans un rond de sa couleur pour un groupe de Fawkes), rien sans glyphe ; ⋮ discret ;
   pastilles douces (fond pâle, texte du ton) ; liseré de ton seulement sans pastille. Bandeaux : chevron de pliage à
