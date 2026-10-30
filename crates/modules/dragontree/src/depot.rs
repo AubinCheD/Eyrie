@@ -849,7 +849,9 @@ pub fn more(base: &str, v: &RepoView, now: i64, busy: bool) -> Screen {
         reading(&mut s, "Lecture du dépôt…", v);
         return s;
     }
-    s.band(Band::new("remises", "Remises (stash)").glyph("📦").aside(v.stashes.len().to_string()));
+    // Une section vide est pliée : son compte (0) le dit, et « Aucune… » ne prend la place qu'une fois dépliée.
+    let stashes = Band::new("remises", "Remises (stash)").glyph("📦").aside(v.stashes.len().to_string());
+    s.band(stashes.open(!v.stashes.is_empty()));
     if v.stashes.is_empty() {
         s.empty("Aucune remise.");
     }
@@ -857,7 +859,8 @@ pub fn more(base: &str, v: &RepoView, now: i64, busy: bool) -> Screen {
         s.row(stash_row(st, now, busy));
     }
     let tags = v.tags_by_date();
-    s.band(Band::new("etiquettes", "Étiquettes").glyph("🏷️").aside(tags.len().to_string()));
+    let labels = Band::new("etiquettes", "Étiquettes").glyph("🏷️").aside(tags.len().to_string());
+    s.band(labels.open(!tags.is_empty() || v.refs.is_none()));
     if v.refs.is_none() {
         reading(&mut s, "Lecture des étiquettes…", v);
     } else if tags.is_empty() {
@@ -880,7 +883,7 @@ pub fn more(base: &str, v: &RepoView, now: i64, busy: bool) -> Screen {
             s.row(worktree_row(w, busy));
         }
     }
-    s.band(Band::new("remotes", "Remotes").glyph("🌐").aside(v.remotes.len().to_string()));
+    s.band(Band::new("remotes", "Remotes").glyph("🌐").aside(v.remotes.len().to_string()).open(!v.remotes.is_empty()));
     if v.remotes.is_empty() {
         s.empty("Aucun remote : ce dépôt n'est publié nulle part.");
     }
